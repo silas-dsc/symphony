@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import * as readline from "node:readline";
 import { Liquid } from "liquidjs";
-import type { Issue, AgentResult, WorkflowConfig } from "./types.js";
+import type { Issue, AgentResult, WorkflowConfig, RateLimitInfo } from "./types.js";
 import { ensureWorkspace, runHook } from "./workspace.js";
 
 const liquid = new Liquid({ strictVariables: true, strictFilters: true });
@@ -26,13 +26,32 @@ export function renderPrompt(template: string, issue: Issue, attempt: number | n
   });
 }
 
+export interface AgentEvent {
+  type: string;
+  message?: string;
+  tokens?: { input: number; output: number; total: number };
+  pid?: number;
+  sessionId?: string;
+  rateLimit?: RateLimitInfo;
+}
+
 export interface AgentEventCallback {
-  (type: string, message?: string, tokens?: { input: number; output: number; total: number }): void;
+  (event: AgentEvent): void;
+}
+
+interface ClaudeRateLimitInfo {
+  status?: string;
+  rateLimitType?: string;
+  resetsAt?: number;
+  overageStatus?: string | null;
+  overageResetsAt?: number | null;
+  isUsingOverage?: boolean;
 }
 
 interface ClaudeStreamEvent {
   type: string;
   subtype?: string;
+  session_id?: string;
   message?: {
     content?: Array<{ type: string; text?: string }>;
     usage?: { input_tokens?: number; output_tokens?: number };
@@ -41,6 +60,7 @@ interface ClaudeStreamEvent {
   num_turns?: number;
   is_error?: boolean;
   usage?: { input_tokens?: number; output_tokens?: number };
+  rate_limit_info?: ClaudeRateLimitInfo;
 }
 
 export async function runAgentAttempt(
@@ -78,7 +98,7 @@ export async function runAgentAttempt(
   let errorMsg: string | undefined;
 
   try {
-    onEvent("session_started");
+    onEvent({ type: "session_started" });
     const result = await spawnClaude(prompt, wsPath, config.agent.maxTurns, abortController, onEvent);
     success = result.success;
     errorMsg = result.error;
@@ -142,6 +162,8 @@ async function spawnClaude(
       }
     );
 
+    if (proc.pid) onEvent({ type: "process_spawned", pid: proc.pid });
+
     // Write prompt to stdin, then close
     proc.stdin.write(prompt, "utf-8");
     proc.stdin.end();
@@ -169,6 +191,26 @@ async function spawnClaude(
         return;
       }
 
+      // Capture session id from the init event so the orchestrator/UI can correlate.
+      if (event.type === "system" && event.subtype === "init" && event.session_id) {
+        onEvent({ type: "session_init", sessionId: event.session_id });
+      }
+
+      // Surface Claude's rate-limit telemetry to the orchestrator.
+      if (event.type === "rate_limit_event" && event.rate_limit_info) {
+        const r = event.rate_limit_info;
+        const rateLimit: RateLimitInfo = {
+          status: r.status ?? "unknown",
+          rateLimitType: r.rateLimitType ?? "unknown",
+          resetsAt: r.resetsAt ?? 0,
+          overageStatus: r.overageStatus ?? null,
+          overageResetsAt: r.overageResetsAt ?? null,
+          isUsingOverage: !!r.isUsingOverage,
+          observedAt: new Date(),
+        };
+        onEvent({ type: "rate_limit", rateLimit });
+      }
+
       if (event.type === "assistant" && event.message) {
         turnCount++;
 
@@ -178,13 +220,13 @@ async function spawnClaude(
           const out = usage.output_tokens ?? 0;
           inputTokens = Math.max(inputTokens, inp);
           outputTokens = Math.max(outputTokens, out);
-          onEvent("notification", undefined, { input: inp, output: out, total: inp + out });
+          onEvent({ type: "notification", tokens: { input: inp, output: out, total: inp + out } });
         }
 
         const content = event.message.content ?? [];
         for (const block of content) {
           if (block.type === "text" && block.text?.trim()) {
-            onEvent("notification", block.text.slice(0, 300));
+            onEvent({ type: "notification", message: block.text.slice(0, 300) });
           }
         }
       }
@@ -201,7 +243,7 @@ async function spawnClaude(
 
         if (event.subtype === "success" && !event.is_error) {
           success = true;
-          onEvent("turn_completed");
+          onEvent({ type: "turn_completed" });
         } else {
           // Some failure modes set `is_error: true` while still reporting subtype "success"
           // (e.g. session ended cleanly but the agent self-reported an error). Surface a
@@ -215,7 +257,7 @@ async function spawnClaude(
           } else {
             resultError = "unknown";
           }
-          onEvent("turn_failed", resultError);
+          onEvent({ type: "turn_failed", message: resultError });
         }
       }
     });

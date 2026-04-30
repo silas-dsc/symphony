@@ -2,7 +2,10 @@
 import "dotenv/config";
 import * as path from "node:path";
 import { Orchestrator } from "./orchestrator.js";
+import { startStatusServer, type StatusServer } from "./server.js";
 import type { Logger } from "./types.js";
+
+const DEFAULT_STATUS_PORT = 7777;
 
 function createLogger(): Logger {
   function log(level: string, msg: string, context?: Record<string, string>): void {
@@ -49,7 +52,7 @@ function parseArgs(argv: string[]): { workflowPath: string; port?: number } {
 }
 
 async function main(): Promise<void> {
-  const { workflowPath } = parseArgs(process.argv);
+  const { workflowPath, port: portArg } = parseArgs(process.argv);
   const logger = createLogger();
 
   logger.info("Initializing Symphony", { workflow_path: workflowPath });
@@ -62,12 +65,21 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  // Port precedence: CLI flag > workflow config > default 7777.
+  const cfgPort = orchestrator.getConfigSnapshot().server?.port;
+  const port = portArg ?? cfgPort ?? DEFAULT_STATUS_PORT;
+
+  let statusServer: StatusServer | null = null;
+
   let stopping = false;
   const shutdown = (): void => {
     if (stopping) return;
     stopping = true;
     logger.info("Shutdown requested");
     orchestrator.stop();
+    if (statusServer) {
+      statusServer.close().catch((e) => logger.warn(`Status server close failed: ${String(e)}`));
+    }
     // Give in-flight agents a moment to clean up
     setTimeout(() => process.exit(0), 2000);
   };
@@ -82,13 +94,20 @@ async function main(): Promise<void> {
     process.exit(1);
   }
 
+  // Status HTTP server (loopback only). Failure here shouldn't bring down the orchestrator.
+  try {
+    statusServer = await startStatusServer(orchestrator, port, logger);
+  } catch (e) {
+    logger.warn(`Status server failed to start on port ${port}: ${String(e)}`);
+  }
+
   // Print a human-friendly status line every 60s
   setInterval(() => {
     const snap = orchestrator.getSnapshot();
     logger.info("Status snapshot", {
       running: String(snap.counts.running),
       retrying: String(snap.counts.retrying),
-      total_tokens: String(snap.codex_totals.total_tokens),
+      total_tokens: String(snap.totals.total_tokens),
     });
   }, 60_000);
 }

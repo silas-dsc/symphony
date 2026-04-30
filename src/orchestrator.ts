@@ -3,10 +3,13 @@ import type {
   Issue,
   WorkflowConfig,
   RunningEntry,
-  RetryEntry,
   OrchestratorState,
   AgentResult,
   Logger,
+  StatusSnapshot,
+  RateLimitSnapshot,
+  RunningSnapshot,
+  RetrySnapshot,
 } from "./types.js";
 import { loadWorkflow, validateConfig } from "./config.js";
 import * as linear from "./linear.js";
@@ -46,6 +49,9 @@ export class Orchestrator {
       totalOutputTokens: 0,
       totalTokens: 0,
       totalSecondsRunning: 0,
+      latestRateLimit: null,
+      startedAt: new Date(),
+      teamUrl: null,
     };
   }
 
@@ -59,6 +65,12 @@ export class Orchestrator {
 
     this.startFileWatch();
     await this.startupCleanup();
+
+    // Best-effort team URL lookup so the status UI can link out.
+    linear.fetchTeamUrl(this.config.tracker)
+      .then(url => { this.state.teamUrl = url; })
+      .catch(() => { /* already swallowed inside fetchTeamUrl */ });
+
     this.scheduleTick(0);
 
     this.log.info("Symphony started", {
@@ -85,43 +97,82 @@ export class Orchestrator {
     this.log.info("Symphony stopped");
   }
 
-  getSnapshot() {
+  getConfigSnapshot(): WorkflowConfig {
+    return this.config;
+  }
+
+  getSnapshot(): StatusSnapshot {
     const now = Date.now();
-    const running = Array.from(this.state.running.values()).map(e => ({
+
+    const running: RunningSnapshot[] = Array.from(this.state.running.values()).map(e => ({
       issue_id: e.issueId,
       issue_identifier: e.issueIdentifier,
       state: e.issue.state,
+      pid: e.pid,
       session_id: e.sessionId,
       turn_count: e.turnCount,
       last_event: e.lastEvent,
       last_message: e.lastMessage,
       started_at: e.startedAt.toISOString(),
+      age_seconds: (now - e.startedAt.getTime()) / 1000,
       last_event_at: e.lastEventAt?.toISOString() ?? null,
       tokens: { input_tokens: e.inputTokens, output_tokens: e.outputTokens, total_tokens: e.totalTokens },
     }));
 
-    const retrying = Array.from(this.state.retryAttempts.values()).map(e => ({
+    const retrying: RetrySnapshot[] = Array.from(this.state.retryAttempts.values()).map(e => ({
       issue_id: e.issueId,
       issue_identifier: e.identifier,
       attempt: e.attempt,
       due_at: new Date(e.dueAtMs).toISOString(),
+      due_in_seconds: Math.max(0, (e.dueAtMs - now) / 1000),
       error: e.error,
     }));
 
     const activeSeconds = Array.from(this.state.running.values())
       .reduce((sum, e) => sum + (now - e.startedAt.getTime()) / 1000, 0);
+    const totalSeconds = this.state.totalSecondsRunning + activeSeconds;
+    const throughput = totalSeconds > 0 ? this.state.totalTokens / totalSeconds : 0;
+
+    let rateLimit: RateLimitSnapshot | null = null;
+    if (this.state.latestRateLimit) {
+      const r = this.state.latestRateLimit;
+      rateLimit = {
+        status: r.status,
+        rate_limit_type: r.rateLimitType,
+        resets_at: r.resetsAt,
+        resets_in_seconds: Math.max(0, r.resetsAt - Math.floor(now / 1000)),
+        overage_status: r.overageStatus,
+        is_using_overage: r.isUsingOverage,
+        observed_at: r.observedAt.toISOString(),
+      };
+    }
 
     return {
       generated_at: new Date().toISOString(),
-      counts: { running: running.length, retrying: retrying.length },
-      running,
-      retrying,
-      codex_totals: {
+      process: {
+        started_at: this.state.startedAt.toISOString(),
+        uptime_seconds: (now - this.state.startedAt.getTime()) / 1000,
+      },
+      counts: {
+        running: running.length,
+        retrying: retrying.length,
+        max_concurrent: this.state.maxConcurrentAgents,
+      },
+      project: {
+        project_slug: this.config.tracker.projectSlug,
+        team_key: this.config.tracker.teamKey ?? null,
+        team_url: this.state.teamUrl,
+      },
+      totals: {
         input_tokens: this.state.totalInputTokens,
         output_tokens: this.state.totalOutputTokens,
         total_tokens: this.state.totalTokens,
-        seconds_running: this.state.totalSecondsRunning + activeSeconds,
+        seconds_running: totalSeconds,
+        throughput_tps: throughput,
       },
+      rate_limit: rateLimit,
+      running,
+      retrying,
     };
   }
 
@@ -245,6 +296,7 @@ export class Orchestrator {
       issueIdentifier: issue.identifier,
       issue,
       startedAt: new Date(),
+      pid: null,
       sessionId: null,
       lastEvent: null,
       lastEventAt: null,
@@ -254,6 +306,7 @@ export class Orchestrator {
       totalTokens: 0,
       turnCount: 0,
       retryAttempt: attempt,
+      rateLimit: null,
       abortController,
     };
 
@@ -276,16 +329,22 @@ export class Orchestrator {
       config,
       promptTemplate,
       abortController,
-      (type, message, tokens) => {
+      (event) => {
         const e = this.state.running.get(issue.id);
         if (!e) return;
-        e.lastEvent = type;
+        e.lastEvent = event.type;
         e.lastEventAt = new Date();
-        if (message) e.lastMessage = message;
-        if (tokens) {
-          e.inputTokens = tokens.input;
-          e.outputTokens = tokens.output;
-          e.totalTokens = tokens.total;
+        if (event.message) e.lastMessage = event.message;
+        if (event.tokens) {
+          e.inputTokens = event.tokens.input;
+          e.outputTokens = event.tokens.output;
+          e.totalTokens = event.tokens.total;
+        }
+        if (event.pid !== undefined) e.pid = event.pid;
+        if (event.sessionId) e.sessionId = event.sessionId;
+        if (event.rateLimit) {
+          e.rateLimit = event.rateLimit;
+          this.state.latestRateLimit = event.rateLimit;
         }
       }
     )

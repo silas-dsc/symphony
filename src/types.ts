@@ -81,11 +81,22 @@ export interface AgentResult {
   turnCount: number;
 }
 
+export interface RateLimitInfo {
+  status: string;            // "allowed" | "warning" | "blocked" | etc.
+  rateLimitType: string;     // "five_hour" | "weekly" | etc.
+  resetsAt: number;          // unix seconds
+  overageStatus: string | null;
+  overageResetsAt: number | null;
+  isUsingOverage: boolean;
+  observedAt: Date;
+}
+
 export interface RunningEntry {
   issueId: string;
   issueIdentifier: string;
   issue: Issue;
   startedAt: Date;
+  pid: number | null;
   sessionId: string | null;
   lastEvent: string | null;
   lastEventAt: Date | null;
@@ -95,6 +106,7 @@ export interface RunningEntry {
   totalTokens: number;
   turnCount: number;
   retryAttempt: number | null;
+  rateLimit: RateLimitInfo | null;
   abortController: AbortController;
 }
 
@@ -118,6 +130,70 @@ export interface OrchestratorState {
   totalOutputTokens: number;
   totalTokens: number;
   totalSecondsRunning: number;
+  /** Most recently observed rate-limit event from any agent. */
+  latestRateLimit: RateLimitInfo | null;
+  startedAt: Date;
+  teamUrl: string | null;
+}
+
+// ─── Status snapshot (consumed by the HTTP /status endpoint and the TUI) ─────
+
+export interface StatusSnapshot {
+  generated_at: string;
+  process: {
+    started_at: string;
+    uptime_seconds: number;
+  };
+  counts: { running: number; retrying: number; max_concurrent: number };
+  project: {
+    project_slug: string;
+    team_key: string | null;
+    team_url: string | null;
+  };
+  totals: {
+    input_tokens: number;
+    output_tokens: number;
+    total_tokens: number;
+    seconds_running: number;
+    throughput_tps: number;
+  };
+  rate_limit: RateLimitSnapshot | null;
+  running: RunningSnapshot[];
+  retrying: RetrySnapshot[];
+}
+
+export interface RateLimitSnapshot {
+  status: string;
+  rate_limit_type: string;
+  resets_at: number;
+  resets_in_seconds: number;
+  overage_status: string | null;
+  is_using_overage: boolean;
+  observed_at: string;
+}
+
+export interface RunningSnapshot {
+  issue_id: string;
+  issue_identifier: string;
+  state: string;
+  pid: number | null;
+  session_id: string | null;
+  turn_count: number;
+  last_event: string | null;
+  last_message: string | null;
+  started_at: string;
+  age_seconds: number;
+  last_event_at: string | null;
+  tokens: { input_tokens: number; output_tokens: number; total_tokens: number };
+}
+
+export interface RetrySnapshot {
+  issue_id: string;
+  issue_identifier: string;
+  attempt: number;
+  due_at: string;
+  due_in_seconds: number;
+  error: string | null;
 }
 
 export interface Logger {

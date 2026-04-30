@@ -4,12 +4,14 @@
   "description": "Symphony orchestration service — polls Linear, runs Claude Code agents",
   "type": "module",
   "bin": {
-    "symphony": "./dist/index.js"
+    "symphony": "./dist/index.js",
+    "symphony-status": "./dist/status.js"
   },
   "scripts": {
     "build": "tsc",
     "dev": "tsx src/index.ts",
-    "start": "node dist/index.js"
+    "start": "node dist/index.js",
+    "status": "node dist/status.js"
   },
   "dependencies": {
     "@anthropic-ai/claude-code": "^2.1.0",

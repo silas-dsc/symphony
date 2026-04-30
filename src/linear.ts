@@ -283,6 +283,30 @@ export async function fetchIssueStatesByIds(
   }));
 }
 
+const ORG_URL_KEY_QUERY = `
+  query Organization { organization { urlKey } }
+`;
+
+interface OrgPayload {
+  organization: { urlKey: string };
+}
+
+/**
+ * Best-effort lookup of the Linear team URL — `https://linear.app/<orgKey>/team/<teamKey>`.
+ * Returns null on any failure; callers should treat the URL as optional UI sugar.
+ */
+export async function fetchTeamUrl(config: TrackerConfig): Promise<string | null> {
+  if (!config.teamKey) return null;
+  try {
+    const data = await graphql<OrgPayload>(config.endpoint, config.apiKey, ORG_URL_KEY_QUERY);
+    const orgKey = data.organization?.urlKey;
+    if (!orgKey) return null;
+    return `https://linear.app/${orgKey}/team/${config.teamKey}/all`;
+  } catch {
+    return null;
+  }
+}
+
 export async function executeGraphQL(
   config: TrackerConfig,
   query: string,
