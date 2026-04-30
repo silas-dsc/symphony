@@ -122,6 +122,7 @@ async function spawnClaude(
       [
         "-p",
         "--output-format", "stream-json",
+        "--verbose",
         "--dangerously-skip-permissions",
       ],
       {

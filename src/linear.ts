@@ -27,7 +27,9 @@ async function graphql<T>(
   }
 
   if (!response.ok) {
-    throw { code: "linear_api_status", status: response.status };
+    let body = "";
+    try { body = await response.text(); } catch { /* ignore */ }
+    throw { code: "linear_api_status", status: response.status, body };
   }
 
   const json = (await response.json()) as GraphQLResponse<T>;
@@ -44,8 +46,9 @@ function normalizeIssue(node: Record<string, unknown>): Issue {
   const labelsData = node.labels as { nodes: Array<{ name: string }> } | null;
   const labels = (labelsData?.nodes ?? []).map(l => l.name.toLowerCase());
 
-  const inverseRels = node.inverseRelations as { nodes: Array<{ issue: Record<string, unknown> | null }> } | null;
+  const inverseRels = node.inverseRelations as { nodes: Array<{ type: string; issue: Record<string, unknown> | null }> } | null;
   const blockedBy: BlockerRef[] = (inverseRels?.nodes ?? [])
+    .filter(r => r.type === "blocks")
     .map(r => {
       if (!r.issue) return null;
       const st = r.issue.state as { name: string } | null;
@@ -91,8 +94,9 @@ const CANDIDATE_QUERY_PROJECT = `
         state { name }
         branchName url
         labels { nodes { name } }
-        inverseRelations(filter: { type: { eq: "blocks" } }) {
+        inverseRelations {
           nodes {
+            type
             issue { id identifier state { name } }
           }
         }
@@ -118,8 +122,9 @@ const CANDIDATE_QUERY_TEAM = `
         state { name }
         branchName url
         labels { nodes { name } }
-        inverseRelations(filter: { type: { eq: "blocks" } }) {
+        inverseRelations {
           nodes {
+            type
             issue { id identifier state { name } }
           }
         }
@@ -148,11 +153,13 @@ export async function fetchCandidateIssues(config: TrackerConfig): Promise<Issue
   let after: string | null = null;
 
   while (true) {
+    const vars: Record<string, unknown> = { ...baseVars, states: config.activeStates, first: 50 };
+    if (after !== null) vars.after = after;
     const data: IssuesPage = await graphql<IssuesPage>(
       config.endpoint,
       config.apiKey,
       query,
-      { ...baseVars, states: config.activeStates, first: 50, after }
+      vars
     );
 
     for (const node of data.issues.nodes) {
@@ -224,11 +231,13 @@ export async function fetchIssuesByStates(
   let after: string | null = null;
 
   while (true) {
+    const vars: Record<string, unknown> = { ...baseVars, states, first: 50 };
+    if (after !== null) vars.after = after;
     const data: MinimalIssuesPage = await graphql<MinimalIssuesPage>(
       config.endpoint,
       config.apiKey,
       query,
-      { ...baseVars, states, first: 50, after }
+      vars
     );
     results.push(...data.issues.nodes);
 

@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import "dotenv/config";
 import * as path from "node:path";
 import { Orchestrator } from "./orchestrator.js";
 import type { Logger } from "./types.js";
