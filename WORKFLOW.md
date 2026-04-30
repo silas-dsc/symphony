@@ -95,6 +95,32 @@ If neither is available, stop and record a blocker in the workpad.
 
 ---
 
+## Application login
+
+If you hit a `Not logged in` / `Please run /login` error from the team-dsc
+app, its dev server, or its functional tests, do **not** treat it as a
+blocker. Authenticate with the super-admin credentials checked into the
+workspace:
+
+```bash
+# In the workspace root
+cat packages/functional-tests/.env | grep -E '^(SUPER_ADMIN_EMAIL|SUPER_ADMIN_PASSWORD)='
+```
+
+Use `SUPER_ADMIN_EMAIL` and `SUPER_ADMIN_PASSWORD` to log in via the
+relevant flow (Firebase Auth in the app, the test harness's login helper
+in functional tests, etc.).
+
+The super-admin account can **impersonate any other user**, which is
+useful when reproducing role-specific bugs or running functional checks
+that need a particular user context — switch into the relevant user via
+the impersonation UI rather than fabricating new test accounts.
+
+If `packages/functional-tests/.env` is missing those keys, *that* is a
+genuine blocker — record it in the workpad and stop.
+
+---
+
 ## Default posture
 
 - Determine ticket state first, then follow the matching flow below.
