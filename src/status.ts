@@ -230,7 +230,10 @@ function renderRunning(running: RunningSnapshot[], cols: ColumnSpec[]): string[]
   const lines: string[] = [];
   for (const r of running) {
     const dot = green("●");
-    const issueLabel = truncate(`${r.issue_identifier}: ${r.issue_title}`, cols[0].width - 1);
+    const issueLabel = truncate(
+      r.issue_title ? `${r.issue_identifier}: ${r.issue_title}` : r.issue_identifier,
+      cols[0].width - 1
+    );
     const issue = pad(issueLabel, cols[0].width);
     const stage = pad(colorState(truncate(r.state, cols[1].width - 1)), cols[1].width);
     const pid = pad(r.pid !== null ? String(r.pid) : "—", cols[2].width);
