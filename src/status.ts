@@ -188,15 +188,28 @@ interface ColumnSpec {
   width: number;
 }
 
-const RUNNING_COLS: ColumnSpec[] = [
-  { header: "ID",          width: 12 },
-  { header: "STAGE",       width: 16 },
-  { header: "PID",         width: 9 },
-  { header: "AGE / TURN",  width: 14 },
-  { header: "TOKENS",      width: 12 },
-  { header: "SESSION",     width: 14 },
-  { header: "EVENT",       width: 60 },
-];
+// Fixed-width columns (excl. EVENT). "● " prefix = 2.
+const ISSUE_W   = 38;
+const STAGE_W   = 14;
+const PID_W     = 8;
+const AGE_W     = 12;
+const TOKENS_W  = 11;
+const SESSION_W = 14;
+const RUNNING_FIXED = 2 + ISSUE_W + STAGE_W + PID_W + AGE_W + TOKENS_W + SESSION_W;
+
+function getRunningCols(): ColumnSpec[] {
+  const termWidth = process.stdout.columns || 180;
+  const eventWidth = Math.max(24, termWidth - RUNNING_FIXED);
+  return [
+    { header: "ISSUE",      width: ISSUE_W   },
+    { header: "STAGE",      width: STAGE_W   },
+    { header: "PID",        width: PID_W     },
+    { header: "AGE / TURN", width: AGE_W     },
+    { header: "TOKENS",     width: TOKENS_W  },
+    { header: "SESSION",    width: SESSION_W },
+    { header: "EVENT",      width: eventWidth },
+  ];
+}
 
 const RETRY_COLS: ColumnSpec[] = [
   { header: "ID",          width: 12 },
@@ -210,26 +223,27 @@ function renderTableHeader(cols: ColumnSpec[]): string {
   return "  " + cells.join("");
 }
 
-function renderRunning(running: RunningSnapshot[]): string[] {
+function renderRunning(running: RunningSnapshot[], cols: ColumnSpec[]): string[] {
   if (running.length === 0) {
     return [`  ${dim("No agents running.")}`];
   }
   const lines: string[] = [];
   for (const r of running) {
     const dot = green("●");
-    const id = pad(r.issue_identifier, RUNNING_COLS[0].width);
-    const stage = pad(colorState(truncate(r.state, RUNNING_COLS[1].width - 1)), RUNNING_COLS[1].width);
-    const pid = pad(r.pid !== null ? String(r.pid) : "—", RUNNING_COLS[2].width);
+    const issueLabel = truncate(`${r.issue_identifier}: ${r.issue_title}`, cols[0].width - 1);
+    const issue = pad(issueLabel, cols[0].width);
+    const stage = pad(colorState(truncate(r.state, cols[1].width - 1)), cols[1].width);
+    const pid = pad(r.pid !== null ? String(r.pid) : "—", cols[2].width);
     const age = `${fmtDuration(r.age_seconds)} / ${r.turn_count}`;
-    const ageCol = pad(age, RUNNING_COLS[3].width);
-    const tokens = pad(fmtTokens(r.tokens.total_tokens), RUNNING_COLS[4].width);
-    const session = pad(shortSession(r.session_id), RUNNING_COLS[5].width);
+    const ageCol = pad(age, cols[3].width);
+    const tokens = pad(fmtTokens(r.tokens.total_tokens), cols[4].width);
+    const session = pad(shortSession(r.session_id), cols[5].width);
 
     const eventLabel = r.last_event ?? "—";
-    const eventDetail = r.last_message ? `: ${truncate(r.last_message, 50)}` : "";
-    const eventStr = truncate(`${eventLabel}${eventDetail}`, RUNNING_COLS[6].width - 1);
+    const eventDetail = r.last_message ? `: ${r.last_message}` : "";
+    const eventStr = truncate(`${eventLabel}${eventDetail}`, cols[6].width - 1);
 
-    lines.push(`${dot} ${id}${stage}${pid}${ageCol}${tokens}${session}${eventStr}`);
+    lines.push(`${dot} ${issue}${stage}${pid}${ageCol}${tokens}${session}${eventStr}`);
   }
   return lines;
 }
@@ -256,11 +270,12 @@ function render(state: RenderState): string {
   parts.push("");
 
   if (state.lastSnap) {
+    const runCols = getRunningCols();
     parts.push(`${bold("├ Running")}`);
     parts.push("");
-    parts.push(renderTableHeader(RUNNING_COLS));
-    parts.push(dim("  " + "─".repeat(RUNNING_COLS.reduce((sum, c) => sum + c.width, 0))));
-    parts.push(...renderRunning(state.lastSnap.running));
+    parts.push(renderTableHeader(runCols));
+    parts.push(dim("  " + "─".repeat(runCols.reduce((sum, c) => sum + c.width, 0))));
+    parts.push(...renderRunning(state.lastSnap.running, runCols));
     parts.push("");
     parts.push(`${bold("├ Backoff queue")}`);
     parts.push("");

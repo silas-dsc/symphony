@@ -175,6 +175,7 @@ export interface RateLimitSnapshot {
 export interface RunningSnapshot {
   issue_id: string;
   issue_identifier: string;
+  issue_title: string;
   state: string;
   pid: number | null;
   session_id: string | null;

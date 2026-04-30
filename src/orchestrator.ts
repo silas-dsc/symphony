@@ -107,6 +107,7 @@ export class Orchestrator {
     const running: RunningSnapshot[] = Array.from(this.state.running.values()).map(e => ({
       issue_id: e.issueId,
       issue_identifier: e.issueIdentifier,
+      issue_title: e.issue.title,
       state: e.issue.state,
       pid: e.pid,
       session_id: e.sessionId,
