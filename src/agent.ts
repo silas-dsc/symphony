@@ -117,6 +117,16 @@ async function spawnClaude(
   onEvent: AgentEventCallback
 ): Promise<AgentResult> {
   return new Promise((resolve, reject) => {
+    // Build a clean env for the spawned `claude`. An empty `ANTHROPIC_API_KEY=""`
+    // (common when a parent shell exports the var without a value) tells Claude
+    // CLI to use API-key auth and overrides the OAuth credentials, which then
+    // fails with "Not logged in". Strip empties so OAuth wins.
+    const childEnv: NodeJS.ProcessEnv = {};
+    for (const [k, v] of Object.entries(process.env)) {
+      if (v === undefined || v === "") continue;
+      childEnv[k] = v;
+    }
+
     const proc = spawn(
       "claude",
       [
@@ -127,7 +137,7 @@ async function spawnClaude(
       ],
       {
         cwd,
-        env: { ...process.env },
+        env: childEnv,
         stdio: ["pipe", "pipe", "pipe"],
       }
     );
