@@ -193,7 +193,18 @@ async function spawnClaude(
           success = true;
           onEvent("turn_completed");
         } else {
-          resultError = event.subtype ?? "unknown";
+          // Some failure modes set `is_error: true` while still reporting subtype "success"
+          // (e.g. session ended cleanly but the agent self-reported an error). Surface a
+          // useful label rather than the literal string "success".
+          if (event.subtype && event.subtype !== "success") {
+            resultError = event.subtype;
+          } else if (event.is_error) {
+            resultError = event.result
+              ? `agent_reported_error: ${String(event.result).slice(0, 300)}`
+              : "agent_reported_error";
+          } else {
+            resultError = "unknown";
+          }
           onEvent("turn_failed", resultError);
         }
       }

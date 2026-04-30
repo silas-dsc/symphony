@@ -119,7 +119,9 @@ function buildConfig(raw: Record<string, unknown>, baseDir: string): WorkflowCon
       beforeRun: hooks.before_run as string | undefined,
       afterRun: hooks.after_run as string | undefined,
       beforeRemove: hooks.before_remove as string | undefined,
-      timeoutMs: (hooks.timeout_ms as number | undefined) ?? 60000,
+      // Default 10 min: after_create hooks commonly clone repos and run package installs
+      // (e.g. `nvm install && pnpm install`), which routinely exceed a minute on cold caches.
+      timeoutMs: (hooks.timeout_ms as number | undefined) ?? 600000,
     },
     agent: {
       maxConcurrentAgents: (agent.max_concurrent_agents as number | undefined) ?? 10,

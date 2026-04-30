@@ -1,9 +1,6 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { exec } from "node:child_process";
-import { promisify } from "node:util";
-
-const execAsync = promisify(exec);
+import { spawn } from "node:child_process";
 
 export function sanitizeKey(identifier: string): string {
   return identifier.replace(/[^A-Za-z0-9._-]/g, "_");
@@ -73,11 +70,47 @@ export async function removeWorkspace(
 }
 
 export async function runHook(script: string, cwd: string, timeoutMs: number): Promise<void> {
-  const { stdout, stderr } = await execAsync(`bash -lc ${JSON.stringify(script)}`, {
-    cwd,
-    timeout: timeoutMs,
-    maxBuffer: 10 * 1024 * 1024,
+  // Pipe the script to `bash -l` via stdin. Inlining via `bash -lc "<script>"` breaks on
+  // multi-line scripts because the host shell collapses real newlines, leaving bash to
+  // parse one giant line where any apostrophe (e.g. "project's") is read as an unmatched
+  // single-quote.
+  return new Promise((resolve, reject) => {
+    const proc = spawn("bash", ["-l"], { cwd, stdio: ["pipe", "pipe", "pipe"] });
+
+    let stdout = "";
+    let stderr = "";
+    proc.stdout.on("data", (chunk: Buffer) => {
+      stdout += chunk.toString();
+      if (stdout.length > 10 * 1024 * 1024) stdout = stdout.slice(-2_000_000);
+    });
+    proc.stderr.on("data", (chunk: Buffer) => {
+      stderr += chunk.toString();
+      if (stderr.length > 10 * 1024 * 1024) stderr = stderr.slice(-2_000_000);
+    });
+
+    const timer = setTimeout(() => {
+      proc.kill("SIGTERM");
+      setTimeout(() => proc.kill("SIGKILL"), 3000);
+      reject(new Error(`Hook timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+
+    proc.on("error", (e) => {
+      clearTimeout(timer);
+      reject(e);
+    });
+
+    proc.on("close", (code) => {
+      clearTimeout(timer);
+      if (stdout) console.log(`[symphony] hook stdout: ${stdout.slice(0, 2000)}`);
+      if (stderr) console.log(`[symphony] hook stderr: ${stderr.slice(0, 2000)}`);
+      if (code !== 0) {
+        reject(new Error(`Hook exited with code ${code}: ${stderr.slice(0, 500)}`));
+        return;
+      }
+      resolve();
+    });
+
+    proc.stdin.write(script);
+    proc.stdin.end();
   });
-  if (stdout) console.log(`[symphony] hook stdout: ${stdout.slice(0, 2000)}`);
-  if (stderr) console.log(`[symphony] hook stderr: ${stderr.slice(0, 2000)}`);
 }
