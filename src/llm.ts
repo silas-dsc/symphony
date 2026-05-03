@@ -11,6 +11,78 @@ export const CLAUDE_OPUS_MODEL   = process.env.CLAUDE_OPUS_MODEL   ?? "claude-op
 export const ERR_RATE_LIMITED = "rate_limited";
 export const ERR_UNAVAILABLE  = "provider_unavailable";
 
+// ── Claude block state ────────────────────────────────────────────────────────
+
+let claudeBlockedUntilMs = 0;
+
+/** Mark Claude as rate-limited until `ms` (epoch ms). Ignored if already later. */
+export function setClaudeBlockedUntil(ms: number): void {
+  if (ms > claudeBlockedUntilMs) {
+    claudeBlockedUntilMs = ms;
+    const until = new Date(ms).toISOString();
+    process.stderr.write(`[symphony] Claude rate-limited — skipping until ${until}\n`);
+  }
+}
+
+/** Returns true if Claude is currently known to be rate-limited. */
+export function isClaudeBlocked(): boolean {
+  return Date.now() < claudeBlockedUntilMs;
+}
+
+/** Returns the epoch ms timestamp until which Claude is blocked (0 = not blocked). */
+export function claudeBlockedUntil(): number {
+  return claudeBlockedUntilMs;
+}
+
+/**
+ * Parse a reset time from Claude's rate-limit error text, e.g.
+ * "You've hit your limit · resets 5:30pm (Australia/Melbourne)"
+ * Returns epoch ms, or null if unparseable.
+ */
+export function parseResetTimeMs(text: string): number | null {
+  const m = text.match(/resets\s+(\d{1,2}):(\d{2})\s*(am|pm)\s+\(([^)]+)\)/i);
+  if (!m) return null;
+
+  let hour = parseInt(m[1], 10);
+  const minute = parseInt(m[2], 10);
+  const ampm = m[3].toLowerCase();
+  const tz = m[4];
+
+  if (ampm === "pm" && hour !== 12) hour += 12;
+  if (ampm === "am" && hour === 12) hour = 0;
+
+  try {
+    const now = new Date();
+
+    // Get today's date in the target timezone.
+    const todayParts = new Intl.DateTimeFormat("en-US", {
+      timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit", hour12: false,
+    }).formatToParts(now);
+    const gp = (type: string) => parseInt(todayParts.find(p => p.type === type)!.value, 10);
+    const year = gp("year"), month = gp("month"), day = gp("day");
+
+    // Treat the target wall-clock time as a "UTC" number to use as an offset anchor.
+    const targetAsUtcMs = Date.UTC(year, month - 1, day, hour, minute, 0);
+
+    // Find what the timezone actually displays for that same numeric instant.
+    const displayParts = new Intl.DateTimeFormat("en-US", {
+      timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", hour12: false,
+    }).formatToParts(new Date(targetAsUtcMs));
+    const dp = (type: string) => parseInt(displayParts.find(p => p.type === type)!.value, 10);
+    const dispAsUtcMs = Date.UTC(dp("year"), dp("month") - 1, dp("day"), dp("hour") % 24, dp("minute"), 0);
+
+    // The real UTC timestamp = guess + (target_display - actual_display).
+    let resetMs = targetAsUtcMs + (targetAsUtcMs - dispAsUtcMs);
+
+    // If that moment has already passed, push to the same time tomorrow.
+    if (resetMs <= now.getTime()) resetMs += 24 * 60 * 60 * 1000;
+    return resetMs;
+  } catch {
+    return null;
+  }
+}
+
 // ── Model selection via Haiku ─────────────────────────────────────────────────
 
 const CLASSIFIER_PROMPT = `You are a task complexity classifier. Given a software issue, choose the appropriate Claude model tier.

@@ -8,6 +8,10 @@ import {
   spawnCodexAgent,
   ERR_RATE_LIMITED,
   ERR_UNAVAILABLE,
+  setClaudeBlockedUntil,
+  isClaudeBlocked,
+  claudeBlockedUntil,
+  parseResetTimeMs,
 } from "./llm.js";
 
 const liquid = new Liquid({ strictVariables: true, strictFilters: true });
@@ -144,24 +148,27 @@ async function spawnWithFailover(
   model: string | undefined,
 ): Promise<AgentResult> {
   // ── Claude ──────────────────────────────────────────────────────────────────
-  let claudeResult: AgentResult | undefined;
-  try {
-    claudeResult = await spawnClaude(prompt, cwd, maxTurns, abortController, onEvent, model);
-  } catch {
-    // Claude binary not found or hard crash → treat as unavailable
-    claudeResult = { success: false, error: ERR_UNAVAILABLE, inputTokens: 0, outputTokens: 0, totalTokens: 0, turnCount: 0 };
+  // Skip Claude entirely if it is known to be rate-limited right now.
+  if (!isClaudeBlocked()) {
+    let claudeResult: AgentResult | undefined;
+    try {
+      claudeResult = await spawnClaude(prompt, cwd, maxTurns, abortController, onEvent, model);
+    } catch {
+      claudeResult = { success: false, error: ERR_UNAVAILABLE, inputTokens: 0, outputTokens: 0, totalTokens: 0, turnCount: 0 };
+    }
+
+    if (abortController.signal.aborted) return claudeResult ?? { success: false, error: "aborted", inputTokens: 0, outputTokens: 0, totalTokens: 0, turnCount: 0 };
+
+    const isRateLimited = claudeResult?.error === ERR_RATE_LIMITED;
+    const isUnavailable = claudeResult?.error === ERR_UNAVAILABLE;
+
+    if (!isRateLimited && !isUnavailable) return claudeResult;
+
+    onEvent({ type: "notification", message: `[symphony] Claude ${isRateLimited ? "rate-limited" : "unavailable"} — trying fallback providers` });
+  } else {
+    const until = new Date(claudeBlockedUntil()).toISOString();
+    onEvent({ type: "notification", message: `[symphony] Claude blocked until ${until} — using fallback` });
   }
-
-  if (abortController.signal.aborted) return claudeResult ?? { success: false, error: "aborted", inputTokens: 0, outputTokens: 0, totalTokens: 0, turnCount: 0 };
-
-  const isRateLimited = claudeResult?.error === ERR_RATE_LIMITED;
-  const isUnavailable = claudeResult?.error === ERR_UNAVAILABLE;
-
-  if (!isRateLimited && !isUnavailable) {
-    return claudeResult;
-  }
-
-  onEvent({ type: "notification", message: `[symphony] Claude ${isRateLimited ? "rate-limited" : "unavailable"} — trying fallback providers` });
 
   // ── Codex fallback ───────────────────────────────────────────────────────────
   try {
@@ -281,7 +288,11 @@ async function spawnClaude(
           isUsingOverage: !!r.isUsingOverage,
           observedAt: new Date(),
         };
-        if (r.status === "blocked") isRateLimited = true;
+        if (r.status === "blocked") {
+          isRateLimited = true;
+          // Use the precise reset timestamp from the event if available.
+          if (r.resetsAt) setClaudeBlockedUntil(r.resetsAt * 1000);
+        }
         onEvent({ type: "rate_limit", rateLimit });
       }
 
@@ -332,7 +343,12 @@ async function spawnClaude(
             // Claude reports rate-limit hits as agent errors with text like
             // "You've hit your limit" or "rate limit" — catch them here so
             // spawnWithFailover can route to the next provider.
-            if (isRateLimitText(resultText)) isRateLimited = true;
+            if (isRateLimitText(resultText)) {
+              isRateLimited = true;
+              // Parse and record the reset time so future attempts skip Claude.
+              const resetMs = parseResetTimeMs(resultText) ?? (Date.now() + 2 * 60 * 60 * 1000);
+              setClaudeBlockedUntil(resetMs);
+            }
           } else {
             resultError = "unknown";
           }
