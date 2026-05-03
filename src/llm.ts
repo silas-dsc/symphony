@@ -172,12 +172,19 @@ export async function spawnCodexAgent(
     const codexEndpoint = process.env.CODEX_ENDPOINT;
     if (codexEndpoint) childEnv.OPENAI_BASE_URL = codexEndpoint;
 
-    const providerArgs = provider ? ["-p", provider] : [];
+    // Build args for `codex exec`.
+    // For local OSS providers (e.g. ollama): --oss --local-provider <provider> [-m <model>]
+    const localProviderArgs: string[] = [];
+    if (provider) {
+      localProviderArgs.push("--oss", "--local-provider", provider);
+      const localModel = process.env.LOCAL_LLM_MODEL ?? "qwen3.5";
+      localProviderArgs.push("-m", localModel);
+    }
 
-    // `codex --approval-policy full-auto` runs without human confirmation prompts.
+    // `--dangerously-bypass-approvals-and-sandbox` runs without confirmation prompts.
     const proc = spawn(
       "codex",
-      [...providerArgs, "--approval-policy", "full-auto", "--quiet", prompt],
+      ["exec", ...localProviderArgs, "--dangerously-bypass-approvals-and-sandbox", prompt],
       { cwd, env: childEnv, stdio: ["ignore", "pipe", "pipe"] },
     );
 

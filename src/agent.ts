@@ -164,7 +164,7 @@ async function spawnWithFailover(
     const isRateLimited = claudeResult?.error === ERR_RATE_LIMITED;
     const isUnavailable = claudeResult?.error === ERR_UNAVAILABLE;
 
-    if (!isRateLimited && !isUnavailable) return claudeResult;
+    if (!isRateLimited && !isUnavailable) return claudeResult ?? { success: false, error: "unknown", inputTokens: 0, outputTokens: 0, totalTokens: 0, turnCount: 0 };
 
     onEvent({ type: "notification", message: `[symphony] Claude ${isRateLimited ? "rate-limited" : "unavailable"} — trying fallback providers` });
   } else {
@@ -181,8 +181,8 @@ async function spawnWithFailover(
     // Codex CLI not installed or failed; continue to next provider
   }
 
-  // ── Local LLM fallback via codex -p <provider> ───────────────────────────────
-  const localProvider = process.env.LOCAL_LLM_PROVIDER ?? "ollama-qwen35-9b";
+  // ── Local LLM fallback via codex exec --oss ────────────────────────────────
+  const localProvider = process.env.LOCAL_LLM_PROVIDER ?? "ollama";
   try {
     onEvent({ type: "notification", message: `[symphony] Trying local LLM fallback (${localProvider})`, provider: localProvider });
     const localResult = await spawnCodexAgent(prompt, cwd, abortController, onEvent, localProvider);
