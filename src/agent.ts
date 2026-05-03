@@ -172,15 +172,6 @@ async function spawnWithFailover(
     onEvent({ type: "notification", message: `[symphony] Claude blocked until ${until} — using fallback` });
   }
 
-  // ── Codex fallback ───────────────────────────────────────────────────────────
-  try {
-    onEvent({ type: "notification", message: "[symphony] Trying Codex fallback", provider: "codex" });
-    const codexResult = await spawnCodexAgent(prompt, cwd, abortController, onEvent);
-    if (codexResult.success) return codexResult;
-  } catch {
-    // Codex CLI not installed or failed; continue to next provider
-  }
-
   // ── Local LLM fallback via codex exec --oss ────────────────────────────────
   const localProvider = process.env.LOCAL_LLM_PROVIDER ?? "ollama";
   try {
