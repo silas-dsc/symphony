@@ -98,7 +98,9 @@ export async function runAgentAttempt(
   let success = false;
   let errorMsg: string | undefined;
 
-  const selectedModel = await selectClaudeModel(issue).catch(() => undefined);
+  const selectedModel = isClaudeBlocked()
+    ? undefined
+    : await selectClaudeModel(issue).catch(() => undefined);
   if (selectedModel) {
     onEvent({ type: "notification", message: `[symphony] model selected: ${selectedModel}` });
   }
@@ -192,10 +194,13 @@ async function spawnWithFailover(
 }
 
 function isRateLimitText(text: string): boolean {
-  const t = text.toLowerCase();
+  const t = text.toLowerCase()
+    // Normalise Unicode apostrophes/quotes to ASCII so matches are robust
+    .replace(/[\u2018\u2019\u201a\u201b]/g, "'");
   return (
-    t.includes("you've hit your limit") ||
-    t.includes("you have hit your limit") ||
+    t.includes("hit your limit") ||
+    t.includes("you've hit") ||
+    t.includes("you have hit") ||
     t.includes("rate limit") ||
     t.includes("rate_limit") ||
     t.includes("overloaded") ||
