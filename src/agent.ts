@@ -184,6 +184,19 @@ async function spawnWithFailover(
   }
 }
 
+function isRateLimitText(text: string): boolean {
+  const t = text.toLowerCase();
+  return (
+    t.includes("you've hit your limit") ||
+    t.includes("you have hit your limit") ||
+    t.includes("rate limit") ||
+    t.includes("rate_limit") ||
+    t.includes("overloaded") ||
+    t.includes(" 429") ||
+    t.includes(" 529")
+  );
+}
+
 async function spawnClaude(
   prompt: string,
   cwd: string,
@@ -312,9 +325,14 @@ async function spawnClaude(
           if (event.subtype && event.subtype !== "success") {
             resultError = event.subtype;
           } else if (event.is_error) {
-            resultError = event.result
-              ? `agent_reported_error: ${String(event.result).slice(0, 300)}`
+            const resultText = event.result ? String(event.result) : "";
+            resultError = resultText
+              ? `agent_reported_error: ${resultText.slice(0, 300)}`
               : "agent_reported_error";
+            // Claude reports rate-limit hits as agent errors with text like
+            // "You've hit your limit" or "rate limit" — catch them here so
+            // spawnWithFailover can route to the next provider.
+            if (isRateLimitText(resultText)) isRateLimited = true;
           } else {
             resultError = "unknown";
           }
@@ -342,14 +360,8 @@ async function spawnClaude(
         resolve({ success: true, inputTokens, outputTokens, totalTokens: inputTokens + outputTokens, turnCount });
       } else {
         // Check stderr for rate-limit signals even if not detected via events.
-        const stderrJoined = stderrBuf.join(" ").toLowerCase();
-        if (
-          !isRateLimited &&
-          (stderrJoined.includes("rate_limit") ||
-           stderrJoined.includes(" 429") ||
-           stderrJoined.includes(" 529") ||
-           stderrJoined.includes("overloaded"))
-        ) {
+        const stderrJoined = stderrBuf.join(" ");
+        if (!isRateLimited && isRateLimitText(stderrJoined)) {
           isRateLimited = true;
         }
 
