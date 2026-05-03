@@ -91,6 +91,20 @@ export interface RateLimitInfo {
   observedAt: Date;
 }
 
+export interface AgentEvent {
+  type: string;
+  message?: string;
+  tokens?: { input: number; output: number; total: number };
+  pid?: number;
+  sessionId?: string;
+  rateLimit?: RateLimitInfo;
+  provider?: string;
+}
+
+export interface AgentEventCallback {
+  (event: AgentEvent): void;
+}
+
 export interface RunningEntry {
   issueId: string;
   issueIdentifier: string;

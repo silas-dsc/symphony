@@ -1,8 +1,14 @@
 import { spawn } from "node:child_process";
 import * as readline from "node:readline";
 import { Liquid } from "liquidjs";
-import type { Issue, AgentResult, WorkflowConfig, RateLimitInfo } from "./types.js";
+import type { Issue, AgentResult, WorkflowConfig, RateLimitInfo, AgentEvent, AgentEventCallback } from "./types.js";
 import { ensureWorkspace, runHook } from "./workspace.js";
+import {
+  selectClaudeModel,
+  spawnCodexAgent,
+  ERR_RATE_LIMITED,
+  ERR_UNAVAILABLE,
+} from "./llm.js";
 
 const liquid = new Liquid({ strictVariables: true, strictFilters: true });
 
@@ -26,18 +32,9 @@ export function renderPrompt(template: string, issue: Issue, attempt: number | n
   });
 }
 
-export interface AgentEvent {
-  type: string;
-  message?: string;
-  tokens?: { input: number; output: number; total: number };
-  pid?: number;
-  sessionId?: string;
-  rateLimit?: RateLimitInfo;
-}
-
-export interface AgentEventCallback {
-  (event: AgentEvent): void;
-}
+// AgentEvent and AgentEventCallback are defined in types.ts and re-exported here
+// for backwards compatibility with any external consumers.
+export type { AgentEvent, AgentEventCallback } from "./types.js";
 
 interface ClaudeRateLimitInfo {
   status?: string;
@@ -97,9 +94,14 @@ export async function runAgentAttempt(
   let success = false;
   let errorMsg: string | undefined;
 
+  const selectedModel = await selectClaudeModel(issue).catch(() => undefined);
+  if (selectedModel) {
+    onEvent({ type: "notification", message: `[symphony] model selected: ${selectedModel}` });
+  }
+
   try {
     onEvent({ type: "session_started" });
-    const result = await spawnClaude(prompt, wsPath, config.agent.maxTurns, abortController, onEvent);
+    const result = await spawnWithFailover(prompt, wsPath, config.agent.maxTurns, abortController, onEvent, selectedModel);
     success = result.success;
     errorMsg = result.error;
     inputTokens = result.inputTokens;
@@ -129,12 +131,66 @@ export async function runAgentAttempt(
   };
 }
 
+/**
+ * Try Claude first; if it is rate-limited or unavailable, fall through to
+ * Codex and then to a local LLM (if LOCAL_LLM_ENDPOINT is set).
+ */
+async function spawnWithFailover(
+  prompt: string,
+  cwd: string,
+  maxTurns: number,
+  abortController: AbortController,
+  onEvent: AgentEventCallback,
+  model: string | undefined,
+): Promise<AgentResult> {
+  // ── Claude ──────────────────────────────────────────────────────────────────
+  let claudeResult: AgentResult | undefined;
+  try {
+    claudeResult = await spawnClaude(prompt, cwd, maxTurns, abortController, onEvent, model);
+  } catch {
+    // Claude binary not found or hard crash → treat as unavailable
+    claudeResult = { success: false, error: ERR_UNAVAILABLE, inputTokens: 0, outputTokens: 0, totalTokens: 0, turnCount: 0 };
+  }
+
+  if (abortController.signal.aborted) return claudeResult ?? { success: false, error: "aborted", inputTokens: 0, outputTokens: 0, totalTokens: 0, turnCount: 0 };
+
+  const isRateLimited = claudeResult?.error === ERR_RATE_LIMITED;
+  const isUnavailable = claudeResult?.error === ERR_UNAVAILABLE;
+
+  if (!isRateLimited && !isUnavailable) {
+    return claudeResult;
+  }
+
+  onEvent({ type: "notification", message: `[symphony] Claude ${isRateLimited ? "rate-limited" : "unavailable"} — trying fallback providers` });
+
+  // ── Codex fallback ───────────────────────────────────────────────────────────
+  try {
+    onEvent({ type: "notification", message: "[symphony] Trying Codex fallback", provider: "codex" });
+    const codexResult = await spawnCodexAgent(prompt, cwd, abortController, onEvent);
+    if (codexResult.success) return codexResult;
+  } catch {
+    // Codex CLI not installed or failed; continue to next provider
+  }
+
+  // ── Local LLM fallback via codex -p <provider> ───────────────────────────────
+  const localProvider = process.env.LOCAL_LLM_PROVIDER ?? "ollama-qwen35-9b";
+  try {
+    onEvent({ type: "notification", message: `[symphony] Trying local LLM fallback (${localProvider})`, provider: localProvider });
+    const localResult = await spawnCodexAgent(prompt, cwd, abortController, onEvent, localProvider);
+    if (localResult.success) return localResult;
+    return { success: false, error: `all_providers_failed: ${localResult.error ?? "unknown"}`, inputTokens: 0, outputTokens: 0, totalTokens: 0, turnCount: 0 };
+  } catch (e) {
+    return { success: false, error: `all_providers_failed: ${String(e).slice(0, 200)}`, inputTokens: 0, outputTokens: 0, totalTokens: 0, turnCount: 0 };
+  }
+}
+
 async function spawnClaude(
   prompt: string,
   cwd: string,
   _maxTurns: number,
   abortController: AbortController,
-  onEvent: AgentEventCallback
+  onEvent: AgentEventCallback,
+  model: string | undefined,
 ): Promise<AgentResult> {
   return new Promise((resolve, reject) => {
     // Build a clean env for the spawned `claude`. An empty `ANTHROPIC_API_KEY=""`
@@ -147,10 +203,13 @@ async function spawnClaude(
       childEnv[k] = v;
     }
 
+    const modelArgs = model ? ["--model", model] : [];
+
     const proc = spawn(
       "claude",
       [
         "-p",
+        ...modelArgs,
         "--output-format", "stream-json",
         "--verbose",
         "--dangerously-skip-permissions",
@@ -175,6 +234,7 @@ async function spawnClaude(
     let turnCount = 0;
     let success = false;
     let resultError: string | undefined;
+    let isRateLimited = false;
     const stderrBuf: string[] = [];
 
     proc.stderr.on("data", (chunk: Buffer) => {
@@ -208,6 +268,7 @@ async function spawnClaude(
           isUsingOverage: !!r.isUsingOverage,
           observedAt: new Date(),
         };
+        if (r.status === "blocked") isRateLimited = true;
         onEvent({ type: "rate_limit", rateLimit });
       }
 
@@ -280,6 +341,23 @@ async function spawnClaude(
       if (success) {
         resolve({ success: true, inputTokens, outputTokens, totalTokens: inputTokens + outputTokens, turnCount });
       } else {
+        // Check stderr for rate-limit signals even if not detected via events.
+        const stderrJoined = stderrBuf.join(" ").toLowerCase();
+        if (
+          !isRateLimited &&
+          (stderrJoined.includes("rate_limit") ||
+           stderrJoined.includes(" 429") ||
+           stderrJoined.includes(" 529") ||
+           stderrJoined.includes("overloaded"))
+        ) {
+          isRateLimited = true;
+        }
+
+        if (isRateLimited) {
+          resolve({ success: false, error: ERR_RATE_LIMITED, inputTokens, outputTokens, totalTokens: inputTokens + outputTokens, turnCount });
+          return;
+        }
+
         const errDetail = resultError ?? (stderrBuf.length ? stderrBuf.join("; ") : `exit code ${code}`);
         resolve({ success: false, error: errDetail, inputTokens, outputTokens, totalTokens: inputTokens + outputTokens, turnCount });
       }
@@ -287,7 +365,13 @@ async function spawnClaude(
 
     proc.on("error", (e) => {
       abortController.signal.removeEventListener("abort", onAbort);
-      reject(e);
+      // ENOENT means the `claude` binary isn't installed — treat as unavailable so failover triggers.
+      const isEnoent = (e as NodeJS.ErrnoException).code === "ENOENT";
+      if (isEnoent) {
+        resolve({ success: false, error: ERR_UNAVAILABLE, inputTokens: 0, outputTokens: 0, totalTokens: 0, turnCount: 0 });
+      } else {
+        reject(e);
+      }
     });
   });
 }
