@@ -34,12 +34,33 @@ hooks:
     # copy SSL certs
     cp ~/Websites/team-dsc/localhost.pem ./localhost.pem
     cp ~/Websites/team-dsc/localhost-key.pem ./localhost-key.pem
+    # Derive port suffix from last 3 digits of ticket number (e.g. TEA-84052 → 052)
+    ISSUE_ID="${ISSUE_IDENTIFIER:-${SYMPHONY_ISSUE_ID:-$(basename $PWD)}}"
+    TICKET_NUM=$(echo "$ISSUE_ID" | grep -oE '[0-9]+$')
+    TICKET_SUFFIX=$(printf '%03d' $((TICKET_NUM % 1000)))
+    # Find a free port starting from the derived base, incrementing if already in use
+    find_free_port() {
+      local port=$1
+      while lsof -iTCP:"$port" -sTCP:LISTEN &>/dev/null; do
+        port=$((port + 1))
+      done
+      echo "$port"
+    }
+    APP_PORT=$(find_free_port "5${TICKET_SUFFIX}")
+    PROXY_PORT=$(find_free_port "3${TICKET_SUFFIX}")
+    # Persist ports so before_remove and the agent can reference them
+    printf 'APP_PORT=%s\nPROXY_PORT=%s\n' "$APP_PORT" "$PROXY_PORT" > .symphony-ports
     # Start dev server and SSL proxy
-    pnpm start:app &
-    local-ssl-proxy --source 3010 --target 5173 --cert localhost.pem --key localhost-key.pem &
+    PORT=$APP_PORT pnpm start:app &
+    echo $! > .symphony-app.pid
+    local-ssl-proxy --source "$PROXY_PORT" --target "$APP_PORT" --cert localhost.pem --key localhost-key.pem &
+    echo $! > .symphony-proxy.pid
 
   before_remove: |
     echo "Cleaning workspace"
+    # Kill dev server and SSL proxy
+    if [ -f .symphony-app.pid ]; then kill "$(cat .symphony-app.pid)" 2>/dev/null || true; fi
+    if [ -f .symphony-proxy.pid ]; then kill "$(cat .symphony-proxy.pid)" 2>/dev/null || true; fi
 agent:
   max_concurrent_agents: 3
   max_turns: 30
