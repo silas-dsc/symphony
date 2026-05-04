@@ -51,7 +51,7 @@ hooks:
     # Persist ports so before_remove and the agent can reference them
     printf 'APP_PORT=%s\nPROXY_PORT=%s\n' "$APP_PORT" "$PROXY_PORT" > .symphony-ports
     # Start dev server and SSL proxy
-    PORT=$APP_PORT pnpm start:app &
+    cd ./packages/app && pnpm react-router dev --port $APP_PORT &
     echo $! > .symphony-app.pid
     local-ssl-proxy --source "$PROXY_PORT" --target "$APP_PORT" --cert localhost.pem --key localhost-key.pem &
     echo $! > .symphony-proxy.pid
