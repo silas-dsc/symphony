@@ -233,8 +233,70 @@ See `.github/workflows/functionalTests.yml` for an example of this.
 9. Push and create a PR: `gh pr create --title "..." --body "..."`.
 10. Add the `symphony` label to the PR: `gh pr edit <number> --add-label symphony`.
 11. Attach the PR URL to the Linear issue.
-12. Run the full PR feedback sweep (see below).
-13. Move the issue to `Human Review` only when all acceptance criteria and validation checks pass.
+12. Complete the full verification checklist (see **Step 3: Verification**) and attach evidence to the Linear ticket.
+13. Run the full PR feedback sweep (see below).
+14. Move the issue to `Human Review` only when all acceptance criteria and validation checks pass.
+
+---
+
+## Step 3: Verification (required before Human Review)
+
+### Automated tests
+
+For any logic change, verify through unit and/or integration tests:
+
+1. Locate existing test files for changed modules:
+   ```bash
+   find packages -name '*.test.ts' -o -name '*.spec.ts' | xargs grep -l '<changed-module>' 2>/dev/null
+   ```
+2. If no relevant tests exist, create them in the same package following Jest + Testing Library conventions already in the codebase.
+3. Run the tests:
+   ```bash
+   pnpm --filter <package> test
+   # or from root
+   pnpm test
+   ```
+4. Fix any failures and re-run until all pass with zero errors.
+5. Attach the full passing test output as a comment on the Linear ticket.
+
+### Visual verification via local dev server
+
+All user-facing changes **must** be verified visually. A local SSL dev server is started automatically during workspace setup. Find its URL:
+
+```bash
+cat .symphony-ports
+# APP_PORT=5xxx   → raw dev server (http)
+# PROXY_PORT=3xxx → SSL proxy (https) — browse to https://localhost:<PROXY_PORT>
+```
+
+Open every changed page and every page that depends on the changes. Work through the following recovery steps **in order** before declaring a blocker:
+
+1. **Wait and retry.** The dev server compiles on-the-fly. Wait 10 s and reload. Retry up to 5 times.
+2. **Restart the dev server** if pages still fail:
+   ```bash
+   if [ -f .symphony-app.pid ]; then kill "$(cat .symphony-app.pid)" 2>/dev/null || true; fi
+   PORTS=$(cat .symphony-ports 2>/dev/null); APP_PORT=$(echo "$PORTS" | grep APP_PORT | cut -d= -f2)
+   cd ./packages/app && pnpm react-router dev --port "$APP_PORT" &
+   echo $! > ../../.symphony-app.pid
+   cd ../.. 
+   ```
+3. **Scan for live ports** if `.symphony-ports` is missing or stale:
+   ```bash
+   lsof -iTCP -sTCP:LISTEN -nP | grep -E ':(3|5)[0-9]{3}\s'
+   ```
+4. **Check credentials.** If the app shows a login wall, retrieve the super-admin credentials:
+   ```bash
+   cat packages/functional-tests/.env | grep -E '^(SUPER_ADMIN_EMAIL|SUPER_ADMIN_PASSWORD)='
+   ```
+5. **Examine server logs** for compilation errors; fix minor code bugs inline and restart the server.
+
+Once the site is accessible, capture evidence:
+
+- **Screenshot** every changed page and every page that depends on the changes.
+- **Screen recording** if the change is interactive or involves a multi-step flow.
+- Attach all screenshots/recordings as a comment on the Linear ticket.
+
+Do **not** move to `Human Review` without attached visual evidence.
 
 ---
 
@@ -265,10 +327,12 @@ See `.github/workflows/functionalTests.yml` for an example of this.
 Use only for true external blockers (missing required auth/secrets after exhausting fallbacks).
 
 - GitHub is never a valid blocker — try alternate auth modes first.
-- If genuinely blocked: move to `Human Review`, add a workpad section:
-  - what is missing
-  - why it blocks completion
-  - exact human action needed to unblock
+- Before declaring any verification step blocked, exhaust **every** recovery option listed in **Step 3: Verification**.
+- If genuinely blocked: move to `Human Review`, add a workpad section containing all of the following:
+  - **What is missing / what failed** — specific error messages or missing resource.
+  - **Every recovery approach attempted**, in order, with the exact commands run and observed results.
+  - **Evidence of deep investigation** — log excerpts, port scans, credential checks, any code changes attempted.
+  - **Exact human action needed** to unblock, with no ambiguity.
 
 ---
 
