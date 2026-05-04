@@ -27,6 +27,17 @@ hooks:
     fi
     npm install -g pnpm@latest 2>/dev/null || true
     pnpm install
+    # copy .env from master dir to current dir
+    cp ~/Websites/team-dsc/packages/functional-tests/.env ./packages/functional-tests/.env
+    cp ~/Websites/team-dsc/packages/app/.env ./packages/app/.env
+    cp ~/Websites/team-dsc/packages/functions/.env ./packages/functions/.env
+    # copy SSL certs
+    cp ~/Websites/team-dsc/localhost.pem ./localhost.pem
+    cp ~/Websites/team-dsc/localhost-key.pem ./localhost-key.pem
+    # Start dev server and SSL proxy
+    pnpm start:app &
+    local-ssl-proxy --source 3010 --target 5173 --cert localhost.pem --key localhost-key.pem &
+
   before_remove: |
     echo "Cleaning workspace"
 agent:
@@ -99,8 +110,7 @@ If neither is available, stop and record a blocker in the workpad.
 
 If you hit a `Not logged in` / `Please run /login` error from the team-dsc
 app, its dev server, or its functional tests, do **not** treat it as a
-blocker. Authenticate with the super-admin credentials checked into the
-workspace:
+blocker.
 
 ```bash
 # In the workspace root
@@ -116,8 +126,9 @@ useful when reproducing role-specific bugs or running functional checks
 that need a particular user context — switch into the relevant user via
 the impersonation UI rather than fabricating new test accounts.
 
-If `packages/functional-tests/.env` is missing those keys, *that* is a
-genuine blocker — record it in the workpad and stop.
+For github-based workflow, and other CI-based tests, `packages/functional-tests/.env` is not available, but `FUNCTIONAL_TEST_SUPER_ADMIN_EMAIL` and 
+`FUNCTIONAL_TEST_SUPER_ADMIN_PASSWORD` can be mapped to the .env vars.
+See `.github/workflows/functionalTests.yml` for an example of this.
 
 ---
 
