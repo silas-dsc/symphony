@@ -172,14 +172,25 @@ async function spawnWithFailover(
     onEvent({ type: "notification", message: `[symphony] Claude blocked until ${until} — using fallback` });
   }
 
-  // ── Local LLM fallback via codex exec --oss ────────────────────────────────
-  const localProvider = process.env.LOCAL_LLM_PROVIDER ?? "ollama";
+  // ── Codex fallback ─────────────────────────────────────────────────────────
+  // Only pass --oss --local-provider if LOCAL_LLM_PROVIDER is explicitly set.
+  // Without it, codex runs normally against its own default backend (Claude).
+  const localProvider = process.env.LOCAL_LLM_PROVIDER || undefined;
   try {
     onEvent({ type: "notification", message: `[symphony] Trying local LLM fallback (${localProvider})`, provider: localProvider });
     const localResult = await spawnCodexAgent(prompt, cwd, abortController, onEvent, localProvider);
     if (localResult.success) return localResult;
+    // If Claude was blocked and local LLM also failed, return a specific error so
+    // the orchestrator can delay the next retry until Claude becomes available
+    // rather than spinning every 300 s against a wall that won't move.
+    if (isClaudeBlocked()) {
+      return { success: false, error: `claude_blocked: ${localResult.error ?? "unknown"}`, inputTokens: 0, outputTokens: 0, totalTokens: 0, turnCount: 0 };
+    }
     return { success: false, error: `all_providers_failed: ${localResult.error ?? "unknown"}`, inputTokens: 0, outputTokens: 0, totalTokens: 0, turnCount: 0 };
   } catch (e) {
+    if (isClaudeBlocked()) {
+      return { success: false, error: `claude_blocked: ${String(e).slice(0, 200)}`, inputTokens: 0, outputTokens: 0, totalTokens: 0, turnCount: 0 };
+    }
     return { success: false, error: `all_providers_failed: ${String(e).slice(0, 200)}`, inputTokens: 0, outputTokens: 0, totalTokens: 0, turnCount: 0 };
   }
 }

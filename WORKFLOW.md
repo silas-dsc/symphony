@@ -79,7 +79,7 @@ You are working autonomously on a Linear ticket for the **team-dsc** codebase �
 **Continuation context (attempt #{{ attempt }}):**
 - The issue is still in an active state. Resume from the current workspace state.
 - Do not repeat completed investigation or implementation from prior attempts.
-- Check the existing `## Codex Workpad` comment in Linear first to understand what was already done.
+- Check the existing `## AI Workpad` comment in Linear first to understand what was already done.
 ---
 {% endif %}
 
@@ -153,10 +153,33 @@ See `.github/workflows/functionalTests.yml` for an example of this.
 
 ---
 
+## Storyblok access
+
+If the ticket requires interacting with Storyblok (content management, story creation/update, schema changes, etc.), use the Management API:
+
+- **API docs:** https://www.storyblok.com/docs/api/management
+- **Token env var:** `STORYBLOK_OAUTH_TOKEN`
+- **Token location:** `./packages/app/.env`
+
+Retrieve the token at runtime with:
+
+```bash
+STORYBLOK_TOKEN=$(grep '^STORYBLOK_OAUTH_TOKEN=' packages/app/.env | cut -d= -f2-)
+```
+
+Pass it as an `Authorization` header in Management API requests:
+
+```bash
+curl -s -H "Authorization: $STORYBLOK_TOKEN" \
+  "https://mapi.storyblok.com/v1/spaces/"
+```
+
+---
+
 ## Default posture
 
 - Determine ticket state first, then follow the matching flow below.
-- Keep a single persistent `## Codex Workpad` comment as the source of truth for all progress.
+- Keep a single persistent `## AI Workpad` comment as the source of truth for all progress.
 - Plan before implementing. Reproduce the issue before fixing it.
 - Keep ticket metadata (state, PR link) current throughout.
 - For user-facing changes, include UI walkthrough acceptance criteria.
@@ -168,7 +191,7 @@ See `.github/workflows/functionalTests.yml` for an example of this.
 ## Status map
 
 - `Dev in Progress` → the only active state Symphony will pick up; continue from existing workpad comment, or create one if missing.
-- `Human Review` → PR is attached and validated; wait for human decision.
+- `In Review` → PR is attached and validated; wait for human decision.
 - `Done` → terminal; do nothing and shut down.
 - Any other state → out of scope; do not modify. Stop.
 
@@ -181,19 +204,19 @@ See `.github/workflows/functionalTests.yml` for an example of this.
 3. If state is not `Dev in Progress` → do nothing and exit.
 4. Check whether an existing PR for this branch is open, merged, or closed.
    - If closed/merged → treat as a fresh start: new branch from `origin/main`.
-5. Find or create the `## Codex Workpad` comment, then begin work.
+5. Find or create the `## AI Workpad` comment, then begin work.
 
 ---
 
 ## Step 1: Workpad setup
 
-1. Search existing issue comments for `## Codex Workpad`.
+1. Search existing issue comments for `## AI Workpad`.
 2. If found → reuse (update in place). If not → create one.
 3. Keep a single persistent workpad — never create duplicates.
 4. Format:
 
 ```md
-## Codex Workpad
+## AI Workpad
 
 \`\`\`text
 <hostname>:<abs-workdir>@<short-sha>
@@ -235,11 +258,11 @@ See `.github/workflows/functionalTests.yml` for an example of this.
 11. Attach the PR URL to the Linear issue.
 12. Complete the full verification checklist (see **Step 3: Verification**) and attach evidence to the Linear ticket.
 13. Run the full PR feedback sweep (see below).
-14. Move the issue to `Human Review` only when all acceptance criteria and validation checks pass.
+14. Move the issue to `In Review` only when all acceptance criteria and validation checks pass.
 
 ---
 
-## Step 3: Verification (required before Human Review)
+## Step 3: Verification (required before In Review)
 
 ### Automated tests
 
@@ -296,11 +319,82 @@ Once the site is accessible, capture evidence:
 - **Screen recording** if the change is interactive or involves a multi-step flow.
 - Attach all screenshots/recordings as a comment on the Linear ticket.
 
-Do **not** move to `Human Review` without attached visual evidence.
+Do **not** move to `In Review` without attached visual evidence.
 
 ---
 
-## PR feedback sweep (required before Human Review)
+## Attaching files (screenshots, recordings, logs) to Linear comments
+
+Linear stores files in **private cloud storage**. A plain file path (e.g. `/tmp/screenshot.png`) or a `localhost` URL will **never** resolve for Linear — it results in a "Failed to load the image" error. Always use one of the methods below.
+
+### Method 1 — Base64-encoded inline image (recommended for screenshots)
+
+Convert the file to a base64 data URI and embed it directly in the markdown body of the comment. Linear accepts this and re-uploads the image to its own storage automatically.
+
+```bash
+# Capture a screenshot with the Playwright/browser tool, then encode it:
+BASE64=$(base64 -i /path/to/screenshot.png)
+# Embed in the comment body:
+# ![Screenshot](data:image/png;base64,<BASE64_STRING>)
+```
+
+When posting via `curl`:
+
+```bash
+BODY=$(printf '## Screenshot\n\n![Screenshot](data:image/png;base64,%s)' "$(base64 -i /path/to/screenshot.png)")
+
+curl -s -X POST https://api.linear.app/graphql \
+  -H "Authorization: $LINEAR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d "$(jq -n --arg body "$BODY" --arg issueId "$ISSUE_ID" \
+    '{query: "mutation($body:String!,$issueId:String!){commentCreate(input:{body:$body,issueId:$issueId}){success}}",
+      variables: {body: $body, issueId: $issueId}}')"
+```
+
+### Method 2 — `fileUpload` mutation (required for non-image files, or large files)
+
+Use this for videos, PDFs, log files, and any binary that cannot be base64-inlined cleanly.
+
+```bash
+# Step 1: Request a pre-signed upload URL
+UPLOAD_RESPONSE=$(curl -s -X POST https://api.linear.app/graphql \
+  -H "Authorization: $LINEAR_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"query":"mutation($ct:String!,$name:String!,$size:Int!){fileUpload(contentType:$ct,filename:$name,size:$size){success uploadFile{uploadUrl assetUrl headers{key value}}}}",
+       "variables":{"ct":"image/png","name":"screenshot.png","size":<BYTE_SIZE>}}')
+
+UPLOAD_URL=$(echo "$UPLOAD_RESPONSE" | jq -r '.data.fileUpload.uploadFile.uploadUrl')
+ASSET_URL=$(echo  "$UPLOAD_RESPONSE" | jq -r '.data.fileUpload.uploadFile.assetUrl')
+
+# Step 2: PUT the file to the pre-signed URL (server-side only — CSP blocks client-side PUT)
+curl -s -X PUT "$UPLOAD_URL" \
+  -H "Content-Type: image/png" \
+  -H "Cache-Control: public, max-age=31536000" \
+  --data-binary @/path/to/screenshot.png
+
+# Step 3: Reference the assetUrl in the comment body
+# ![Screenshot](<ASSET_URL>)
+```
+
+### Method 3 — Publicly accessible URL
+
+If the file is already hosted at a stable, publicly reachable HTTPS URL, embed it directly. Linear will fetch and re-upload it automatically:
+
+```
+![Screenshot](https://example.com/path/to/image.png)
+```
+
+### Rules
+
+- **Never** embed `file://`, `localhost`, or relative paths — Linear cannot fetch them.
+- **Never** use a temporary signed URL that may expire before Linear fetches it.
+- For **screenshots**, prefer Method 1 (base64 inline) — it requires no extra network requests.
+- For **videos or large files**, use Method 2 (pre-signed upload).
+- Always verify the comment rendered correctly after posting.
+
+---
+
+## PR feedback sweep (required before In Review)
 
 1. Read all PR comments: `gh pr view --comments`
 2. Read inline review comments: `gh api repos/team-dsc/team-dsc/pulls/<pr>/comments`
@@ -316,7 +410,7 @@ Do **not** move to `Human Review` without attached visual evidence.
 
 1. Read all issue comments and identify what to do differently.
 2. Close the existing PR.
-3. Delete the existing `## Codex Workpad` comment.
+3. Delete the existing `## AI Workpad` comment.
 4. Create fresh branch from `origin/main`.
 5. Start over from Step 1.
 
@@ -328,7 +422,7 @@ Use only for true external blockers (missing required auth/secrets after exhaust
 
 - GitHub is never a valid blocker — try alternate auth modes first.
 - Before declaring any verification step blocked, exhaust **every** recovery option listed in **Step 3: Verification**.
-- If genuinely blocked: move to `Human Review`, add a workpad section containing all of the following:
+- If genuinely blocked: move to `In Review`, add a workpad section containing all of the following:
   - **What is missing / what failed** — specific error messages or missing resource.
   - **Every recovery approach attempted**, in order, with the exact commands run and observed results.
   - **Evidence of deep investigation** — log excerpts, port scans, credential checks, any code changes attempted.
@@ -342,5 +436,5 @@ Use only for true external blockers (missing required auth/secrets after exhaust
 - Always use pnpm, never npm or yarn.
 - Run `pnpm typecheck && pnpm lint` before every push.
 - One workpad comment per issue — update in place, never create extras.
-- Do not move to `Human Review` until all validation passes and no actionable PR comments remain.
+- Do not move to `In Review` until all validation passes and no actionable PR comments remain.
 - If state is `Done`, do nothing and exit.

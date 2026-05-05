@@ -15,6 +15,7 @@ import { loadWorkflow, validateConfig } from "./config.js";
 import * as linear from "./linear.js";
 import { removeWorkspace } from "./workspace.js";
 import { runAgentAttempt } from "./agent.js";
+import { claudeBlockedUntil } from "./llm.js";
 
 function fmtErr(e: unknown): string {
   if (e instanceof Error) return e.message;
@@ -389,10 +390,12 @@ export class Orchestrator {
       this.scheduleRetry(issueId, entry.issueIdentifier, 1, null, 1000);
     } else {
       const nextAttempt = (entry.retryAttempt ?? 0) + 1;
-      const delay = Math.min(
-        10000 * Math.pow(2, nextAttempt - 1),
-        this.config.agent.maxRetryBackoffMs
-      );
+      // When Claude is blocked and no fallback provider worked, wait until Claude
+      // becomes available again rather than spinning through max-backoff retries.
+      const claudeBlockMs = claudeBlockedUntil();
+      const delay = claudeBlockMs > Date.now() && result.error?.startsWith("claude_blocked")
+        ? Math.min(claudeBlockMs - Date.now() + 5_000, this.config.agent.maxRetryBackoffMs)
+        : Math.min(10000 * Math.pow(2, nextAttempt - 1), this.config.agent.maxRetryBackoffMs);
       this.log.warn(`Agent failed, retrying in ${(delay / 1000).toFixed(0)}s`, {
         issue_id: issueId,
         issue_identifier: entry.issueIdentifier,

@@ -153,7 +153,9 @@ export async function selectClaudeModel(
 /**
  * Runs the Codex CLI as a drop-in agentic fallback.
  * Assumes `codex` is on PATH and handles its own auth.
- * Pass `provider` to use a specific codex provider (e.g. "ollama-qwen35-9b").
+ * If `provider` is set (via LOCAL_LLM_PROVIDER env), passes
+ * --oss --local-provider <provider> to use a local model (e.g. ollama).
+ * Without it, codex runs normally against its own default backend.
  * Optionally reads CODEX_ENDPOINT to set OPENAI_BASE_URL for proxies.
  */
 export async function spawnCodexAgent(
