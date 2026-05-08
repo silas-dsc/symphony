@@ -48,7 +48,7 @@ export function loadWorkflow(workflowPath: string): WorkflowDefinition {
   const baseDir = path.dirname(path.resolve(workflowPath));
   const config = buildConfig(rawConfig, baseDir);
 
-  return { config, promptTemplate };
+  return { config, promptTemplate, symphonyRoot: baseDir };
 }
 
 function resolveEnvVar(value: string): string {

@@ -26,6 +26,7 @@ export class Orchestrator {
   private workflowPath: string;
   private config: WorkflowConfig;
   private promptTemplate: string;
+  private symphonyRoot: string;
   private state: OrchestratorState;
   private tickTimer: ReturnType<typeof setTimeout> | null = null;
   private watcher: fs.FSWatcher | null = null;
@@ -38,6 +39,7 @@ export class Orchestrator {
     const workflow = loadWorkflow(workflowPath);
     this.config = workflow.config;
     this.promptTemplate = workflow.promptTemplate;
+    this.symphonyRoot = workflow.symphonyRoot;
 
     this.state = {
       pollIntervalMs: this.config.polling.intervalMs,
@@ -193,6 +195,7 @@ export class Orchestrator {
       const workflow = loadWorkflow(this.workflowPath);
       this.config = workflow.config;
       this.promptTemplate = workflow.promptTemplate;
+      this.symphonyRoot = workflow.symphonyRoot;
       this.state.pollIntervalMs = this.config.polling.intervalMs;
       this.state.maxConcurrentAgents = this.config.agent.maxConcurrentAgents;
       this.log.info("WORKFLOW.md reloaded");
@@ -324,12 +327,14 @@ export class Orchestrator {
 
     const config = this.config;
     const promptTemplate = this.promptTemplate;
+    const symphonyRoot = this.symphonyRoot;
 
     runAgentAttempt(
       issue,
       attempt,
       config,
       promptTemplate,
+      symphonyRoot,
       abortController,
       (event) => {
         const e = this.state.running.get(issue.id);

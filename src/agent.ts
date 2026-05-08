@@ -16,7 +16,7 @@ import {
 
 const liquid = new Liquid({ strictVariables: true, strictFilters: true });
 
-export function renderPrompt(template: string, issue: Issue, attempt: number | null): string {
+export function renderPrompt(template: string, issue: Issue, attempt: number | null, symphonyRoot: string): string {
   return liquid.parseAndRenderSync(template, {
     issue: {
       id: issue.id,
@@ -33,6 +33,7 @@ export function renderPrompt(template: string, issue: Issue, attempt: number | n
       updated_at: issue.updatedAt?.toISOString() ?? null,
     },
     attempt,
+    symphony: { root: symphonyRoot },
   });
 }
 
@@ -69,6 +70,7 @@ export async function runAgentAttempt(
   attempt: number | null,
   config: WorkflowConfig,
   promptTemplate: string,
+  symphonyRoot: string,
   abortController: AbortController,
   onEvent: AgentEventCallback
 ): Promise<AgentResult> {
@@ -87,7 +89,7 @@ export async function runAgentAttempt(
 
   let prompt: string;
   try {
-    prompt = renderPrompt(promptTemplate, issue, attempt);
+    prompt = renderPrompt(promptTemplate, issue, attempt, symphonyRoot);
   } catch (e) {
     throw new Error(`Template render error for ${issue.identifier}: ${e}`);
   }

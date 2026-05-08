@@ -92,15 +92,9 @@ No description provided.
 
 ---
 
-## Instructions
+This is an unattended session. Never ask a human to perform any action. Stop only for a true blocker: missing required auth, secrets, or permissions that cannot be resolved in-session. Your final message must report completed actions and blockers only — no "next steps for user" sections. Work only inside the provided repository copy.
 
-This is an unattended orchestration session. Never ask a human to perform follow-up actions.
-
-Only stop early for a true blocker: missing required auth, secrets, or permissions that cannot be resolved in-session.
-
-Your final message must report completed actions and any blockers only — no "next steps for user" sections.
-
-Work only inside the provided repository copy. Do not touch any path outside the workspace.
+Plan before implementing. Reproduce bugs before fixing them. When meaningful out-of-scope issues are found, file a separate Linear Backlog ticket — do not expand scope.
 
 ---
 
@@ -117,16 +111,6 @@ Work only inside the provided repository copy. Do not touch any path outside the
 
 ---
 
-## Prerequisites
-
-You need Linear access to update ticket status and post comments. Use whichever is available:
-1. **Linear MCP server** (if configured in your Claude settings)
-2. **`curl` with `LINEAR_API_KEY`** environment variable (always available)
-
-If neither is available, stop and record a blocker in the workpad.
-
----
-
 ## Application login
 
 If you hit a `Not logged in` / `Please run /login` error from the team-dsc
@@ -135,20 +119,70 @@ blocker.
 
 ```bash
 # In the workspace root
-cat packages/functional-tests/.env | grep -E '^(SUPER_ADMIN_EMAIL|SUPER_ADMIN_PASSWORD)='
+cat packages/functional-tests/.env | grep -E '^(SUPER_ADMIN_EMAIL|SUPER_ADMIN_PASSWORD|ADMIN_EMAIL|ADMIN_PASSWORD)='
 ```
 
-Use `SUPER_ADMIN_EMAIL` and `SUPER_ADMIN_PASSWORD` to log in via the
-relevant flow (Firebase Auth in the app, the test harness's login helper
-in functional tests, etc.).
+> **⚠️ Production database — only use designated test accounts.**
+> This app runs against a live production database. Never log in as, impersonate,
+> or otherwise act on behalf of any account whose email does not match
+> `silas(...)@teamdsc.com.au`. All other accounts belong to real users.
+> Only the credentials provided in `.env` (`SUPER_ADMIN_EMAIL`, `ADMIN_EMAIL`) are
+> safe to use for testing.
+
+### Which account to use
+
+#### Super-admin login (`SUPER_ADMIN_EMAIL` / `SUPER_ADMIN_PASSWORD`)
+
+Required for:
+- `/dashboard/users` and `/dashboard/users/:id` — user management
+- `/dashboard/redirects` — redirect management
+- `/dashboard/tools` — internal tooling
+- `/dashboard/teams` and `/dashboard/teams/:id` — team management
+- `/dashboard/events` and `/dashboard/events/:id` — event management
+- `/dashboard/courses/learners/:slug` — cross-team learner assignment view
+- `/dashboard/website`, `/dashboard/products` — reports (super-admin + email allowlist)
+- `/dashboard/on-demand/engagement`, `/dashboard/on-demand/performance` — reports (super-admin + email allowlist)
+- `/dashboard/business` — business reports (super-admin + email allowlist)
+- Any action that impersonates another user (`/api/impersonate/start`)
 
 The super-admin account can **impersonate any other user**, which is
 useful when reproducing role-specific bugs or running functional checks
 that need a particular user context — switch into the relevant user via
 the impersonation UI rather than fabricating new test accounts.
 
+#### Regular admin login (`ADMIN_EMAIL` / `ADMIN_PASSWORD`)
+
+Use for `team-admin` level routes (also accessible to super-admin, but
+test these with a regular admin to validate the correct permission boundary):
+- `/dashboard/courses` and `/dashboard/courses/:slug` — course management
+- `/dashboard/learners` and `/dashboard/learners/:id` — learner management
+- `/dashboard/groups` and `/dashboard/groups/:slug` — group management
+- `/dashboard/settings` — team settings
+- `/dashboard/billing` — billing / subscription
+- `/dashboard/my-training` — personal training history
+- `/dashboard/certificates` — certificates
+
+#### Any logged-in user (`requireAuth`)
+
+These routes redirect to `/login` if not authenticated, but accept any role:
+- `/dashboard` (shell/nav)
+- `/on-demand/view/:slug` — watch a course
+- `/on-demand/review/:slug` — submit a review
+- `/checkout` and `/checkout/success`
+- `/onboarding`
+
+#### Public (no login required)
+
+- `/`, `/courses/*`, `/events/*`, `/on-demand`, `/on-demand/:slug`
+- `/ads/:slug`, `/podcasts/*`, `/resources/:id`
+- `/login`, `/register`, `/forgot-password`, `/reset-password`
+- `/subscription/*`, `/team/:handle`
+- `/style-guide`, `/sitemap`, `/health-check`
+
 For github-based workflow, and other CI-based tests, `packages/functional-tests/.env` is not available, but `FUNCTIONAL_TEST_SUPER_ADMIN_EMAIL` and 
-`FUNCTIONAL_TEST_SUPER_ADMIN_PASSWORD` can be mapped to the .env vars.
+`FUNCTIONAL_TEST_SUPER_ADMIN_PASSWORD`can be mapped to the .env vars for super-admin users.
+`FUNCTIONAL_TEST_ADMIN_EMAIL` and 
+`FUNCTIONAL_TEST_ADMIN_PASSWORD`can also be mapped to the .env vars for team-admin users.
 See `.github/workflows/functionalTests.yml` for an example of this.
 
 ---
@@ -176,35 +210,17 @@ curl -s -H "Authorization: $STORYBLOK_TOKEN" \
 
 ---
 
-## Default posture
+## Step 0: Determine state and route
 
-- Determine ticket state first, then follow the matching flow below.
-- Keep a single persistent `## AI Workpad` comment as the source of truth for all progress.
-- Plan before implementing. Reproduce the issue before fixing it.
-- Keep ticket metadata (state, PR link) current throughout.
-- For user-facing changes, include UI walkthrough acceptance criteria.
-- When meaningful out-of-scope issues are found, file a separate Linear Backlog ticket — do not expand scope.
-- Operate autonomously end-to-end unless blocked by missing secrets/permissions.
+You need Linear access to fetch issues and post comments. Use the Linear MCP server if configured; otherwise use `curl` with the `LINEAR_API_KEY` environment variable. If neither is available, stop and record a blocker.
 
----
-
-## Status map
-
-- `Dev in Progress` → the only active state Symphony will pick up; continue from existing workpad comment, or create one if missing.
-- `In Review` → PR is attached and validated; wait for human decision.
-- `Done` → terminal; do nothing and shut down.
-- Any other state → out of scope; do not modify. Stop.
-
----
-
-## Step 0: Determine current state and route
-
-1. Fetch the issue by identifier using Linear (MCP or curl).
-2. Read its current state and route accordingly.
-3. If state is not `Dev in Progress` → do nothing and exit.
-4. Check whether an existing PR for this branch is open, merged, or closed.
-   - If closed/merged → treat as a fresh start: new branch from `origin/main`.
-5. Find or create the `## AI Workpad` comment, then begin work.
+1. Fetch the issue by identifier.
+2. Check its current state and route:
+   - `Dev in Progress` → continue to Step 1.
+   - `In Review` → PR is attached and validated; wait for human decision. Stop.
+   - `Done`, `Closed`, `Cancelled`, `Canceled`, `Duplicate` → terminal state. Do nothing. Stop.
+   - Any other state → out of scope. Do nothing. Stop.
+3. Check for an existing PR on this issue's branch. If closed or merged → treat as a fresh start; create a new branch from `origin/main`.
 
 ---
 
@@ -245,20 +261,23 @@ curl -s -H "Authorization: $STORYBLOK_TOKEN" \
 
 ## Step 2: Execution
 
-1. Confirm state is `Dev in Progress`; if not, stop.
-2. Verify git state (`git status`, `git log --oneline -5`).
-3. Run `git pull origin main --rebase` and record result in workpad Notes.
-4. Create/checkout a feature branch: `git checkout -b feature/{{ issue.identifier | downcase }}-<short-slug>`.
-5. Implement the plan, keeping the workpad checklist current.
-6. Before every commit: run `pnpm typecheck && pnpm lint` — fix all errors.
-7. Use `pnpm --filter app ...` or `pnpm --filter functions ...` to scope commands to a package.
-8. Commit with clear messages following the existing style in `git log`.
-9. Push and create a PR: `gh pr create --title "..." --body "..."`.
-10. Add the `symphony` label to the PR: `gh pr edit <number> --add-label symphony`.
-11. Attach the PR URL to the Linear issue.
-12. Complete the full verification checklist (see **Step 3: Verification**) and attach evidence to the Linear ticket.
+1. Verify git state: `git status`, `git log --oneline -5`.
+2. Run `git pull origin main --rebase` and record result in workpad Notes.
+3. Create/checkout a feature branch: `git checkout -b feature/{{ issue.identifier | downcase }}-<short-slug>`.
+4. Implement the plan, keeping the workpad checklist current.
+5. Before every commit: run `pnpm typecheck && pnpm lint` — fix all errors.
+6. Use `pnpm --filter app ...` or `pnpm --filter functions ...` to scope commands to a package.
+7. Commit with clear messages following the existing style in `git log`.
+8. Push and create a PR: `gh pr create --title "..." --body "..."`.
+9. Add the `symphony` label to the PR: `gh pr edit <number> --add-label symphony`.
+10. Attach the PR URL to the Linear issue.
+11. Complete the full verification checklist (see **Step 3: Verification**) and attach evidence to the Linear ticket.
+12. Update `README.md` to reflect any changes made during this job:
+    - Add any new behaviour, configuration, or concepts discovered.
+    - Remove or correct any outdated or incorrect information.
+    - Review `{{ symphony.root }}/UNSLOP.md` (in the Symphony orchestrator directory) and apply those principles to the updated `README.md`.
 13. Run the full PR feedback sweep (see below).
-14. Move the issue to `In Review` only when all acceptance criteria and validation checks pass.
+14. Move the issue to `In Review` only when all acceptance criteria and validation checks pass and no actionable PR comments remain.
 
 ---
 
@@ -307,9 +326,9 @@ Open every changed page and every page that depends on the changes. Work through
    ```bash
    lsof -iTCP -sTCP:LISTEN -nP | grep -E ':(3|5)[0-9]{3}\s'
    ```
-4. **Check credentials.** If the app shows a login wall, retrieve the super-admin credentials:
+4. **Check credentials.** If the app shows a login wall, retrieve credentials and use the correct account for the route. See [Application login](#application-login) for the full URL-to-role map.
    ```bash
-   cat packages/functional-tests/.env | grep -E '^(SUPER_ADMIN_EMAIL|SUPER_ADMIN_PASSWORD)='
+   cat packages/functional-tests/.env | grep -E '^(SUPER_ADMIN_EMAIL|SUPER_ADMIN_PASSWORD|ADMIN_EMAIL|ADMIN_PASSWORD)='
    ```
 5. **Examine server logs** for compilation errors; fix minor code bugs inline and restart the server.
 
@@ -323,74 +342,81 @@ Do **not** move to `In Review` without attached visual evidence.
 
 ---
 
-## Attaching files (screenshots, recordings, logs) to Linear comments
+## Attaching files to Linear comments
 
-Linear stores files in **private cloud storage**. A plain file path (e.g. `/tmp/screenshot.png`) or a `localhost` URL will **never** resolve for Linear — it results in a "Failed to load the image" error. Always use one of the methods below.
+Linear stores files in private cloud storage. A plain file path or `localhost` URL will never resolve. Do not embed files as base64 — Linear's comment body is capped at 100,000 characters and will reject even a modest PNG.
 
-### Method 1 — Base64-encoded inline image (recommended for screenshots)
+### The only working method: `fileUpload` mutation + `assetUrl`
 
-Convert the file to a base64 data URI and embed it directly in the markdown body of the comment. Linear accepts this and re-uploads the image to its own storage automatically.
+Use the `fileUpload` mutation to obtain a pre-signed upload URL, PUT the file bytes to that URL, then embed the returned `assetUrl` in the comment markdown. This works for all file types. After posting, verify the comment rendered correctly.
 
-```bash
-# Capture a screenshot with the Playwright/browser tool, then encode it:
-BASE64=$(base64 -i /path/to/screenshot.png)
-# Embed in the comment body:
-# ![Screenshot](data:image/png;base64,<BASE64_STRING>)
+Use a Python script to avoid shell quoting issues with large payloads:
+
+```python
+# /tmp/linear_upload.py  — adapt paths/variables as needed
+import json, subprocess, os
+
+api_key  = os.environ["LINEAR_API_KEY"]   # or hardcode for one-off use
+file_path = "/tmp/screenshot.png"
+issue_id  = "<LINEAR_ISSUE_UUID>"         # internal UUID, not TEA-XXXX
+content_type = "image/png"               # adjust for other file types
+size = os.path.getsize(file_path)
+
+# Step 1: Request a pre-signed upload URL
+query = {
+    "query": "mutation($ct:String!,$name:String!,$size:Int!){fileUpload(contentType:$ct,filename:$name,size:$size){success uploadFile{uploadUrl assetUrl headers{key value}}}}",
+    "variables": {"ct": content_type, "name": os.path.basename(file_path), "size": size}
+}
+r = subprocess.run(
+    ["curl", "-s", "-X", "POST", "https://api.linear.app/graphql",
+     "-H", f"Authorization: {api_key}", "-H", "Content-Type: application/json",
+     "-d", json.dumps(query)],
+    capture_output=True, text=True
+)
+data = json.loads(r.stdout)
+assert data["data"]["fileUpload"]["success"], data
+
+uf = data["data"]["fileUpload"]["uploadFile"]
+upload_url = uf["uploadUrl"]
+asset_url  = uf["assetUrl"]
+
+# Step 2: PUT the file to the pre-signed URL
+header_args = ["-H", f"Content-Type: {content_type}", "-H", "Cache-Control: public, max-age=31536000"]
+for h in uf["headers"]:
+    header_args += ["-H", f"{h['key']}: {h['value']}"]
+
+put = subprocess.run(
+    ["curl", "-s", "-w", "\n%{http_code}", "-X", "PUT", upload_url]
+    + header_args + ["--data-binary", f"@{file_path}"],
+    capture_output=True, text=True
+)
+http_code = put.stdout.strip().split("\n")[-1]
+assert http_code in ("200", "204"), f"PUT failed: {http_code}\n{put.stdout}"
+
+# Step 3: Post comment with the stable assetUrl
+comment_body = f"## Screenshot\n\n![Screenshot]({asset_url})"
+cq = {
+    "query": "mutation($body:String!,$issueId:String!){commentCreate(input:{body:$body,issueId:$issueId}){success comment{id}}}",
+    "variables": {"body": comment_body, "issueId": issue_id}
+}
+cr = subprocess.run(
+    ["curl", "-s", "-X", "POST", "https://api.linear.app/graphql",
+     "-H", f"Authorization: {api_key}", "-H", "Content-Type: application/json",
+     "-d", json.dumps(cq)],
+    capture_output=True, text=True
+)
+print(json.loads(cr.stdout))
 ```
 
-When posting via `curl`:
+Run it with: `python3 /tmp/linear_upload.py`
 
+To get the internal issue UUID from a ticket identifier (e.g. `TEA-4110`):
 ```bash
-BODY=$(printf '## Screenshot\n\n![Screenshot](data:image/png;base64,%s)' "$(base64 -i /path/to/screenshot.png)")
-
 curl -s -X POST https://api.linear.app/graphql \
   -H "Authorization: $LINEAR_API_KEY" \
   -H "Content-Type: application/json" \
-  -d "$(jq -n --arg body "$BODY" --arg issueId "$ISSUE_ID" \
-    '{query: "mutation($body:String!,$issueId:String!){commentCreate(input:{body:$body,issueId:$issueId}){success}}",
-      variables: {body: $body, issueId: $issueId}}')"
+  -d '{"query":"{ issue(id:\"TEA-4110\") { id } }"}' | jq -r '.data.issue.id'
 ```
-
-### Method 2 — `fileUpload` mutation (required for non-image files, or large files)
-
-Use this for videos, PDFs, log files, and any binary that cannot be base64-inlined cleanly.
-
-```bash
-# Step 1: Request a pre-signed upload URL
-UPLOAD_RESPONSE=$(curl -s -X POST https://api.linear.app/graphql \
-  -H "Authorization: $LINEAR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"query":"mutation($ct:String!,$name:String!,$size:Int!){fileUpload(contentType:$ct,filename:$name,size:$size){success uploadFile{uploadUrl assetUrl headers{key value}}}}",
-       "variables":{"ct":"image/png","name":"screenshot.png","size":<BYTE_SIZE>}}')
-
-UPLOAD_URL=$(echo "$UPLOAD_RESPONSE" | jq -r '.data.fileUpload.uploadFile.uploadUrl')
-ASSET_URL=$(echo  "$UPLOAD_RESPONSE" | jq -r '.data.fileUpload.uploadFile.assetUrl')
-
-# Step 2: PUT the file to the pre-signed URL (server-side only — CSP blocks client-side PUT)
-curl -s -X PUT "$UPLOAD_URL" \
-  -H "Content-Type: image/png" \
-  -H "Cache-Control: public, max-age=31536000" \
-  --data-binary @/path/to/screenshot.png
-
-# Step 3: Reference the assetUrl in the comment body
-# ![Screenshot](<ASSET_URL>)
-```
-
-### Method 3 — Publicly accessible URL
-
-If the file is already hosted at a stable, publicly reachable HTTPS URL, embed it directly. Linear will fetch and re-upload it automatically:
-
-```
-![Screenshot](https://example.com/path/to/image.png)
-```
-
-### Rules
-
-- **Never** embed `file://`, `localhost`, or relative paths — Linear cannot fetch them.
-- **Never** use a temporary signed URL that may expire before Linear fetches it.
-- For **screenshots**, prefer Method 1 (base64 inline) — it requires no extra network requests.
-- For **videos or large files**, use Method 2 (pre-signed upload).
-- Always verify the comment rendered correctly after posting.
 
 ---
 
@@ -434,7 +460,7 @@ Use only for true external blockers (missing required auth/secrets after exhaust
 
 - Never push to `main` directly.
 - Always use pnpm, never npm or yarn.
-- Run `pnpm typecheck && pnpm lint` before every push.
+- Run `pnpm typecheck && pnpm lint` before every commit.
 - One workpad comment per issue — update in place, never create extras.
+- Attach screenshots of every affected page before moving to `In Review`.
 - Do not move to `In Review` until all validation passes and no actionable PR comments remain.
-- If state is `Done`, do nothing and exit.

@@ -193,6 +193,7 @@ The text below the YAML front matter is a [Liquid](https://liquidjs.com/) templa
 | `issue.labels` | string[] | Label names (lowercased) |
 | `issue.branchName` | string \| null | Suggested git branch name from Linear |
 | `attempt` | number \| null | Retry attempt number (`null` on first attempt) |
+| `symphony.root` | string | Absolute path to the Symphony orchestrator directory (where `WORKFLOW.md` lives) |
 
 ---
 

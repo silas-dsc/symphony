@@ -22,6 +22,8 @@ export interface Issue {
 export interface WorkflowDefinition {
   config: WorkflowConfig;
   promptTemplate: string;
+  /** Absolute path to the directory containing WORKFLOW.md (and sibling files like UNSLOP.md). */
+  symphonyRoot: string;
 }
 
 export interface WorkflowConfig {
