@@ -48,13 +48,47 @@ hooks:
     }
     APP_PORT=$(find_free_port "5${TICKET_SUFFIX}")
     PROXY_PORT=$(find_free_port "3${TICKET_SUFFIX}")
-    # Persist ports so before_remove and the agent can reference them
+    # Persist ports so before_run, before_remove and the agent can reference them
     printf 'APP_PORT=%s\nPROXY_PORT=%s\n' "$APP_PORT" "$PROXY_PORT" > .symphony-ports
-    # Start dev server and SSL proxy
-    cd ./packages/app && pnpm react-router dev --port $APP_PORT &
-    echo $! > .symphony-app.pid
-    local-ssl-proxy --source "$PROXY_PORT" --target "$APP_PORT" --cert localhost.pem --key localhost-key.pem &
-    echo $! > .symphony-proxy.pid
+
+  before_run: |
+    # Ensure the dev server and SSL proxy are running. Runs on every attempt so a
+    # workspace that survives across retries / Symphony restarts always has a live
+    # server — Step 3 verification depends on it.
+    set -e
+    if [ ! -f .symphony-ports ]; then
+      echo "[before_run] .symphony-ports missing — workspace not initialised correctly" >&2
+      exit 1
+    fi
+    # shellcheck disable=SC1091
+    . ./.symphony-ports
+    if [ -f .nvmrc ]; then
+      export NVM_DIR="$HOME/.nvm"
+      [ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+      nvm use >/dev/null 2>&1 || true
+    fi
+    pid_alive() {
+      local pid_file=$1
+      [ -f "$pid_file" ] || return 1
+      local pid
+      pid=$(cat "$pid_file" 2>/dev/null)
+      [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null
+    }
+    # Dev server
+    if pid_alive .symphony-app.pid; then
+      echo "[before_run] dev server already running (pid $(cat .symphony-app.pid), port $APP_PORT)"
+    else
+      echo "[before_run] starting dev server on port $APP_PORT"
+      ( cd ./packages/app && nohup pnpm react-router dev --port "$APP_PORT" >../../.symphony-app.log 2>&1 & echo $! >../../.symphony-app.pid )
+    fi
+    # SSL proxy
+    if pid_alive .symphony-proxy.pid; then
+      echo "[before_run] ssl proxy already running (pid $(cat .symphony-proxy.pid), port $PROXY_PORT)"
+    else
+      echo "[before_run] starting ssl proxy on port $PROXY_PORT -> $APP_PORT"
+      nohup local-ssl-proxy --source "$PROXY_PORT" --target "$APP_PORT" --cert localhost.pem --key localhost-key.pem >.symphony-proxy.log 2>&1 &
+      echo $! > .symphony-proxy.pid
+    fi
 
   before_remove: |
     echo "Cleaning workspace"
