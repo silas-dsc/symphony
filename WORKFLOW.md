@@ -149,11 +149,38 @@ Plan before implementing. Reproduce bugs before fixing them. When meaningful out
 
 If you hit a `Not logged in` / `Please run /login` error from the team-dsc
 app, its dev server, or its functional tests, do **not** treat it as a
-blocker.
+blocker. Credentials are available from one of two sources — always try both
+before declaring missing credentials a blocker.
 
 ```bash
-# In the workspace root
-cat packages/functional-tests/.env | grep -E '^(SUPER_ADMIN_EMAIL|SUPER_ADMIN_PASSWORD|ADMIN_EMAIL|ADMIN_PASSWORD)='
+# Source 1: local .env (developer machines)
+cat packages/functional-tests/.env 2>/dev/null \
+  | grep -E '^(SUPER_ADMIN_EMAIL|SUPER_ADMIN_PASSWORD|ADMIN_EMAIL|ADMIN_PASSWORD)='
+
+# Source 2: environment variables (CI / web sessions / fresh machines where
+# ~/Websites/team-dsc/... was unavailable during workspace setup). Map them to
+# the names the app expects:
+#   FUNCTIONAL_TEST_SUPER_ADMIN_EMAIL    → SUPER_ADMIN_EMAIL
+#   FUNCTIONAL_TEST_SUPER_ADMIN_PASSWORD → SUPER_ADMIN_PASSWORD
+#   FUNCTIONAL_TEST_ADMIN_EMAIL          → ADMIN_EMAIL
+#   FUNCTIONAL_TEST_ADMIN_PASSWORD       → ADMIN_PASSWORD
+env | grep -E '^FUNCTIONAL_TEST_(SUPER_)?ADMIN_(EMAIL|PASSWORD)='
+```
+
+If `packages/functional-tests/.env` is missing or empty and the
+`FUNCTIONAL_TEST_*` env vars are set, materialise the file so the app and
+functional tests can both read it, then re-attempt login:
+
+```bash
+if [ ! -s packages/functional-tests/.env ] && [ -n "$FUNCTIONAL_TEST_SUPER_ADMIN_EMAIL" ]; then
+  mkdir -p packages/functional-tests
+  cat > packages/functional-tests/.env <<EOF
+SUPER_ADMIN_EMAIL=${FUNCTIONAL_TEST_SUPER_ADMIN_EMAIL}
+SUPER_ADMIN_PASSWORD=${FUNCTIONAL_TEST_SUPER_ADMIN_PASSWORD}
+ADMIN_EMAIL=${FUNCTIONAL_TEST_ADMIN_EMAIL}
+ADMIN_PASSWORD=${FUNCTIONAL_TEST_ADMIN_PASSWORD}
+EOF
+fi
 ```
 
 > **⚠️ Production database — only use designated test accounts.**
@@ -213,11 +240,9 @@ These routes redirect to `/login` if not authenticated, but accept any role:
 - `/subscription/*`, `/team/:handle`
 - `/style-guide`, `/sitemap`, `/health-check`
 
-For github-based workflow, and other CI-based tests, `packages/functional-tests/.env` is not available, but `FUNCTIONAL_TEST_SUPER_ADMIN_EMAIL` and 
-`FUNCTIONAL_TEST_SUPER_ADMIN_PASSWORD`can be mapped to the .env vars for super-admin users.
-`FUNCTIONAL_TEST_ADMIN_EMAIL` and 
-`FUNCTIONAL_TEST_ADMIN_PASSWORD`can also be mapped to the .env vars for team-admin users.
-See `.github/workflows/functionalTests.yml` for an example of this.
+The `FUNCTIONAL_TEST_*` → `.env` mapping shown above is also used by the
+GitHub Actions functional-tests workflow. See
+`.github/workflows/functionalTests.yml` for the CI version of the same setup.
 
 ---
 
@@ -360,9 +385,17 @@ Open every changed page and every page that depends on the changes. Work through
    ```bash
    lsof -iTCP -sTCP:LISTEN -nP | grep -E ':(3|5)[0-9]{3}\s'
    ```
-4. **Check credentials.** If the app shows a login wall, retrieve credentials and use the correct account for the route. See [Application login](#application-login) for the full URL-to-role map.
+4. **Check credentials.** If the app shows a login wall, retrieve credentials
+   and use the correct account for the route. Credentials come from either
+   `packages/functional-tests/.env` *or* `FUNCTIONAL_TEST_*` env vars — try
+   both before treating "missing credentials" as a blocker. If only the env
+   vars are set, materialise the `.env` first so the app picks them up. See
+   [Application login](#application-login) for the recipe and the full
+   URL-to-role map.
    ```bash
-   cat packages/functional-tests/.env | grep -E '^(SUPER_ADMIN_EMAIL|SUPER_ADMIN_PASSWORD|ADMIN_EMAIL|ADMIN_PASSWORD)='
+   cat packages/functional-tests/.env 2>/dev/null \
+     | grep -E '^(SUPER_ADMIN_EMAIL|SUPER_ADMIN_PASSWORD|ADMIN_EMAIL|ADMIN_PASSWORD)='
+   env | grep -E '^FUNCTIONAL_TEST_(SUPER_)?ADMIN_(EMAIL|PASSWORD)='
    ```
 5. **Examine server logs** for compilation errors; fix minor code bugs inline and restart the server.
 
