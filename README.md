@@ -109,7 +109,17 @@ cp .env.example .env
 | `LINEAR_API_KEY` | **Yes** | Linear personal API key. Generate at [linear.app/settings/api](https://linear.app/settings/api) → *Personal API keys* |
 | `ANTHROPIC_API_KEY` | No | Anthropic API key. If omitted, Claude Code uses browser OAuth instead (see [Claude Code auth](#claude-code-authentication) below) |
 
-### 2. WORKFLOW.md
+### 2. Agent MCP servers (optional but recommended)
+
+Symphony passes `--mcp-config <path>` to each spawned `claude` process so agents have a known, deterministic set of MCP tools regardless of what the cloned target repo declares. By default, Symphony looks for `agent-mcp.json` in the orchestrator directory; override with `SYMPHONY_AGENT_MCP_CONFIG=/abs/path/to/file.json`.
+
+The repo ships an `agent-mcp.json` that wires up [`@playwright/mcp`](https://github.com/microsoft/playwright-mcp) in headless + isolated + `--ignore-https-errors` mode. This is what the agent uses to verify mobile UX (`prompts/MOBILE_UX.md`): screenshots at 375px, accessibility snapshots, console-log capture, form interaction, network-request counting. The `--ignore-https-errors` flag lets the agent navigate to the workspace's `https://localhost:<port>` SSL proxy — required for Firebase Auth and other secure-context features.
+
+**Prerequisite:** Playwright downloads its own Chromium build on first run. If your machine has restricted network egress, pre-install via `npx playwright install chrome` (or specify `--executable-path` in `agent-mcp.json`).
+
+To disable: delete `agent-mcp.json` and unset `SYMPHONY_AGENT_MCP_CONFIG`. Agents will then run with whatever MCPs are configured user-level in `~/.claude.json`.
+
+### 3. WORKFLOW.md
 
 `WORKFLOW.md` is the single configuration file that controls both the orchestrator and the prompt sent to each agent. It uses YAML front matter for settings, with the rest of the file as a [Liquid](https://liquidjs.com/)-templated prompt.
 
