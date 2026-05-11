@@ -18,10 +18,6 @@ export function startStatusServer(
 ): Promise<StatusServer> {
   return new Promise((resolve, reject) => {
     const server = http.createServer((req, res) => {
-      // CORS: allow any local origin for the TUI client. We're bound to loopback,
-      // so this is effectively no-op exposure-wise.
-      res.setHeader("Access-Control-Allow-Origin", "*");
-
       if (req.method !== "GET") {
         res.writeHead(405, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: "method_not_allowed" }));

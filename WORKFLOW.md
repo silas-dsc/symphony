@@ -330,7 +330,7 @@ You need Linear access to fetch issues and post comments. Use the Linear MCP ser
 8. Push and create a PR: `gh pr create --title "..." --body "..."`.
 9. Add the `symphony` label to the PR: `gh pr edit <number> --add-label symphony`.
 10. Attach the PR URL to the Linear issue.
-11. Complete the full verification checklist (see **Step 3: Verification**) and attach evidence to the Linear ticket.
+11. Complete the full verification checklist (see **Step 3: Verification**) — this includes capturing screenshots of every affected page and posting them to Linear via the `linear-attach` helper. **`In Review` is gated on this step exiting 0.**
 12. Update `README.md` to reflect any changes made during this job:
     - Add any new behaviour, configuration, or concepts discovered.
     - Remove or correct any outdated or incorrect information.
@@ -399,91 +399,94 @@ Open every changed page and every page that depends on the changes. Work through
    ```
 5. **Examine server logs** for compilation errors; fix minor code bugs inline and restart the server.
 
-Once the site is accessible, capture evidence:
+Once the site is accessible, capture and attach evidence. This is a two-step
+flow: **(1) save files locally, then (2) run the bundled helper to upload
+them.** Saving locally is not enough — Linear cannot resolve a file path.
 
-- **Screenshot** every changed page and every page that depends on the changes.
-- **Screen recording** if the change is interactive or involves a multi-step flow.
-- Attach all screenshots/recordings as a comment on the Linear ticket.
+1. Identify every affected surface:
+   - Every page the change directly modifies.
+   - Every page that consumes or depends on the change.
+   - Every state the change can produce (empty, populated, error, loading) if
+     reachable through the dev server.
+2. Create `./screenshots/` in the workspace root (or any directory of your
+   choice) and save one PNG per surface with a descriptive filename, e.g.
+   `dashboard-courses-list-after.png`, `course-detail-empty-state.png`.
+3. For any interactive or multi-step change, also capture a screen recording
+   (`.webm` or `.mp4`) into the same directory.
+4. Upload everything to Linear in a single comment with the bundled helper:
 
-Do **not** move to `In Review` without attached visual evidence.
+   ```bash
+   python3 {{ symphony.root }}/scripts/linear-attach.py \
+     {{ issue.identifier }} ./screenshots/
+   ```
+
+   The helper resolves the issue UUID, PUTs each file to a pre-signed URL via
+   Linear's `fileUpload` mutation, posts one consolidated comment embedding the
+   images inline (videos render as download links), and re-fetches the comment
+   to verify every asset URL made it into the body. It exits **0** on full
+   success, **1** on any upload/post/verify failure, **2** on bad invocation
+   (missing `LINEAR_API_KEY`, no files, etc.).
+5. If the helper exits non-zero, treat that as a hard error: read the stderr,
+   fix the cause (e.g. add the missing file, re-auth), and re-run until it
+   prints a comment URL on stdout.
+
+**Hard gate**: an `In Review` transition is only valid when `linear-attach`
+has exited 0 for the screenshot set covering every affected surface.
+Capturing files without running the helper does **not** count.
 
 ---
 
 ## Attaching files to Linear comments
 
-Linear stores files in private cloud storage. A plain file path or `localhost` URL will never resolve. Do not embed files as base64 — Linear's comment body is capped at 100,000 characters and will reject even a modest PNG.
+Linear stores files in private cloud storage. A plain file path or `localhost`
+URL will never resolve. Do not embed files as base64 — Linear's comment body
+is capped at 100,000 characters and rejects even a modest PNG.
 
-### The only working method: `fileUpload` mutation + `assetUrl`
+### Use the bundled helper
 
-Use the `fileUpload` mutation to obtain a pre-signed upload URL, PUT the file bytes to that URL, then embed the returned `assetUrl` in the comment markdown. This works for all file types. After posting, verify the comment rendered correctly.
+`{{ symphony.root }}/scripts/linear-attach.py` is the canonical path. It takes
+the human ticket identifier (`TEA-1234`) and one or more files or directories,
+and handles the whole `fileUpload` → PUT → `commentCreate` → re-fetch-verify
+flow internally.
 
-Use a Python script to avoid shell quoting issues with large payloads:
-
-```python
-# /tmp/linear_upload.py  — adapt paths/variables as needed
-import json, subprocess, os
-
-api_key  = os.environ["LINEAR_API_KEY"]   # or hardcode for one-off use
-file_path = "/tmp/screenshot.png"
-issue_id  = "<LINEAR_ISSUE_UUID>"         # internal UUID, not TEA-XXXX
-content_type = "image/png"               # adjust for other file types
-size = os.path.getsize(file_path)
-
-# Step 1: Request a pre-signed upload URL
-query = {
-    "query": "mutation($ct:String!,$name:String!,$size:Int!){fileUpload(contentType:$ct,filename:$name,size:$size){success uploadFile{uploadUrl assetUrl headers{key value}}}}",
-    "variables": {"ct": content_type, "name": os.path.basename(file_path), "size": size}
-}
-r = subprocess.run(
-    ["curl", "-s", "-X", "POST", "https://api.linear.app/graphql",
-     "-H", f"Authorization: {api_key}", "-H", "Content-Type: application/json",
-     "-d", json.dumps(query)],
-    capture_output=True, text=True
-)
-data = json.loads(r.stdout)
-assert data["data"]["fileUpload"]["success"], data
-
-uf = data["data"]["fileUpload"]["uploadFile"]
-upload_url = uf["uploadUrl"]
-asset_url  = uf["assetUrl"]
-
-# Step 2: PUT the file to the pre-signed URL
-header_args = ["-H", f"Content-Type: {content_type}", "-H", "Cache-Control: public, max-age=31536000"]
-for h in uf["headers"]:
-    header_args += ["-H", f"{h['key']}: {h['value']}"]
-
-put = subprocess.run(
-    ["curl", "-s", "-w", "\n%{http_code}", "-X", "PUT", upload_url]
-    + header_args + ["--data-binary", f"@{file_path}"],
-    capture_output=True, text=True
-)
-http_code = put.stdout.strip().split("\n")[-1]
-assert http_code in ("200", "204"), f"PUT failed: {http_code}\n{put.stdout}"
-
-# Step 3: Post comment with the stable assetUrl
-comment_body = f"## Screenshot\n\n![Screenshot]({asset_url})"
-cq = {
-    "query": "mutation($body:String!,$issueId:String!){commentCreate(input:{body:$body,issueId:$issueId}){success comment{id}}}",
-    "variables": {"body": comment_body, "issueId": issue_id}
-}
-cr = subprocess.run(
-    ["curl", "-s", "-X", "POST", "https://api.linear.app/graphql",
-     "-H", f"Authorization: {api_key}", "-H", "Content-Type: application/json",
-     "-d", json.dumps(cq)],
-    capture_output=True, text=True
-)
-print(json.loads(cr.stdout))
-```
-
-Run it with: `python3 /tmp/linear_upload.py`
-
-To get the internal issue UUID from a ticket identifier (e.g. `TEA-4110`):
 ```bash
-curl -s -X POST https://api.linear.app/graphql \
-  -H "Authorization: $LINEAR_API_KEY" \
-  -H "Content-Type: application/json" \
-  -d '{"query":"{ issue(id:\"TEA-4110\") { id } }"}' | jq -r '.data.issue.id'
+# One or more files
+python3 {{ symphony.root }}/scripts/linear-attach.py {{ issue.identifier }} \
+  shot1.png shot2.png recording.webm
+
+# A directory (images and videos picked up automatically)
+python3 {{ symphony.root }}/scripts/linear-attach.py {{ issue.identifier }} ./screenshots/
+
+# Custom heading
+python3 {{ symphony.root }}/scripts/linear-attach.py {{ issue.identifier }} \
+  --label "Before / After" ./screenshots/
 ```
+
+Exit codes: **0** success (asset URLs verified to be present in the posted
+comment body), **1** network or API failure, **2** bad invocation. On success
+the comment URL is printed to stdout; progress lines go to stderr.
+
+Requires `LINEAR_API_KEY` in the environment — Symphony's spawned agent
+already inherits it, so no extra setup is needed.
+
+### Manual fallback (only if the helper cannot be used)
+
+If you need finer control (custom comment body, attaching to a parent issue,
+etc.), use the same primitives directly:
+
+1. Resolve the UUID:
+   ```bash
+   curl -s -X POST https://api.linear.app/graphql \
+     -H "Authorization: $LINEAR_API_KEY" -H "Content-Type: application/json" \
+     -d '{"query":"{ issue(id:\"{{ issue.identifier }}\") { id } }"}' | jq -r '.data.issue.id'
+   ```
+2. Call the `fileUpload` mutation to get `uploadUrl` + `assetUrl` + headers.
+3. PUT the file bytes to `uploadUrl` with the returned headers.
+4. POST `commentCreate` with markdown embedding `assetUrl`.
+5. Re-fetch the comment and confirm `assetUrl` is in the body.
+
+Read `scripts/linear-attach.py` for a reference implementation in pure Python
+stdlib — it does exactly this and is short enough to crib from.
 
 ---
 
@@ -529,5 +532,5 @@ Use only for true external blockers (missing required auth/secrets after exhaust
 - Always use pnpm, never npm or yarn.
 - Run `pnpm typecheck && pnpm lint` before every commit.
 - One workpad comment per issue — update in place, never create extras.
-- Attach screenshots of every affected page before moving to `In Review`.
+- Attach screenshots of every affected page **via `linear-attach`** before moving to `In Review`. Saving PNGs in the workspace is not attaching — only an exit-0 from the helper, with the comment URL printed to stdout, counts.
 - Do not move to `In Review` until all validation passes and no actionable PR comments remain.

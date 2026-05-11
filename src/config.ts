@@ -4,18 +4,29 @@ import * as os from "node:os";
 import yaml from "js-yaml";
 import type { WorkflowDefinition, WorkflowConfig } from "./types.js";
 
-export type WorkflowError =
-  | { code: "missing_workflow_file"; path: string }
-  | { code: "workflow_parse_error"; message: string }
-  | { code: "workflow_front_matter_not_a_map" }
-  | { code: "invalid_config"; message: string };
+export type WorkflowErrorCode =
+  | "missing_workflow_file"
+  | "workflow_parse_error"
+  | "workflow_front_matter_not_a_map"
+  | "invalid_config";
+
+export class WorkflowError extends Error {
+  readonly code: WorkflowErrorCode;
+  readonly path?: string;
+  constructor(code: WorkflowErrorCode, message: string, path?: string) {
+    super(message);
+    this.name = "WorkflowError";
+    this.code = code;
+    this.path = path;
+  }
+}
 
 export function loadWorkflow(workflowPath: string): WorkflowDefinition {
   let content: string;
   try {
     content = fs.readFileSync(workflowPath, "utf-8");
   } catch {
-    throw { code: "missing_workflow_file", path: workflowPath } satisfies WorkflowError;
+    throw new WorkflowError("missing_workflow_file", `Workflow file not found: ${workflowPath}`, workflowPath);
   }
 
   let rawConfig: Record<string, unknown> = {};
@@ -24,7 +35,7 @@ export function loadWorkflow(workflowPath: string): WorkflowDefinition {
   if (content.startsWith("---")) {
     const endIndex = content.indexOf("\n---\n", 3);
     if (endIndex === -1) {
-      throw { code: "workflow_parse_error", message: "Unterminated YAML front matter" } satisfies WorkflowError;
+      throw new WorkflowError("workflow_parse_error", "Unterminated YAML front matter");
     }
     const frontMatterStr = content.slice(4, endIndex);
     const body = content.slice(endIndex + 5);
@@ -33,11 +44,11 @@ export function loadWorkflow(workflowPath: string): WorkflowDefinition {
     try {
       parsed = yaml.load(frontMatterStr);
     } catch (e) {
-      throw { code: "workflow_parse_error", message: String(e) } satisfies WorkflowError;
+      throw new WorkflowError("workflow_parse_error", e instanceof Error ? e.message : String(e));
     }
 
     if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-      throw { code: "workflow_front_matter_not_a_map" } satisfies WorkflowError;
+      throw new WorkflowError("workflow_front_matter_not_a_map", "Front matter must be a YAML map");
     }
     rawConfig = parsed as Record<string, unknown>;
     promptTemplate = body.trim();
@@ -128,6 +139,7 @@ function buildConfig(raw: Record<string, unknown>, baseDir: string): WorkflowCon
       maxConcurrentAgents: (agent.max_concurrent_agents as number | undefined) ?? 10,
       maxTurns: (agent.max_turns as number | undefined) ?? 20,
       maxRetryBackoffMs: (agent.max_retry_backoff_ms as number | undefined) ?? 300000,
+      stallTimeoutMs: (agent.stall_timeout_ms as number | undefined) ?? 300000,
       maxConcurrentAgentsByState,
     },
     server: server ? { port: server.port as number | undefined } : undefined,
@@ -154,5 +166,7 @@ export function validateConfig(config: WorkflowConfig): string | null {
     return "tracker.team_key is required when tracker.project_slug is \"ALL\"";
   }
   if (!config.workspace.root) return "workspace.root could not be resolved";
+  if (config.agent.maxTurns <= 0) return "agent.max_turns must be > 0";
+  if (config.agent.stallTimeoutMs <= 0) return "agent.stall_timeout_ms must be > 0";
   return null;
 }

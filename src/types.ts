@@ -68,6 +68,7 @@ export interface AgentConfig {
   maxConcurrentAgents: number;
   maxTurns: number;
   maxRetryBackoffMs: number;
+  stallTimeoutMs: number;
   maxConcurrentAgentsByState: Record<string, number>;
 }
 
@@ -142,6 +143,8 @@ export interface RunningEntry {
   retryAttempt: number | null;
   rateLimit: RateLimitInfo | null;
   abortController: AbortController;
+  /** Promise that resolves when the agent run settles. Tracked so shutdown can await. */
+  done: Promise<void>;
 }
 
 export interface RetryEntry {
@@ -159,7 +162,6 @@ export interface OrchestratorState {
   running: Map<string, RunningEntry>;
   claimed: Set<string>;
   retryAttempts: Map<string, RetryEntry>;
-  completed: Set<string>;
   totalInputTokens: number;
   totalOutputTokens: number;
   totalTokens: number;
@@ -232,7 +234,7 @@ export interface RetrySnapshot {
 }
 
 export interface Logger {
-  info(msg: string, context?: Record<string, string>): void;
-  warn(msg: string, context?: Record<string, string>): void;
-  error(msg: string, context?: Record<string, string>): void;
+  info(msg: string, context?: Record<string, unknown>): void;
+  warn(msg: string, context?: Record<string, unknown>): void;
+  error(msg: string, context?: Record<string, unknown>): void;
 }

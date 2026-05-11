@@ -1,7 +1,7 @@
 import { spawn } from "node:child_process";
 import * as readline from "node:readline";
 import { Liquid } from "liquidjs";
-import type { Issue, AgentResult, WorkflowConfig, RateLimitInfo, AgentEvent, AgentEventCallback } from "./types.js";
+import type { Issue, AgentResult, WorkflowConfig, RateLimitInfo, AgentEvent, AgentEventCallback, Logger } from "./types.js";
 import { ensureWorkspace, runHook } from "./workspace.js";
 import {
   selectClaudeModel,
@@ -72,7 +72,8 @@ export async function runAgentAttempt(
   promptTemplate: string,
   symphonyRoot: string,
   abortController: AbortController,
-  onEvent: AgentEventCallback
+  onEvent: AgentEventCallback,
+  logger?: Logger,
 ): Promise<AgentResult> {
   const { path: wsPath, createdNow } = await ensureWorkspace(
     config.workspace.root,
@@ -80,11 +81,11 @@ export async function runAgentAttempt(
   );
 
   if (createdNow && config.hooks.afterCreate) {
-    await runHook(config.hooks.afterCreate, wsPath, config.hooks.timeoutMs);
+    await runHook(config.hooks.afterCreate, wsPath, config.hooks.timeoutMs, logger);
   }
 
   if (config.hooks.beforeRun) {
-    await runHook(config.hooks.beforeRun, wsPath, config.hooks.timeoutMs);
+    await runHook(config.hooks.beforeRun, wsPath, config.hooks.timeoutMs, logger);
   }
 
   let prompt: string;
@@ -117,14 +118,14 @@ export async function runAgentAttempt(
     turnCount = result.turnCount;
   } catch (e) {
     if (!abortController.signal.aborted) {
-      errorMsg = String(e);
+      errorMsg = e instanceof Error ? e.message : String(e);
     }
   } finally {
     if (config.hooks.afterRun) {
       try {
-        await runHook(config.hooks.afterRun, wsPath, config.hooks.timeoutMs);
+        await runHook(config.hooks.afterRun, wsPath, config.hooks.timeoutMs, logger);
       } catch (e) {
-        console.warn(`[symphony] after_run hook failed for ${issue.identifier}: ${e}`);
+        logger?.warn(`after_run hook failed`, { identifier: issue.identifier, error: e instanceof Error ? e.message : String(e) });
       }
     }
   }
@@ -197,26 +198,28 @@ async function spawnWithFailover(
   }
 }
 
-function isRateLimitText(text: string): boolean {
+export function isRateLimitText(text: string): boolean {
   const t = text.toLowerCase()
     // Normalise Unicode apostrophes/quotes to ASCII so matches are robust
     .replace(/[\u2018\u2019\u201a\u201b]/g, "'");
-  return (
+  if (
     t.includes("hit your limit") ||
     t.includes("you've hit") ||
     t.includes("you have hit") ||
     t.includes("rate limit") ||
     t.includes("rate_limit") ||
-    t.includes("overloaded") ||
-    t.includes(" 429") ||
-    t.includes(" 529")
-  );
+    t.includes("overloaded")
+  ) return true;
+  // Match HTTP 429/529 only when adjacent to an HTTP/status context, so e.g.
+  // "line 429" or "PR #529" in agent output don't trigger a false failover.
+  if (/\b(?:http|status|code|error)[\s/:]*(?:429|529)\b/i.test(text)) return true;
+  return false;
 }
 
 async function spawnClaude(
   prompt: string,
   cwd: string,
-  _maxTurns: number,
+  maxTurns: number,
   abortController: AbortController,
   onEvent: AgentEventCallback,
   model: string | undefined,
@@ -233,12 +236,14 @@ async function spawnClaude(
     }
 
     const modelArgs = model ? ["--model", model] : [];
+    const maxTurnsArgs = maxTurns > 0 ? ["--max-turns", String(maxTurns)] : [];
 
     const proc = spawn(
       "claude",
       [
         "-p",
         ...modelArgs,
+        ...maxTurnsArgs,
         "--output-format", "stream-json",
         "--verbose",
         "--dangerously-skip-permissions",
@@ -312,6 +317,11 @@ async function spawnClaude(
         if (usage) {
           const inp = usage.input_tokens ?? 0;
           const out = usage.output_tokens ?? 0;
+          // Claude's stream-json reports cumulative session totals on each
+          // assistant event, so we take max rather than sum. If a future
+          // stream-json schema reports per-turn deltas, this will silently
+          // collapse to "max single turn" — verify against the final `result`
+          // event's totals (also handled below).
           inputTokens = Math.max(inputTokens, inp);
           outputTokens = Math.max(outputTokens, out);
           onEvent({ type: "notification", tokens: { input: inp, output: out, total: inp + out } });
