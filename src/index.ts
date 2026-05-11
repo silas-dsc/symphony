@@ -7,8 +7,13 @@ import type { Logger } from "./types.js";
 
 const DEFAULT_STATUS_PORT = 7777;
 
+function fmtErr(e: unknown): string {
+  if (e instanceof Error) return e.message;
+  try { return JSON.stringify(e); } catch { return String(e); }
+}
+
 function createLogger(): Logger {
-  function log(level: string, msg: string, context?: Record<string, string>): void {
+  function log(level: string, msg: string, context?: Record<string, unknown>): void {
     const line: Record<string, unknown> = {
       level,
       message: msg,
@@ -38,7 +43,6 @@ function parseArgs(argv: string[]): { workflowPath: string; port?: number } {
     port = parseInt(args[portIdx + 1], 10);
   }
 
-  const logsIdx = args.indexOf("--logs-root");
   const filteredArgs = args.filter((a, i) => {
     if (a === "--port" || a === "--logs-root") return false;
     if (i > 0 && (args[i - 1] === "--port" || args[i - 1] === "--logs-root")) return false;
@@ -61,7 +65,7 @@ async function main(): Promise<void> {
   try {
     orchestrator = new Orchestrator(workflowPath, logger);
   } catch (e) {
-    logger.error(`Failed to load WORKFLOW.md: ${String(e)}`);
+    logger.error(`Failed to load WORKFLOW.md: ${fmtErr(e)}`);
     process.exit(1);
   }
 
@@ -70,27 +74,37 @@ async function main(): Promise<void> {
   const port = portArg ?? cfgPort ?? DEFAULT_STATUS_PORT;
 
   let statusServer: StatusServer | null = null;
-
   let stopping = false;
-  const shutdown = (): void => {
+
+  const shutdown = async (): Promise<void> => {
     if (stopping) return;
     stopping = true;
     logger.info("Shutdown requested");
-    orchestrator.stop();
+
     if (statusServer) {
-      statusServer.close().catch((e) => logger.warn(`Status server close failed: ${String(e)}`));
+      try {
+        await statusServer.close();
+      } catch (e) {
+        logger.warn(`Status server close failed: ${fmtErr(e)}`);
+      }
     }
-    // Give in-flight agents a moment to clean up
-    setTimeout(() => process.exit(0), 2000);
+
+    try {
+      await orchestrator.shutdown();
+    } catch (e) {
+      logger.warn(`Orchestrator shutdown failed: ${fmtErr(e)}`);
+    }
+
+    process.exit(0);
   };
 
-  process.on("SIGINT", shutdown);
-  process.on("SIGTERM", shutdown);
+  process.on("SIGINT", () => void shutdown());
+  process.on("SIGTERM", () => void shutdown());
 
   try {
     await orchestrator.start();
   } catch (e) {
-    logger.error(`Symphony failed to start: ${String(e)}`);
+    logger.error(`Symphony failed to start: ${fmtErr(e)}`);
     process.exit(1);
   }
 
@@ -98,16 +112,16 @@ async function main(): Promise<void> {
   try {
     statusServer = await startStatusServer(orchestrator, port, logger);
   } catch (e) {
-    logger.warn(`Status server failed to start on port ${port}: ${String(e)}`);
+    logger.warn(`Status server failed to start on port ${port}: ${fmtErr(e)}`);
   }
 
   // Print a human-friendly status line every 60s
   setInterval(() => {
     const snap = orchestrator.getSnapshot();
     logger.info("Status snapshot", {
-      running: String(snap.counts.running),
-      retrying: String(snap.counts.retrying),
-      total_tokens: String(snap.totals.total_tokens),
+      running: snap.counts.running,
+      retrying: snap.counts.retrying,
+      total_tokens: snap.totals.total_tokens,
     });
   }, 60_000);
 }

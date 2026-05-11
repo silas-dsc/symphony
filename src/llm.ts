@@ -15,13 +15,16 @@ export const ERR_UNAVAILABLE  = "provider_unavailable";
 
 let claudeBlockedUntilMs = 0;
 
-/** Mark Claude as rate-limited until `ms` (epoch ms). Ignored if already later. */
+/** Mark Claude as rate-limited until `ms` (epoch ms). Ignored if already earlier. */
 export function setClaudeBlockedUntil(ms: number): void {
   if (ms > claudeBlockedUntilMs) {
     claudeBlockedUntilMs = ms;
-    const until = new Date(ms).toISOString();
-    process.stderr.write(`[symphony] Claude rate-limited — skipping until ${until}\n`);
   }
+}
+
+/** Test-only: clear the block. */
+export function resetClaudeBlock(): void {
+  claudeBlockedUntilMs = 0;
 }
 
 /** Returns true if Claude is currently known to be rate-limited. */

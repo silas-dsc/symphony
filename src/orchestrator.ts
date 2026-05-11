@@ -22,14 +22,24 @@ function fmtErr(e: unknown): string {
   try { return JSON.stringify(e); } catch { return String(e); }
 }
 
+interface DerivedConfig {
+  activeStatesLower: string[];
+  terminalStatesLower: string[];
+}
+
+const SHUTDOWN_GRACE_MS = 30_000;
+const RELOAD_DEBOUNCE_MS = 250;
+
 export class Orchestrator {
   private workflowPath: string;
   private config: WorkflowConfig;
   private promptTemplate: string;
   private symphonyRoot: string;
+  private derived: DerivedConfig;
   private state: OrchestratorState;
   private tickTimer: ReturnType<typeof setTimeout> | null = null;
   private watcher: fs.FSWatcher | null = null;
+  private reloadTimer: ReturnType<typeof setTimeout> | null = null;
   private log: Logger;
 
   constructor(workflowPath: string, logger: Logger) {
@@ -40,6 +50,7 @@ export class Orchestrator {
     this.config = workflow.config;
     this.promptTemplate = workflow.promptTemplate;
     this.symphonyRoot = workflow.symphonyRoot;
+    this.derived = computeDerived(this.config);
 
     this.state = {
       pollIntervalMs: this.config.polling.intervalMs,
@@ -47,7 +58,6 @@ export class Orchestrator {
       running: new Map(),
       claimed: new Set(),
       retryAttempts: new Map(),
-      completed: new Set(),
       totalInputTokens: 0,
       totalOutputTokens: 0,
       totalTokens: 0,
@@ -78,14 +88,19 @@ export class Orchestrator {
 
     this.log.info("Symphony started", {
       project: this.config.tracker.projectSlug,
-      poll_interval_ms: String(this.state.pollIntervalMs),
+      poll_interval_ms: this.state.pollIntervalMs,
     });
   }
 
+  /** Synchronous: stops timers, aborts running agents. Does NOT wait for them to settle. */
   stop(): void {
     if (this.tickTimer) {
       clearTimeout(this.tickTimer);
       this.tickTimer = null;
+    }
+    if (this.reloadTimer) {
+      clearTimeout(this.reloadTimer);
+      this.reloadTimer = null;
     }
     if (this.watcher) {
       this.watcher.close();
@@ -98,6 +113,29 @@ export class Orchestrator {
       clearTimeout(entry.timer);
     }
     this.log.info("Symphony stopped");
+  }
+
+  /**
+   * Graceful shutdown: stops timers, aborts agents, then awaits all in-flight
+   * agent promises with a hard timeout. Resolves once everything is settled or
+   * the timeout fires.
+   */
+  async shutdown(timeoutMs: number = SHUTDOWN_GRACE_MS): Promise<void> {
+    const pending = Array.from(this.state.running.values()).map(e => e.done);
+    this.stop();
+    if (pending.length === 0) return;
+
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const timeout = new Promise<"timeout">((resolve) => {
+      timer = setTimeout(() => resolve("timeout"), timeoutMs);
+    });
+    const settled = Promise.allSettled(pending).then(() => "settled" as const);
+
+    const which = await Promise.race([settled, timeout]);
+    if (timer) clearTimeout(timer);
+    if (which === "timeout") {
+      this.log.warn("Shutdown timed out waiting for agents", { pending: pending.length, timeout_ms: timeoutMs });
+    }
   }
 
   getConfigSnapshot(): WorkflowConfig {
@@ -184,24 +222,46 @@ export class Orchestrator {
 
   private startFileWatch(): void {
     try {
-      this.watcher = fs.watch(this.workflowPath, () => this.reloadWorkflow());
+      // Debounce: editors often emit multiple events per save (vim writes the
+      // file, IntelliJ does write-rename-replace, etc.), and a fast double-fire
+      // would race the validate-then-swap below.
+      this.watcher = fs.watch(this.workflowPath, () => {
+        if (this.reloadTimer) clearTimeout(this.reloadTimer);
+        this.reloadTimer = setTimeout(() => {
+          this.reloadTimer = null;
+          this.reloadWorkflow();
+        }, RELOAD_DEBOUNCE_MS);
+      });
+      this.watcher.on("error", (e) => {
+        this.log.warn(`Workflow watcher error: ${fmtErr(e)}`);
+      });
     } catch (e) {
-      this.log.warn(`Failed to watch ${this.workflowPath}: ${e}`);
+      this.log.warn(`Failed to watch ${this.workflowPath}: ${fmtErr(e)}`);
     }
   }
 
   private reloadWorkflow(): void {
+    let workflow;
     try {
-      const workflow = loadWorkflow(this.workflowPath);
-      this.config = workflow.config;
-      this.promptTemplate = workflow.promptTemplate;
-      this.symphonyRoot = workflow.symphonyRoot;
-      this.state.pollIntervalMs = this.config.polling.intervalMs;
-      this.state.maxConcurrentAgents = this.config.agent.maxConcurrentAgents;
-      this.log.info("WORKFLOW.md reloaded");
+      workflow = loadWorkflow(this.workflowPath);
     } catch (e) {
-      this.log.error(`Failed to reload WORKFLOW.md, keeping last good config: ${e}`);
+      this.log.error(`Failed to reload WORKFLOW.md, keeping last good config: ${fmtErr(e)}`);
+      return;
     }
+
+    const validationError = validateConfig(workflow.config);
+    if (validationError) {
+      this.log.error(`WORKFLOW.md reload rejected (invalid config), keeping last good: ${validationError}`);
+      return;
+    }
+
+    this.config = workflow.config;
+    this.promptTemplate = workflow.promptTemplate;
+    this.symphonyRoot = workflow.symphonyRoot;
+    this.derived = computeDerived(this.config);
+    this.state.pollIntervalMs = this.config.polling.intervalMs;
+    this.state.maxConcurrentAgents = this.config.agent.maxConcurrentAgents;
+    this.log.info("WORKFLOW.md reloaded");
   }
 
   // ─── Poll loop ─────────────────────────────────────────────────────────────
@@ -230,9 +290,9 @@ export class Orchestrator {
     }
 
     this.log.info(`Polled Linear`, {
-      candidates: String(candidates.length),
-      running: String(this.state.running.size),
-      retrying: String(this.state.retryAttempts.size),
+      candidates: candidates.length,
+      running: this.state.running.size,
+      retrying: this.state.retryAttempts.size,
     });
 
     const sorted = this.sortForDispatch(candidates);
@@ -264,11 +324,9 @@ export class Orchestrator {
     if (!issue.id || !issue.identifier || !issue.title || !issue.state) return false;
 
     const stateLower = issue.state.toLowerCase();
-    const activeLower = this.config.tracker.activeStates.map(s => s.toLowerCase());
-    const terminalLower = this.config.tracker.terminalStates.map(s => s.toLowerCase());
 
-    if (!activeLower.includes(stateLower)) return false;
-    if (terminalLower.includes(stateLower)) return false;
+    if (!this.derived.activeStatesLower.includes(stateLower)) return false;
+    if (this.derived.terminalStatesLower.includes(stateLower)) return false;
     if (this.state.running.has(issue.id)) return false;
     if (this.state.claimed.has(issue.id)) return false;
 
@@ -281,7 +339,7 @@ export class Orchestrator {
 
     if (stateLower === "todo") {
       const hasNonTerminalBlocker = issue.blockedBy.some(
-        b => b.state && !terminalLower.includes(b.state.toLowerCase())
+        b => b.state && !this.derived.terminalStatesLower.includes(b.state.toLowerCase())
       );
       if (hasNonTerminalBlocker) return false;
     }
@@ -296,40 +354,12 @@ export class Orchestrator {
   private dispatch(issue: Issue, attempt: number | null): void {
     const abortController = new AbortController();
 
-    const entry: RunningEntry = {
-      issueId: issue.id,
-      issueIdentifier: issue.identifier,
-      issue,
-      startedAt: new Date(),
-      pid: null,
-      sessionId: null,
-      lastEvent: null,
-      lastEventAt: null,
-      lastMessage: null,
-      inputTokens: 0,
-      outputTokens: 0,
-      totalTokens: 0,
-      turnCount: 0,
-      retryAttempt: attempt,
-      rateLimit: null,
-      abortController,
-    };
-
-    this.state.running.set(issue.id, entry);
-    this.state.claimed.add(issue.id);
-    this.state.retryAttempts.delete(issue.id);
-
-    this.log.info(`Dispatching agent`, {
-      issue_id: issue.id,
-      issue_identifier: issue.identifier,
-      attempt: String(attempt ?? 0),
-    });
-
     const config = this.config;
     const promptTemplate = this.promptTemplate;
     const symphonyRoot = this.symphonyRoot;
+    const logger = this.log;
 
-    runAgentAttempt(
+    const done = runAgentAttempt(
       issue,
       attempt,
       config,
@@ -353,23 +383,54 @@ export class Orchestrator {
           e.rateLimit = event.rateLimit;
           this.state.latestRateLimit = event.rateLimit;
         }
-      }
+      },
+      logger,
     )
       .then(result => this.handleWorkerExit(issue.id, result))
       .catch(e => {
-        this.log.error(`Agent crashed for ${issue.identifier}: ${String(e)}`, {
+        this.log.error(`Agent crashed for ${issue.identifier}: ${fmtErr(e)}`, {
           issue_id: issue.id,
           issue_identifier: issue.identifier,
         });
         this.handleWorkerExit(issue.id, {
           success: false,
-          error: String(e),
+          error: fmtErr(e),
           inputTokens: 0,
           outputTokens: 0,
           totalTokens: 0,
           turnCount: 0,
         });
       });
+
+    const entry: RunningEntry = {
+      issueId: issue.id,
+      issueIdentifier: issue.identifier,
+      issue,
+      startedAt: new Date(),
+      pid: null,
+      sessionId: null,
+      lastEvent: null,
+      lastEventAt: null,
+      lastMessage: null,
+      inputTokens: 0,
+      outputTokens: 0,
+      totalTokens: 0,
+      turnCount: 0,
+      retryAttempt: attempt,
+      rateLimit: null,
+      abortController,
+      done,
+    };
+
+    this.state.running.set(issue.id, entry);
+    this.state.claimed.add(issue.id);
+    this.state.retryAttempts.delete(issue.id);
+
+    this.log.info(`Dispatching agent`, {
+      issue_id: issue.id,
+      issue_identifier: issue.identifier,
+      attempt: attempt ?? 0,
+    });
   }
 
   private handleWorkerExit(issueId: string, result: AgentResult): void {
@@ -384,15 +445,16 @@ export class Orchestrator {
     this.state.running.delete(issueId);
 
     if (result.success) {
-      this.state.completed.add(issueId);
+      // Release the claim and let the next poll re-evaluate the issue. If it's
+      // still in an active state, the next tick (≤ pollIntervalMs away) will
+      // pick it up naturally — no separate "continuation retry" needed.
+      this.state.claimed.delete(issueId);
       this.log.info(`Agent completed`, {
         issue_id: issueId,
         issue_identifier: entry.issueIdentifier,
-        turn_count: String(result.turnCount),
+        turn_count: result.turnCount,
         duration_s: durationSeconds.toFixed(1),
       });
-      // Short continuation retry — re-check if issue still needs work
-      this.scheduleRetry(issueId, entry.issueIdentifier, 1, null, 1000);
     } else {
       const nextAttempt = (entry.retryAttempt ?? 0) + 1;
       // When Claude is blocked and no fallback provider worked, wait until Claude
@@ -405,7 +467,7 @@ export class Orchestrator {
         issue_id: issueId,
         issue_identifier: entry.issueIdentifier,
         error: result.error ?? "unknown",
-        next_attempt: String(nextAttempt),
+        next_attempt: nextAttempt,
       });
       this.scheduleRetry(issueId, entry.issueIdentifier, nextAttempt, result.error ?? null, delay);
     }
@@ -478,7 +540,7 @@ export class Orchestrator {
   }
 
   private reconcileStalled(): void {
-    const stallMs = 300000;
+    const stallMs = this.config.agent.stallTimeoutMs;
     const now = Date.now();
 
     for (const [issueId, entry] of this.state.running) {
@@ -506,15 +568,12 @@ export class Orchestrator {
       return;
     }
 
-    const terminalLower = this.config.tracker.terminalStates.map(s => s.toLowerCase());
-    const activeLower = this.config.tracker.activeStates.map(s => s.toLowerCase());
-
     for (const { id, state } of refreshed) {
       const entry = this.state.running.get(id);
       if (!entry) continue;
 
       const stateLower = state.toLowerCase();
-      if (terminalLower.includes(stateLower)) {
+      if (this.derived.terminalStatesLower.includes(stateLower)) {
         this.log.info(`Issue reached terminal state, stopping agent`, {
           issue_id: id,
           issue_identifier: entry.issueIdentifier,
@@ -527,9 +586,10 @@ export class Orchestrator {
           this.config.workspace.root,
           entry.issueIdentifier,
           this.config.hooks.beforeRemove,
-          this.config.hooks.timeoutMs
-        ).catch(e => this.log.warn(`Workspace cleanup failed: ${String(e)}`));
-      } else if (!activeLower.includes(stateLower)) {
+          this.config.hooks.timeoutMs,
+          this.log,
+        ).catch(e => this.log.warn(`Workspace cleanup failed: ${fmtErr(e)}`));
+      } else if (!this.derived.activeStatesLower.includes(stateLower)) {
         this.log.info(`Issue moved to non-active state, stopping agent`, {
           issue_id: id,
           issue_identifier: entry.issueIdentifier,
@@ -559,7 +619,8 @@ export class Orchestrator {
           this.config.workspace.root,
           issue.identifier,
           this.config.hooks.beforeRemove,
-          this.config.hooks.timeoutMs
+          this.config.hooks.timeoutMs,
+          this.log,
         );
         cleaned++;
       }
@@ -568,7 +629,14 @@ export class Orchestrator {
         this.log.info(`Startup cleanup: removed ${cleaned} stale workspaces`);
       }
     } catch (e) {
-      this.log.warn(`Startup cleanup failed (non-fatal): ${String(e)}`);
+      this.log.warn(`Startup cleanup failed (non-fatal): ${fmtErr(e)}`);
     }
   }
+}
+
+function computeDerived(config: WorkflowConfig): DerivedConfig {
+  return {
+    activeStatesLower: config.tracker.activeStates.map(s => s.toLowerCase()),
+    terminalStatesLower: config.tracker.terminalStates.map(s => s.toLowerCase()),
+  };
 }

@@ -1,6 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { spawn } from "node:child_process";
+import type { Logger } from "./types.js";
 
 export function sanitizeKey(identifier: string): string {
   return identifier.replace(/[^A-Za-z0-9._-]/g, "_");
@@ -28,14 +29,20 @@ export async function ensureWorkspace(root: string, identifier: string): Promise
   const wsPath = getWorkspacePath(root, identifier);
   validateWorkspacePath(root, wsPath);
 
-  if (!fs.existsSync(wsPath)) {
-    fs.mkdirSync(wsPath, { recursive: true });
-    return { path: wsPath, createdNow: true };
+  let stat: fs.Stats | null = null;
+  try {
+    stat = fs.statSync(wsPath);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
   }
 
-  const stat = fs.statSync(wsPath);
-  if (!stat.isDirectory()) {
+  if (stat && !stat.isDirectory()) {
     fs.rmSync(wsPath);
+    stat = null;
+  }
+
+  if (!stat) {
+    // mkdir recursive is idempotent — no TOCTOU window.
     fs.mkdirSync(wsPath, { recursive: true });
     return { path: wsPath, createdNow: true };
   }
@@ -47,7 +54,8 @@ export async function removeWorkspace(
   root: string,
   identifier: string,
   beforeRemoveHook?: string,
-  hookTimeoutMs = 60000
+  hookTimeoutMs = 60000,
+  logger?: Logger,
 ): Promise<void> {
   const wsPath = getWorkspacePath(root, identifier);
   validateWorkspacePath(root, wsPath);
@@ -56,20 +64,25 @@ export async function removeWorkspace(
 
   if (beforeRemoveHook) {
     try {
-      await runHook(beforeRemoveHook, wsPath, hookTimeoutMs);
+      await runHook(beforeRemoveHook, wsPath, hookTimeoutMs, logger);
     } catch (e) {
-      console.warn(`[symphony] before_remove hook failed for ${identifier}: ${e}`);
+      logger?.warn(`before_remove hook failed`, { identifier, error: e instanceof Error ? e.message : String(e) });
     }
   }
 
   try {
     fs.rmSync(wsPath, { recursive: true, force: true });
   } catch (e) {
-    console.warn(`[symphony] failed to remove workspace ${wsPath}: ${e}`);
+    logger?.warn(`failed to remove workspace`, { path: wsPath, error: e instanceof Error ? e.message : String(e) });
   }
 }
 
-export async function runHook(script: string, cwd: string, timeoutMs: number): Promise<void> {
+export async function runHook(
+  script: string,
+  cwd: string,
+  timeoutMs: number,
+  logger?: Logger,
+): Promise<void> {
   // Pipe the script to `bash -l` via stdin. Inlining via `bash -lc "<script>"` breaks on
   // multi-line scripts because the host shell collapses real newlines, leaving bash to
   // parse one giant line where any apostrophe (e.g. "project's") is read as an unmatched
@@ -101,8 +114,8 @@ export async function runHook(script: string, cwd: string, timeoutMs: number): P
 
     proc.on("close", (code) => {
       clearTimeout(timer);
-      if (stdout) console.log(`[symphony] hook stdout: ${stdout.slice(0, 2000)}`);
-      if (stderr) console.log(`[symphony] hook stderr: ${stderr.slice(0, 2000)}`);
+      if (stdout) logger?.info("hook stdout", { output: stdout.slice(0, 2000) });
+      if (stderr) logger?.info("hook stderr", { output: stderr.slice(0, 2000) });
       if (code !== 0) {
         reject(new Error(`Hook exited with code ${code}: ${stderr.slice(0, 500)}`));
         return;
