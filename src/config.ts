@@ -80,6 +80,7 @@ function buildConfig(raw: Record<string, unknown>, baseDir: string): WorkflowCon
   const hooks = ((raw.hooks ?? {}) as Record<string, unknown>);
   const agent = ((raw.agent ?? {}) as Record<string, unknown>);
   const server = raw.server as Record<string, unknown> | undefined;
+  const autoUpdate = ((raw.auto_update ?? {}) as Record<string, unknown>);
 
   const apiKeyRaw = (tracker.api_key as string | undefined) ?? "$LINEAR_API_KEY";
   const apiKey = resolveEnvVar(apiKeyRaw);
@@ -130,6 +131,17 @@ function buildConfig(raw: Record<string, unknown>, baseDir: string): WorkflowCon
       maxConcurrentAgentsByState,
     },
     server: server ? { port: server.port as number | undefined } : undefined,
+    autoUpdate: {
+      enabled: (autoUpdate.enabled as boolean | undefined) ?? true,
+      intervalMs: (autoUpdate.interval_ms as number | undefined) ?? 300000,
+      remote: (autoUpdate.remote as string | undefined) ?? "origin",
+      branch: (autoUpdate.branch as string | undefined) ?? null,
+      repoRoot: typeof autoUpdate.repo_root === "string"
+        ? resolvePath(autoUpdate.repo_root, baseDir)
+        : null,
+      buildCommand: (autoUpdate.build_command as string | undefined) ?? "npm run build",
+      installCommand: (autoUpdate.install_command as string | undefined) ?? "npm install",
+    },
   };
 }
 
