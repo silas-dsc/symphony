@@ -3,9 +3,12 @@ import "dotenv/config";
 import * as path from "node:path";
 import { Orchestrator } from "./orchestrator.js";
 import { startStatusServer, type StatusServer } from "./server.js";
+import { SelfUpdater } from "./self-update.js";
 import type { Logger } from "./types.js";
 
 const DEFAULT_STATUS_PORT = 7777;
+/** Exit code used to tell the supervisor wrapper to restart Symphony. */
+const RESTART_EXIT_CODE = 75;
 
 function createLogger(): Logger {
   function log(level: string, msg: string, context?: Record<string, string>): void {
@@ -70,22 +73,24 @@ async function main(): Promise<void> {
   const port = portArg ?? cfgPort ?? DEFAULT_STATUS_PORT;
 
   let statusServer: StatusServer | null = null;
+  let selfUpdater: SelfUpdater | null = null;
 
   let stopping = false;
-  const shutdown = (): void => {
+  const shutdown = (exitCode: number = 0): void => {
     if (stopping) return;
     stopping = true;
-    logger.info("Shutdown requested");
+    logger.info("Shutdown requested", { exit_code: String(exitCode) });
+    selfUpdater?.stop();
     orchestrator.stop();
     if (statusServer) {
       statusServer.close().catch((e) => logger.warn(`Status server close failed: ${String(e)}`));
     }
     // Give in-flight agents a moment to clean up
-    setTimeout(() => process.exit(0), 2000);
+    setTimeout(() => process.exit(exitCode), 2000);
   };
 
-  process.on("SIGINT", shutdown);
-  process.on("SIGTERM", shutdown);
+  process.on("SIGINT", () => shutdown(0));
+  process.on("SIGTERM", () => shutdown(0));
 
   try {
     await orchestrator.start();
@@ -100,6 +105,15 @@ async function main(): Promise<void> {
   } catch (e) {
     logger.warn(`Status server failed to start on port ${port}: ${String(e)}`);
   }
+
+  // Self-updater: periodically pull new commits, rebuild, then exit with
+  // RESTART_EXIT_CODE so the supervisor wrapper relaunches us on fresh code.
+  selfUpdater = new SelfUpdater({
+    config: orchestrator.getConfigSnapshot().autoUpdate,
+    logger,
+    onRestartRequested: () => shutdown(RESTART_EXIT_CODE),
+  });
+  selfUpdater.start().catch(e => logger.warn(`Self-updater failed to start: ${String(e)}`));
 
   // Print a human-friendly status line every 60s
   setInterval(() => {
