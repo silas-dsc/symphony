@@ -1,5 +1,7 @@
 import { spawn } from "node:child_process";
 import * as readline from "node:readline";
+import * as fs from "node:fs";
+import * as path from "node:path";
 import { Liquid } from "liquidjs";
 import type { Issue, AgentResult, WorkflowConfig, RateLimitInfo, AgentEvent, AgentEventCallback } from "./types.js";
 import { ensureWorkspace, runHook } from "./workspace.js";
@@ -107,9 +109,14 @@ export async function runAgentAttempt(
     onEvent({ type: "notification", message: `[symphony] model selected: ${selectedModel}` });
   }
 
+  const mcpConfigPath = resolveAgentMcpConfig(symphonyRoot);
+  if (mcpConfigPath) {
+    onEvent({ type: "notification", message: `[symphony] mcp config: ${mcpConfigPath}` });
+  }
+
   try {
     onEvent({ type: "session_started" });
-    const result = await spawnWithFailover(prompt, wsPath, config.agent.maxTurns, abortController, onEvent, selectedModel);
+    const result = await spawnWithFailover(prompt, wsPath, config.agent.maxTurns, abortController, onEvent, selectedModel, mcpConfigPath);
     success = result.success;
     errorMsg = result.error;
     inputTokens = result.inputTokens;
@@ -150,13 +157,14 @@ async function spawnWithFailover(
   abortController: AbortController,
   onEvent: AgentEventCallback,
   model: string | undefined,
+  mcpConfigPath: string | undefined,
 ): Promise<AgentResult> {
   // ── Claude ──────────────────────────────────────────────────────────────────
   // Skip Claude entirely if it is known to be rate-limited right now.
   if (!isClaudeBlocked()) {
     let claudeResult: AgentResult | undefined;
     try {
-      claudeResult = await spawnClaude(prompt, cwd, maxTurns, abortController, onEvent, model);
+      claudeResult = await spawnClaude(prompt, cwd, maxTurns, abortController, onEvent, model, mcpConfigPath);
     } catch {
       claudeResult = { success: false, error: ERR_UNAVAILABLE, inputTokens: 0, outputTokens: 0, totalTokens: 0, turnCount: 0 };
     }
@@ -213,6 +221,18 @@ function isRateLimitText(text: string): boolean {
   );
 }
 
+/**
+ * Resolve the path to the agent's MCP config (e.g. for chrome-devtools-mcp).
+ * Prefers $SYMPHONY_AGENT_MCP_CONFIG when set, else `<symphonyRoot>/agent-mcp.json`.
+ * Returns undefined if no file is found, so the agent runs with the user's default MCPs only.
+ */
+function resolveAgentMcpConfig(symphonyRoot: string): string | undefined {
+  const explicit = process.env.SYMPHONY_AGENT_MCP_CONFIG;
+  if (explicit && fs.existsSync(explicit)) return explicit;
+  const defaultPath = path.join(symphonyRoot, "agent-mcp.json");
+  return fs.existsSync(defaultPath) ? defaultPath : undefined;
+}
+
 async function spawnClaude(
   prompt: string,
   cwd: string,
@@ -220,6 +240,7 @@ async function spawnClaude(
   abortController: AbortController,
   onEvent: AgentEventCallback,
   model: string | undefined,
+  mcpConfigPath: string | undefined,
 ): Promise<AgentResult> {
   return new Promise((resolve, reject) => {
     // Build a clean env for the spawned `claude`. An empty `ANTHROPIC_API_KEY=""`
@@ -233,12 +254,14 @@ async function spawnClaude(
     }
 
     const modelArgs = model ? ["--model", model] : [];
+    const mcpArgs = mcpConfigPath ? ["--mcp-config", mcpConfigPath] : [];
 
     const proc = spawn(
       "claude",
       [
         "-p",
         ...modelArgs,
+        ...mcpArgs,
         "--output-format", "stream-json",
         "--verbose",
         "--dangerously-skip-permissions",
