@@ -1,5 +1,30 @@
 import type { Issue, BlockerRef, TrackerConfig } from "./types.js";
 
+export type LinearErrorCode =
+  | "linear_api_request"
+  | "linear_api_status"
+  | "linear_graphql_errors"
+  | "linear_unknown_payload"
+  | "linear_missing_end_cursor"
+  | "linear_invalid_response";
+
+export class LinearError extends Error {
+  readonly code: LinearErrorCode;
+  readonly status?: number;
+  readonly graphqlErrors?: Array<{ message: string }>;
+  constructor(
+    code: LinearErrorCode,
+    message: string,
+    extra?: { status?: number; graphqlErrors?: Array<{ message: string }> },
+  ) {
+    super(message);
+    this.name = "LinearError";
+    this.code = code;
+    if (extra?.status !== undefined) this.status = extra.status;
+    if (extra?.graphqlErrors !== undefined) this.graphqlErrors = extra.graphqlErrors;
+  }
+}
+
 interface GraphQLResponse<T> {
   data?: T;
   errors?: Array<{ message: string }>;
@@ -23,23 +48,38 @@ async function graphql<T>(
       signal: AbortSignal.timeout(30000),
     });
   } catch (e) {
-    throw { code: "linear_api_request", error: String(e) };
+    throw new LinearError("linear_api_request", e instanceof Error ? e.message : String(e));
   }
 
   if (!response.ok) {
     let body = "";
     try { body = await response.text(); } catch { /* ignore */ }
-    throw { code: "linear_api_status", status: response.status, body };
+    throw new LinearError(
+      "linear_api_status",
+      `Linear API returned HTTP ${response.status}: ${body.slice(0, 300)}`,
+      { status: response.status },
+    );
   }
 
   const json = (await response.json()) as GraphQLResponse<T>;
   if (json.errors?.length) {
-    throw { code: "linear_graphql_errors", errors: json.errors };
+    const msg = json.errors.map(e => e.message).join("; ");
+    throw new LinearError("linear_graphql_errors", `GraphQL errors: ${msg}`, { graphqlErrors: json.errors });
   }
   if (!json.data) {
-    throw { code: "linear_unknown_payload" };
+    throw new LinearError("linear_unknown_payload", "Linear response had neither data nor errors");
   }
   return json.data;
+}
+
+function expectString(value: unknown, field: string): string {
+  if (typeof value !== "string") {
+    throw new LinearError(
+      "linear_invalid_response",
+      `Expected issue.${field} to be string, got ${value === null ? "null" : typeof value}`,
+    );
+  }
+  return value;
 }
 
 function normalizeIssue(node: Record<string, unknown>): Issue {
@@ -53,8 +93,8 @@ function normalizeIssue(node: Record<string, unknown>): Issue {
       if (!r.issue) return null;
       const st = r.issue.state as { name: string } | null;
       return {
-        id: r.issue.id as string | null,
-        identifier: r.issue.identifier as string | null,
+        id: (r.issue.id as string | null) ?? null,
+        identifier: (r.issue.identifier as string | null) ?? null,
         state: st?.name ?? null,
       };
     })
@@ -64,9 +104,9 @@ function normalizeIssue(node: Record<string, unknown>): Issue {
   const state = node.state as { name: string } | null;
 
   return {
-    id: node.id as string,
-    identifier: node.identifier as string,
-    title: node.title as string,
+    id: expectString(node.id, "id"),
+    identifier: expectString(node.identifier, "identifier"),
+    title: expectString(node.title, "title"),
     description: (node.description as string | null) ?? null,
     priority: typeof priority === "number" ? priority : null,
     state: state?.name ?? "",
@@ -168,7 +208,7 @@ export async function fetchCandidateIssues(config: TrackerConfig): Promise<Issue
 
     if (!data.issues.pageInfo.hasNextPage) break;
     if (!data.issues.pageInfo.endCursor) {
-      throw { code: "linear_missing_end_cursor" };
+      throw new LinearError("linear_missing_end_cursor", "Linear pagination returned hasNextPage with no cursor");
     }
     after = data.issues.pageInfo.endCursor;
   }

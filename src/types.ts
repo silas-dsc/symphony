@@ -33,6 +33,7 @@ export interface WorkflowConfig {
   hooks: HooksConfig;
   agent: AgentConfig;
   server?: ServerConfig;
+  autoUpdate: AutoUpdateConfig;
 }
 
 export interface TrackerConfig {
@@ -67,11 +68,29 @@ export interface AgentConfig {
   maxConcurrentAgents: number;
   maxTurns: number;
   maxRetryBackoffMs: number;
+  stallTimeoutMs: number;
   maxConcurrentAgentsByState: Record<string, number>;
 }
 
 export interface ServerConfig {
   port?: number;
+}
+
+export interface AutoUpdateConfig {
+  /** When false, Symphony will not poll GitHub for self-updates. */
+  enabled: boolean;
+  /** Poll interval in milliseconds. */
+  intervalMs: number;
+  /** Remote name to fetch from (default "origin"). */
+  remote: string;
+  /** Branch to track; defaults to the current local branch. */
+  branch: string | null;
+  /** Absolute path to the Symphony git checkout; defaults to the directory containing the running build. */
+  repoRoot: string | null;
+  /** Build command run after a successful pull (default "npm run build"). */
+  buildCommand: string;
+  /** Install command run when package-lock.json or package.json changes (default "npm install"). */
+  installCommand: string;
 }
 
 export interface AgentResult {
@@ -124,6 +143,8 @@ export interface RunningEntry {
   retryAttempt: number | null;
   rateLimit: RateLimitInfo | null;
   abortController: AbortController;
+  /** Promise that resolves when the agent run settles. Tracked so shutdown can await. */
+  done: Promise<void>;
 }
 
 export interface RetryEntry {
@@ -141,7 +162,6 @@ export interface OrchestratorState {
   running: Map<string, RunningEntry>;
   claimed: Set<string>;
   retryAttempts: Map<string, RetryEntry>;
-  completed: Set<string>;
   totalInputTokens: number;
   totalOutputTokens: number;
   totalTokens: number;
@@ -214,7 +234,7 @@ export interface RetrySnapshot {
 }
 
 export interface Logger {
-  info(msg: string, context?: Record<string, string>): void;
-  warn(msg: string, context?: Record<string, string>): void;
-  error(msg: string, context?: Record<string, string>): void;
+  info(msg: string, context?: Record<string, unknown>): void;
+  warn(msg: string, context?: Record<string, unknown>): void;
+  error(msg: string, context?: Record<string, unknown>): void;
 }
