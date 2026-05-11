@@ -8,12 +8,14 @@
   },
   "bin": {
     "symphony": "./dist/index.js",
-    "symphony-status": "./dist/status.js"
+    "symphony-status": "./dist/status.js",
+    "symphony-supervisor": "./bin/symphony-supervisor.sh"
   },
   "scripts": {
     "build": "tsc",
     "dev": "tsx src/index.ts",
     "start": "node dist/index.js",
+    "start:watch": "./bin/symphony-supervisor.sh",
     "status": "node dist/status.js",
     "test": "vitest run",
     "test:watch": "vitest"

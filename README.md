@@ -176,6 +176,13 @@ You are an autonomous coding agent working on {{ issue.identifier }}: {{ issue.t
 | `agent.max_retry_backoff_ms` | `300000` | Maximum retry back-off (ms) for failed agents |
 | `agent.max_concurrent_agents_by_state` | `{}` | Per-state concurrency cap, e.g. `{ "in progress": 2 }` |
 | `server.port` | `7777` | Port for the status HTTP server (loopback only) |
+| `auto_update.enabled` | `true` | Periodically pull new commits from the Symphony git remote, rebuild, and restart |
+| `auto_update.interval_ms` | `300000` | Poll interval (ms) for the self-updater |
+| `auto_update.remote` | `origin` | Git remote to fetch from |
+| `auto_update.branch` | current branch | Branch to track on the remote; defaults to whichever branch Symphony is checked out on |
+| `auto_update.repo_root` | Symphony checkout | Absolute path to the Symphony git working tree (rarely needs overriding) |
+| `auto_update.build_command` | `npm run build` | Command run after a successful pull |
+| `auto_update.install_command` | `npm install` | Command run when `package.json` or `package-lock.json` changes |
 
 #### Prompt template variables
 
@@ -233,7 +240,28 @@ node dist/index.js /path/to/WORKFLOW.md
 
 # Override the status server port
 node dist/index.js --port 8080
+
+# Start under the supervisor wrapper so self-updates are picked up automatically
+./bin/symphony-supervisor.sh                 # forwards args to dist/index.js
+# or equivalently:
+npm run start:watch
 ```
+
+### Auto-update from GitHub
+
+When `auto_update.enabled` is `true` (the default), Symphony periodically:
+
+1. Runs `git fetch <remote> <branch>` against its own checkout.
+2. If new commits exist and the working tree is clean, fast-forward pulls them.
+3. Re-runs the install command (only when `package.json` or `package-lock.json` changed) and then the build command.
+4. Exits with code **75** to ask the supervisor wrapper to relaunch Symphony on the fresh build.
+
+The in-process self-updater always exits on update — actual restart is performed by `bin/symphony-supervisor.sh`. Run Symphony under the supervisor (or any process manager that re-runs on exit code 75, e.g. systemd with `RestartForceExitStatus=75`) to get hands-off updates. If launched directly with `node dist/index.js`, Symphony will still pull and rebuild but exit instead of restarting.
+
+Self-update is skipped — never destructive — when:
+- The working tree has uncommitted changes,
+- The local branch is ahead of the remote, or
+- HEAD is detached and `auto_update.branch` is not set.
 
 Symphony will:
 1. Validate configuration
