@@ -28,6 +28,10 @@ hooks:
   before_run: |
     echo "[symphony] convergent setup: $(pwd)"
 
+    # ── Git sync ─────────────────────────────────────────────────────────────
+    echo "[symphony] pulling latest origin/main"
+    git pull --rebase --autostash origin main
+
     # ── Node version ──────────────────────────────────────────────────────────
     if [ -f .nvmrc ]; then
       export NVM_DIR="$HOME/.nvm"
