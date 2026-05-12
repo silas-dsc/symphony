@@ -182,6 +182,13 @@ export interface TrackedIssueEntry {
   completionSummary: string | null;
 }
 
+export interface PendingSlackNotification {
+  issueId: string;
+  issue: Issue;
+  state: string;
+  completionSummary: string | null;
+}
+
 export interface RetryEntry {
   issueId: string;
   identifier: string;
@@ -199,6 +206,7 @@ export interface OrchestratorState {
   knownTerminalIssueIds: Set<string>;
   claimed: Set<string>;
   retryAttempts: Map<string, RetryEntry>;
+  pendingSlackNotifications: PendingSlackNotification[];
   totalInputTokens: number;
   totalOutputTokens: number;
   totalTokens: number;

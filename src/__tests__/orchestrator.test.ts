@@ -49,7 +49,7 @@ describe("Orchestrator Slack completion notifications", () => {
     delete process.env.TEST_SLACK_WEBHOOK_URL;
   });
 
-  it("posts a Slack message when a ticket appears directly in a terminal state", async () => {
+  it("posts a batched Slack message when a ticket appears directly in a terminal state", async () => {
     process.env.TEST_SLACK_WEBHOOK_URL = "https://hooks.slack.test/services/COMPLETE";
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "symphony-orchestrator-"));
     const workflowPath = path.join(tmpDir, "WORKFLOW.md");
@@ -84,7 +84,7 @@ Prompt body`, "utf8");
       assignee: { name: "Owner Example", email: "owner@example.com" },
       creator: { name: "Reporter Example", email: "reporter@example.com" },
       createdAt: new Date("2026-01-01T00:00:00Z"),
-      updatedAt: new Date("2026-01-02T00:00:00Z"),
+      updatedAt: new Date(),
     };
 
     vi.mocked(linear.fetchIssuesByStates).mockResolvedValue([
@@ -101,15 +101,23 @@ Prompt body`, "utf8");
       reconcileTerminalIssues(): Promise<void>;
     }).reconcileTerminalIssues();
 
+    // Not sent yet — still in the queue
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    await (orchestrator as unknown as {
+      flushSlackBatch(): Promise<void>;
+    }).flushSlackBatch();
+
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toBe("https://hooks.slack.test/services/COMPLETE");
 
     const payload = JSON.parse(String(init.body)) as { text: string; blocks: Array<Record<string, unknown>> };
-    expect(payload.text).toContain("ABC-124 completed");
+    expect(payload.text).toContain("DONE:");
+    expect(payload.text).toContain("https://linear.app/example/issue/ABC-124");
+    expect(JSON.stringify(payload.blocks)).toContain("https://linear.app/example/issue/ABC-124");
     expect(JSON.stringify(payload.blocks)).toContain("Make direct transitions to Done visible in Slack");
-    expect(JSON.stringify(payload.blocks)).toContain("<@UOWNER>");
-    expect(JSON.stringify(payload.blocks)).toContain("<@UREPORTER>");
+    expect(JSON.stringify(payload.blocks)).toContain("<@UOWNER>, <@UREPORTER>");
     expect(vi.mocked(linear.hasSlackNotificationComment)).toHaveBeenCalledWith(
       expect.any(Object),
       issue.id,
@@ -127,7 +135,7 @@ Prompt body`, "utf8");
     );
   });
 
-  it("posts a Slack message when a tracked issue moves to a completion state", async () => {
+  it("posts a batched Slack message when a tracked issue moves to a completion state", async () => {
     process.env.TEST_SLACK_WEBHOOK_URL = "https://hooks.slack.test/services/COMPLETE";
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "symphony-orchestrator-"));
     const workflowPath = path.join(tmpDir, "WORKFLOW.md");
@@ -162,7 +170,7 @@ Prompt body`, "utf8");
       assignee: { name: "Owner Example", email: "owner@example.com" },
       creator: { name: "Reporter Example", email: "reporter@example.com" },
       createdAt: new Date("2026-01-01T00:00:00Z"),
-      updatedAt: new Date("2026-01-02T00:00:00Z"),
+      updatedAt: new Date(),
     };
 
     vi.mocked(linear.fetchIssueStatesByIds).mockResolvedValue([
@@ -183,16 +191,22 @@ Prompt body`, "utf8");
       reconcileTrackedStates(activeIds: Set<string>): Promise<void>;
     }).reconcileTrackedStates(new Set());
 
+    // Not sent yet — still in the queue
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    await (orchestrator as unknown as {
+      flushSlackBatch(): Promise<void>;
+    }).flushSlackBatch();
+
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
     expect(url).toBe("https://hooks.slack.test/services/COMPLETE");
 
     const payload = JSON.parse(String(init.body)) as { text: string; blocks: Array<Record<string, unknown>> };
-    expect(payload.text).toContain("ABC-123 completed");
+    expect(payload.text).toContain("DONE:");
+    expect(payload.text).toContain("https://linear.app/example/issue/ABC-123");
     expect(JSON.stringify(payload.blocks)).toContain("plain-English summary");
-    expect(JSON.stringify(payload.blocks)).toContain("non-technical stakeholders know what landed");
-    expect(JSON.stringify(payload.blocks)).toContain("<@UOWNER>");
-    expect(JSON.stringify(payload.blocks)).toContain("<@UREPORTER>");
+    expect(JSON.stringify(payload.blocks)).toContain("<@UOWNER>, <@UREPORTER>");
     expect(JSON.stringify(payload.blocks)).toContain("https://linear.app/example/issue/ABC-123");
     expect(vi.mocked(linear.hasSlackNotificationComment)).toHaveBeenCalledWith(
       expect.any(Object),
@@ -246,7 +260,7 @@ Prompt body`, "utf8");
       assignee: { name: "Owner Example", email: "owner@example.com" },
       creator: null,
       createdAt: new Date("2026-01-01T00:00:00Z"),
-      updatedAt: new Date("2026-01-02T00:00:00Z"),
+      updatedAt: new Date(),
     };
 
     vi.mocked(linear.hasSlackNotificationComment).mockResolvedValue(true);
@@ -264,6 +278,10 @@ Prompt body`, "utf8");
         abortRunningEntry: boolean,
       ): Promise<void>;
     }).handleTerminalIssue(issue.id, issue, issue.state, null, false);
+
+    await (orchestrator as unknown as {
+      flushSlackBatch(): Promise<void>;
+    }).flushSlackBatch();
 
     expect(vi.mocked(linear.hasSlackNotificationComment)).toHaveBeenCalledWith(
       expect.any(Object),
@@ -315,7 +333,7 @@ Prompt body`, "utf8");
       assignee: { name: "Owner Example", email: "owner@example.com" },
       creator: { name: "Reporter Example", email: "reporter@example.com" },
       createdAt: new Date("2026-01-01T00:00:00Z"),
-      updatedAt: new Date("2026-01-02T00:00:00Z"),
+      updatedAt: new Date(),
     };
 
     vi.mocked(linear.fetchIssuesByStates).mockResolvedValue([
@@ -339,11 +357,165 @@ Prompt body`, "utf8");
       reconcileTerminalIssues(): Promise<void>;
     }).reconcileTerminalIssues();
 
+    // Not sent yet — still in the queue
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    await (orchestrator as unknown as {
+      flushSlackBatch(): Promise<void>;
+    }).flushSlackBatch();
+
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(vi.mocked(linear.addSlackNotificationComment)).toHaveBeenCalledWith(
       expect.any(Object),
       issue.id,
     );
     expect(state.knownTerminalIssueIds.has(issue.id)).toBe(true);
+  });
+
+  it("batches multiple completed tickets into one Slack message", async () => {
+    process.env.TEST_SLACK_WEBHOOK_URL = "https://hooks.slack.test/services/COMPLETE";
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "symphony-orchestrator-"));
+    const workflowPath = path.join(tmpDir, "WORKFLOW.md");
+    fs.writeFileSync(workflowPath, `---
+tracker:
+  kind: linear
+  api_key: test-linear-key
+  project_slug: demo
+workspace:
+  root: ${tmpDir}
+notifications:
+  slack:
+    webhook_url: $TEST_SLACK_WEBHOOK_URL
+    user_map:
+      a@example.com: UA
+      b@example.com: UB
+---
+
+Prompt body`, "utf8");
+
+    const makeIssue = (id: string, identifier: string, url: string, email: string): Issue => ({
+      id,
+      identifier,
+      title: `Issue ${identifier}`,
+      description: `Description for ${identifier}.`,
+      priority: 1,
+      state: "Done",
+      branchName: null,
+      url,
+      labels: [],
+      blockedBy: [],
+      assignee: { name: `Person ${identifier}`, email },
+      creator: null,
+      createdAt: new Date("2026-01-01T00:00:00Z"),
+      updatedAt: new Date(),
+    });
+
+    const issueA = makeIssue("id-a", "ABC-200", "https://linear.app/example/issue/ABC-200", "a@example.com");
+    const issueB = makeIssue("id-b", "ABC-201", "https://linear.app/example/issue/ABC-201", "b@example.com");
+
+    const fetchMock = vi.fn().mockResolvedValue(new Response("ok", { status: 200 }));
+    globalThis.fetch = fetchMock as typeof fetch;
+
+    const orchestrator = new Orchestrator(workflowPath, makeLogger());
+
+    await (orchestrator as unknown as {
+      handleTerminalIssue(
+        issueId: string,
+        issue: Issue,
+        state: string,
+        completionSummary: string | null,
+        abortRunningEntry: boolean,
+      ): Promise<void>;
+    }).handleTerminalIssue(issueA.id, issueA, "Done", "Fixed the caching bug for sold-out events.", false);
+
+    await (orchestrator as unknown as {
+      handleTerminalIssue(
+        issueId: string,
+        issue: Issue,
+        state: string,
+        completionSummary: string | null,
+        abortRunningEntry: boolean,
+      ): Promise<void>;
+    }).handleTerminalIssue(issueB.id, issueB, "Done", "Removed the gap from the top banner section.", false);
+
+    // Still not sent before flush
+    expect(fetchMock).not.toHaveBeenCalled();
+
+    await (orchestrator as unknown as {
+      flushSlackBatch(): Promise<void>;
+    }).flushSlackBatch();
+
+    // One message for both tickets
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const payload = JSON.parse(String(init.body)) as { text: string; blocks: Array<Record<string, unknown>> };
+
+    expect(payload.text).toContain("DONE:");
+    expect(payload.text).toContain("https://linear.app/example/issue/ABC-200");
+    expect(payload.text).toContain("https://linear.app/example/issue/ABC-201");
+    expect(JSON.stringify(payload.blocks)).toContain("<@UA>");
+    expect(JSON.stringify(payload.blocks)).toContain("<@UB>");
+
+    expect(vi.mocked(linear.addSlackNotificationComment)).toHaveBeenCalledTimes(2);
+  });
+
+  it("drops tickets with updatedAt older than 24h from the batch", async () => {
+    process.env.TEST_SLACK_WEBHOOK_URL = "https://hooks.slack.test/services/COMPLETE";
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "symphony-orchestrator-"));
+    const workflowPath = path.join(tmpDir, "WORKFLOW.md");
+    fs.writeFileSync(workflowPath, `---
+tracker:
+  kind: linear
+  api_key: test-linear-key
+  project_slug: demo
+workspace:
+  root: ${tmpDir}
+notifications:
+  slack:
+    webhook_url: $TEST_SLACK_WEBHOOK_URL
+    user_map: {}
+---
+
+Prompt body`, "utf8");
+
+    const staleIssue: Issue = {
+      id: "stale-1",
+      identifier: "ABC-300",
+      title: "Old completed ticket",
+      description: "This was done two days ago.",
+      priority: 1,
+      state: "Done",
+      branchName: null,
+      url: "https://linear.app/example/issue/ABC-300",
+      labels: [],
+      blockedBy: [],
+      assignee: null,
+      creator: null,
+      createdAt: new Date("2026-01-01T00:00:00Z"),
+      updatedAt: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000), // 2 days ago
+    };
+
+    const fetchMock = vi.fn().mockResolvedValue(new Response("ok", { status: 200 }));
+    globalThis.fetch = fetchMock as typeof fetch;
+
+    const orchestrator = new Orchestrator(workflowPath, makeLogger());
+
+    await (orchestrator as unknown as {
+      handleTerminalIssue(
+        issueId: string,
+        issue: Issue,
+        state: string,
+        completionSummary: string | null,
+        abortRunningEntry: boolean,
+      ): Promise<void>;
+    }).handleTerminalIssue(staleIssue.id, staleIssue, "Done", null, false);
+
+    await (orchestrator as unknown as {
+      flushSlackBatch(): Promise<void>;
+    }).flushSlackBatch();
+
+    // Stale ticket was dropped — no Slack message sent
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(vi.mocked(linear.addSlackNotificationComment)).not.toHaveBeenCalled();
   });
 });

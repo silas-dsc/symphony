@@ -14,7 +14,7 @@ import type {
 import { loadWorkflow, validateConfig } from "./config.js";
 import { GitHubPreviewWarmer } from "./github-preview.js";
 import * as linear from "./linear.js";
-import { isCompletionState, sendSlackCompletionNotification } from "./notifications.js";
+import { isCompletionState, sendBatchedSlackNotification } from "./notifications.js";
 import { removeWorkspace } from "./workspace.js";
 import { runAgentAttempt } from "./agent.js";
 import { claudeBlockedUntil } from "./llm.js";
@@ -40,6 +40,7 @@ export class Orchestrator {
   private derived: DerivedConfig;
   private state: OrchestratorState;
   private tickTimer: ReturnType<typeof setTimeout> | null = null;
+  private slackBatchTimer: ReturnType<typeof setTimeout> | null = null;
   private watcher: fs.FSWatcher | null = null;
   private reloadTimer: ReturnType<typeof setTimeout> | null = null;
   private previewWarmer: GitHubPreviewWarmer | null = null;
@@ -64,6 +65,7 @@ export class Orchestrator {
       knownTerminalIssueIds: new Set(),
       claimed: new Set(),
       retryAttempts: new Map(),
+      pendingSlackNotifications: [],
       totalInputTokens: 0,
       totalOutputTokens: 0,
       totalTokens: 0,
@@ -91,6 +93,7 @@ export class Orchestrator {
       .catch(() => { /* already swallowed inside fetchTeamUrl */ });
 
     this.scheduleTick(0);
+    this.scheduleSlackBatch();
 
     this.log.info("Symphony started", {
       project: this.config.tracker.projectSlug,
@@ -103,6 +106,10 @@ export class Orchestrator {
     if (this.tickTimer) {
       clearTimeout(this.tickTimer);
       this.tickTimer = null;
+    }
+    if (this.slackBatchTimer) {
+      clearTimeout(this.slackBatchTimer);
+      this.slackBatchTimer = null;
     }
     if (this.reloadTimer) {
       clearTimeout(this.reloadTimer);
@@ -617,17 +624,15 @@ export class Orchestrator {
             state,
           });
         } else {
-          await sendSlackCompletionNotification(
-            issue,
+          this.state.pendingSlackNotifications.push({ issueId, issue, state, completionSummary });
+          this.log.info("Queued Slack completion notification", {
+            issue_id: issueId,
+            issue_identifier: issue.identifier,
             state,
-            completionSummary,
-            this.config.notifications.slack,
-            this.log,
-          );
-          await linear.addSlackNotificationComment(this.config.tracker, issueId);
+          });
         }
       } catch (e) {
-        this.log.warn(`Slack completion notification failed: ${fmtErr(e)}`, {
+        this.log.warn(`Slack notification check failed: ${fmtErr(e)}`, {
           issue_id: issueId,
           issue_identifier: issue.identifier,
           state,
@@ -642,6 +647,45 @@ export class Orchestrator {
       this.config.hooks.timeoutMs,
       this.log,
     ).catch(e => this.log.warn(`Workspace cleanup failed: ${fmtErr(e)}`));
+  }
+
+  // ─── Slack batch ───────────────────────────────────────────────────────────
+
+  private scheduleSlackBatch(): void {
+    this.slackBatchTimer = setTimeout(() => void this.flushSlackBatch(), 15 * 60 * 1000);
+  }
+
+  private async flushSlackBatch(): Promise<void> {
+    this.slackBatchTimer = null;
+
+    const slack = this.config.notifications.slack;
+    if (!slack) {
+      this.scheduleSlackBatch();
+      return;
+    }
+
+    const twentyFourHoursAgo = Date.now() - 24 * 60 * 60 * 1000;
+    const pending = this.state.pendingSlackNotifications;
+    this.state.pendingSlackNotifications = [];
+
+    const items = pending.filter(n =>
+      !n.issue.updatedAt || n.issue.updatedAt.getTime() > twentyFourHoursAgo
+    );
+
+    if (items.length > 0) {
+      try {
+        await sendBatchedSlackNotification(items, slack, this.log);
+        for (const item of items) {
+          await linear.addSlackNotificationComment(this.config.tracker, item.issueId).catch(e =>
+            this.log.warn(`Failed to mark Slack notification comment: ${fmtErr(e)}`, { issue_id: item.issueId })
+          );
+        }
+      } catch (e) {
+        this.log.warn(`Batched Slack notification failed: ${fmtErr(e)}`);
+      }
+    }
+
+    this.scheduleSlackBatch();
   }
 
   // ─── Retry queue ───────────────────────────────────────────────────────────

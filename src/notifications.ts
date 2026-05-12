@@ -1,4 +1,4 @@
-import type { Issue, IssuePerson, Logger, SlackNotificationsConfig } from "./types.js";
+import type { Issue, IssuePerson, Logger, PendingSlackNotification, SlackNotificationsConfig } from "./types.js";
 
 function cleanText(value: string): string {
   return value
@@ -53,19 +53,6 @@ export function buildDeliverySummary(issue: Issue, completionSummary: string | n
   return fallbackSummary(issue);
 }
 
-export function buildStakeholderContext(issue: Issue): string {
-  const descriptionSentence = firstSentence(issue.description);
-  if (descriptionSentence && descriptionSentence.toLowerCase() !== issue.title.toLowerCase()) {
-    return descriptionSentence;
-  }
-
-  if (issue.labels.length > 0) {
-    return `Relevant area: ${issue.labels.slice(0, 3).join(", ")}.`;
-  }
-
-  return `${issue.identifier} is complete and ready for stakeholder follow-through.`;
-}
-
 function normalizeMentionValue(value: string): string {
   return value.startsWith("<") ? value : `<@${value}>`;
 }
@@ -103,67 +90,51 @@ export function isCompletionState(state: string): boolean {
   return !/(cancelled|canceled|duplicate)/i.test(state);
 }
 
-export function buildSlackCompletionPayload(
-  issue: Issue,
-  completionState: string,
-  completionSummary: string | null,
+export function buildBatchedSlackPayload(
+  items: PendingSlackNotification[],
   slack: SlackNotificationsConfig,
 ): { text: string; blocks: Array<Record<string, unknown>> } {
-  const delivered = buildDeliverySummary(issue, completionSummary);
-  const context = buildStakeholderContext(issue);
-  const mentions = collectMentions(issue, slack.userMap);
-  const mentionText = mentions.length > 0 ? mentions.join(" ") : "No mapped collaborators";
-  const linkText = issue.url ? `<${issue.url}|Open ticket>` : issue.identifier;
+  const itemsText = items
+    .map(({ issue, completionSummary }) => {
+      const target = issue.url ?? issue.identifier;
+      const summary = buildDeliverySummary(issue, completionSummary);
+      return `- ${target}\n${summary}`;
+    })
+    .join("\n\n");
+
+  const allMentions = new Set<string>();
+  for (const { issue } of items) {
+    for (const mention of collectMentions(issue, slack.userMap)) {
+      allMentions.add(mention);
+    }
+  }
+
+  const parts = ["DONE:", itemsText];
+  if (allMentions.size > 0) {
+    parts.push([...allMentions].join(", "));
+  }
+  const message = parts.join("\n");
 
   return {
-    text: `${issue.identifier} completed: ${delivered}`,
+    text: message,
     blocks: [
       {
-        type: "header",
-        text: {
-          type: "plain_text",
-          text: `${issue.identifier} marked ${completionState}`,
-        },
-      },
-      {
-        type: "section",
-        fields: [
-          {
-            type: "mrkdwn",
-            text: `*Delivered*\n${delivered}`,
-          },
-          {
-            type: "mrkdwn",
-            text: `*Context*\n${context}`,
-          },
-        ],
-      },
-      {
         type: "section",
         text: {
           type: "mrkdwn",
-          text: `*People*\n${mentionText}`,
-        },
-      },
-      {
-        type: "section",
-        text: {
-          type: "mrkdwn",
-          text: `*Linear*\n${linkText}`,
+          text: message,
         },
       },
     ],
   };
 }
 
-export async function sendSlackCompletionNotification(
-  issue: Issue,
-  completionState: string,
-  completionSummary: string | null,
+export async function sendBatchedSlackNotification(
+  items: PendingSlackNotification[],
   slack: SlackNotificationsConfig,
   logger: Logger,
 ): Promise<void> {
-  const payload = buildSlackCompletionPayload(issue, completionState, completionSummary, slack);
+  const payload = buildBatchedSlackPayload(items, slack);
 
   let response: Response;
   try {
@@ -182,9 +153,5 @@ export async function sendSlackCompletionNotification(
     throw new Error(`Slack webhook returned HTTP ${response.status}: ${body.slice(0, 200)}`);
   }
 
-  logger.info("Slack completion notification sent", {
-    issue_id: issue.id,
-    issue_identifier: issue.identifier,
-    state: completionState,
-  });
+  logger.info("Batched Slack completion notification sent", { count: items.length });
 }
