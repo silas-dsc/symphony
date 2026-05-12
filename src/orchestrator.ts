@@ -855,6 +855,8 @@ export class Orchestrator {
     return new GitHubPreviewWarmer({
       config: this.config.githubPreview,
       logger: this.log,
+      linearApiKey: this.config.tracker.apiKey,
+      linearEndpoint: this.config.tracker.endpoint,
     });
   }
 }

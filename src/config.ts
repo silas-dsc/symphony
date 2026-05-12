@@ -147,6 +147,7 @@ function buildConfig(raw: Record<string, unknown>, baseDir: string): WorkflowCon
       commentPollLimit: (githubPreview.comment_poll_limit as number | undefined) ?? 100,
       keepAliveIntervalMs: (githubPreview.keepalive_interval_ms as number | undefined) ?? 180000,
       requestTimeoutMs: (githubPreview.request_timeout_ms as number | undefined) ?? 30000,
+      inReviewStates: (githubPreview.in_review_states as string[] | undefined) ?? [],
     },
     workspace: {
       root: workspaceRoot,
