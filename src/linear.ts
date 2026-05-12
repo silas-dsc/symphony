@@ -232,6 +232,47 @@ export async function fetchCandidateIssues(config: TrackerConfig): Promise<Issue
   return issues;
 }
 
+const ISSUES_BY_IDS_QUERY = `
+  query IssuesByIds($ids: [ID!]!) {
+    issues(filter: { id: { in: $ids } }) {
+      nodes {
+        id identifier title description priority
+        state { name }
+        assignee { name email }
+        creator { name email }
+        branchName url
+        labels { nodes { name } }
+        inverseRelations {
+          nodes {
+            type
+            issue { id identifier state { name } }
+          }
+        }
+        createdAt updatedAt
+      }
+    }
+  }
+`;
+
+interface IssuesByIdsPayload {
+  issues: {
+    nodes: Record<string, unknown>[];
+  };
+}
+
+export async function fetchIssuesByIds(config: TrackerConfig, ids: string[]): Promise<Issue[]> {
+  if (ids.length === 0) return [];
+
+  const data: IssuesByIdsPayload = await graphql<IssuesByIdsPayload>(
+    config.endpoint,
+    config.apiKey,
+    ISSUES_BY_IDS_QUERY,
+    { ids },
+  );
+
+  return data.issues.nodes.map(normalizeIssue);
+}
+
 const ISSUES_BY_STATES_QUERY_PROJECT = `
   query IssuesByStatesProject($projectSlug: String!, $states: [String!]!, $first: Int!, $after: String) {
     issues(
@@ -347,6 +388,44 @@ interface OrgPayload {
   organization: { urlKey: string };
 }
 
+const SLACK_NOTIFICATION_COMMENT = "Slack notification sent";
+
+const ISSUE_COMMENTS_QUERY = `
+  query IssueComments($issueId: String!, $first: Int!, $after: String) {
+    issue(id: $issueId) {
+      comments(first: $first, after: $after) {
+        nodes { body }
+        pageInfo { hasNextPage endCursor }
+      }
+    }
+  }
+`;
+
+interface IssueCommentsPayload {
+  issue: {
+    comments: IssueCommentsConnection;
+  } | null;
+}
+
+interface IssueCommentsConnection {
+  nodes: Array<{ body: string | null }>;
+  pageInfo: { hasNextPage: boolean; endCursor: string | null };
+}
+
+const COMMENT_CREATE_MUTATION = `
+  mutation CommentCreate($issueId: String!, $body: String!) {
+    commentCreate(input: { issueId: $issueId, body: $body }) {
+      success
+    }
+  }
+`;
+
+interface CommentCreatePayload {
+  commentCreate: {
+    success: boolean;
+  } | null;
+}
+
 /**
  * Best-effort lookup of the Linear team URL — `https://linear.app/<orgKey>/team/<teamKey>`.
  * Returns null on any failure; callers should treat the URL as optional UI sugar.
@@ -360,6 +439,50 @@ export async function fetchTeamUrl(config: TrackerConfig): Promise<string | null
     return `https://linear.app/${orgKey}/team/${config.teamKey}/all`;
   } catch {
     return null;
+  }
+}
+
+export async function hasSlackNotificationComment(
+  config: TrackerConfig,
+  issueId: string,
+): Promise<boolean> {
+  let after: string | null = null;
+
+  while (true) {
+    const data: IssueCommentsPayload = await graphql<IssueCommentsPayload>(
+      config.endpoint,
+      config.apiKey,
+      ISSUE_COMMENTS_QUERY,
+      { issueId, first: 50, after },
+    );
+
+    const comments: IssueCommentsConnection | undefined = data.issue?.comments;
+    if (!comments) return false;
+    if (comments.nodes.some((comment: { body: string | null }) => comment.body?.trim() === SLACK_NOTIFICATION_COMMENT)) {
+      return true;
+    }
+
+    if (!comments.pageInfo.hasNextPage) return false;
+    if (!comments.pageInfo.endCursor) {
+      throw new LinearError("linear_missing_end_cursor", "Linear comment pagination returned hasNextPage with no cursor");
+    }
+    after = comments.pageInfo.endCursor;
+  }
+}
+
+export async function addSlackNotificationComment(
+  config: TrackerConfig,
+  issueId: string,
+): Promise<void> {
+  const data = await graphql<CommentCreatePayload>(
+    config.endpoint,
+    config.apiKey,
+    COMMENT_CREATE_MUTATION,
+    { issueId, body: SLACK_NOTIFICATION_COMMENT },
+  );
+
+  if (!data.commentCreate?.success) {
+    throw new LinearError("linear_unknown_payload", "Linear commentCreate did not report success");
   }
 }
 

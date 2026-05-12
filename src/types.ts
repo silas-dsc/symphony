@@ -196,6 +196,7 @@ export interface OrchestratorState {
   maxConcurrentAgents: number;
   running: Map<string, RunningEntry>;
   trackedIssues: Map<string, TrackedIssueEntry>;
+  knownTerminalIssueIds: Set<string>;
   claimed: Set<string>;
   retryAttempts: Map<string, RetryEntry>;
   totalInputTokens: number;

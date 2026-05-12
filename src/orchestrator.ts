@@ -61,6 +61,7 @@ export class Orchestrator {
       maxConcurrentAgents: this.config.agent.maxConcurrentAgents,
       running: new Map(),
       trackedIssues: new Map(),
+      knownTerminalIssueIds: new Set(),
       claimed: new Set(),
       retryAttempts: new Map(),
       totalInputTokens: 0,
@@ -312,9 +313,11 @@ export class Orchestrator {
         issue,
         completionSummary: tracked?.completionSummary ?? null,
       });
+      this.state.knownTerminalIssueIds.delete(issue.id);
     }
 
     await this.reconcileTrackedStates(activeIds);
+    await this.reconcileTerminalIssues();
 
     const sorted = this.sortForDispatch(candidates);
     for (const issue of sorted) {
@@ -546,6 +549,40 @@ export class Orchestrator {
     this.state.retryAttempts.delete(issueId);
   }
 
+  private async reconcileTerminalIssues(): Promise<void> {
+    let terminalIssues: Array<{ id: string; identifier: string }>;
+    try {
+      terminalIssues = await linear.fetchIssuesByStates(
+        this.config.tracker,
+        this.config.tracker.terminalStates,
+      );
+    } catch (e) {
+      this.log.error(`Terminal issue refresh failed: ${fmtErr(e)}`);
+      return;
+    }
+
+    const currentTerminalIds = new Set(terminalIssues.map(issue => issue.id));
+    const newTerminalIds = terminalIssues
+      .filter(issue => !this.state.knownTerminalIssueIds.has(issue.id))
+      .map(issue => issue.id);
+
+    for (const issueId of newTerminalIds) {
+      if (this.state.running.has(issueId) || this.state.trackedIssues.has(issueId)) continue;
+      let [issue] = [] as Issue[];
+      try {
+        [issue] = await linear.fetchIssuesByIds(this.config.tracker, [issueId]);
+      } catch (e) {
+        this.log.warn(`Terminal issue detail fetch failed: ${fmtErr(e)}`, { issue_id: issueId });
+        continue;
+      }
+      if (!issue) continue;
+      await this.handleTerminalIssue(issue.id, issue, issue.state, null, false);
+      currentTerminalIds.add(issue.id);
+    }
+
+    this.state.knownTerminalIssueIds = currentTerminalIds;
+  }
+
   private async handleTerminalIssue(
     issueId: string,
     issue: Issue,
@@ -565,19 +602,30 @@ export class Orchestrator {
       this.state.running.delete(issueId);
     }
 
+    this.state.knownTerminalIssueIds.add(issueId);
     this.clearRetry(issueId);
     this.state.claimed.delete(issueId);
     this.state.trackedIssues.delete(issueId);
 
     if (this.config.notifications.slack && issue.url && isCompletionState(state)) {
       try {
-        await sendSlackCompletionNotification(
-          issue,
-          state,
-          completionSummary,
-          this.config.notifications.slack,
-          this.log,
-        );
+        const alreadySent = await linear.hasSlackNotificationComment(this.config.tracker, issueId);
+        if (alreadySent) {
+          this.log.info("Skipping duplicate Slack completion notification", {
+            issue_id: issueId,
+            issue_identifier: issue.identifier,
+            state,
+          });
+        } else {
+          await sendSlackCompletionNotification(
+            issue,
+            state,
+            completionSummary,
+            this.config.notifications.slack,
+            this.log,
+          );
+          await linear.addSlackNotificationComment(this.config.tracker, issueId);
+        }
       } catch (e) {
         this.log.warn(`Slack completion notification failed: ${fmtErr(e)}`, {
           issue_id: issueId,
@@ -734,6 +782,7 @@ export class Orchestrator {
 
       let cleaned = 0;
       for (const issue of terminalIssues) {
+        this.state.knownTerminalIssueIds.add(issue.id);
         await removeWorkspace(
           this.config.workspace.root,
           issue.identifier,
