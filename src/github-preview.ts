@@ -13,10 +13,15 @@ export interface GitHubIssueComment {
 export interface GitHubClient {
   listIssueComments(config: GitHubPreviewConfig): Promise<GitHubIssueComment[]>;
   isPullRequestOpen(config: GitHubPreviewConfig, prNumber: number): Promise<boolean>;
+  getPullRequestHeadBranch(config: GitHubPreviewConfig, prNumber: number): Promise<string | null>;
 }
 
 export interface PreviewPinger {
   ping(url: string, timeoutMs: number): Promise<number>;
+}
+
+export interface LinearClient {
+  listBranchesInStates(states: string[]): Promise<string[]>;
 }
 
 interface GitHubCommentApiPayload {
@@ -27,6 +32,7 @@ interface GitHubCommentApiPayload {
 
 interface PullRequestApiPayload {
   state?: string;
+  head?: { ref?: string };
 }
 
 interface TrackedPreview {
@@ -36,6 +42,8 @@ interface TrackedPreview {
   sourceUpdatedAt: string;
   lastPingAtMs: number | null;
   forcePing: boolean;
+  /** Cached head branch for Linear state checks. undefined = not yet fetched; null = unavailable. */
+  headBranch?: string | null;
 }
 
 export interface ExtractedPreviewDeployment {
@@ -59,6 +67,10 @@ export interface GitHubPreviewWarmerOptions {
   githubClient?: GitHubClient;
   pinger?: PreviewPinger;
   now?: () => number;
+  /** Injected for testing; takes precedence over linearApiKey/linearEndpoint. */
+  linearClient?: LinearClient;
+  linearApiKey?: string;
+  linearEndpoint?: string;
 }
 
 export function extractPreviewDeployment(
@@ -93,6 +105,7 @@ export class GitHubPreviewWarmer {
   private readonly github: GitHubClient;
   private readonly pinger: PreviewPinger;
   private readonly now: () => number;
+  private readonly linearClient: LinearClient | null;
   private readonly tracked = new Map<number, TrackedPreview>();
   private cycleInFlight = false;
 
@@ -102,6 +115,14 @@ export class GitHubPreviewWarmer {
     this.github = opts.githubClient ?? new GhCliGitHubClient();
     this.pinger = opts.pinger ?? new FetchPreviewPinger();
     this.now = opts.now ?? Date.now;
+
+    if (opts.linearClient) {
+      this.linearClient = opts.linearClient;
+    } else if (this.cfg.inReviewStates.length > 0 && opts.linearApiKey && opts.linearEndpoint) {
+      this.linearClient = new GhCliLinearClient(opts.linearEndpoint, opts.linearApiKey);
+    } else {
+      this.linearClient = null;
+    }
   }
 
   async reconcile(): Promise<void> {
@@ -149,6 +170,7 @@ export class GitHubPreviewWarmer {
         sourceUpdatedAt: comment.updatedAt,
         lastPingAtMs: existing?.lastPingAtMs ?? null,
         forcePing: isNewSignal,
+        headBranch: existing?.headBranch,
       });
 
       if (isNewSignal) {
@@ -162,20 +184,48 @@ export class GitHubPreviewWarmer {
   }
 
   private async warmTrackedPreviews(): Promise<void> {
-    for (const [prNumber, preview] of this.tracked) {
-      let isOpen: boolean;
+    // When inReviewStates is configured with a Linear client, fetch review-state branches
+    // once per cycle and use them as the stop condition instead of GitHub PR open/closed.
+    let reviewBranches: Set<string> | null = null;
+    if (this.cfg.inReviewStates.length > 0 && this.linearClient !== null) {
       try {
-        isOpen = await this.github.isPullRequestOpen(this.cfg, prNumber);
+        const branches = await this.linearClient.listBranchesInStates(this.cfg.inReviewStates);
+        reviewBranches = new Set(branches);
       } catch (e) {
-        this.log.warn(`GitHub PR state check failed for #${prNumber}: ${fmtErr(e)}`);
-        continue;
+        this.log.warn(`Linear in-review check failed, falling back to PR open check: ${fmtErr(e)}`);
+      }
+    }
+
+    for (const [prNumber, preview] of this.tracked) {
+      let shouldContinue: boolean;
+
+      if (reviewBranches !== null) {
+        // Linear-based stop: continue only while the PR branch has a Linear issue in review state.
+        if (preview.headBranch === undefined) {
+          try {
+            preview.headBranch = await this.github.getPullRequestHeadBranch(this.cfg, prNumber);
+          } catch (e) {
+            this.log.warn(`PR branch lookup failed for #${prNumber}: ${fmtErr(e)}`);
+            continue;
+          }
+        }
+        shouldContinue = typeof preview.headBranch === "string" && reviewBranches.has(preview.headBranch);
+      } else {
+        // GitHub PR open/closed stop condition (fallback when Linear is not configured).
+        try {
+          shouldContinue = await this.github.isPullRequestOpen(this.cfg, prNumber);
+        } catch (e) {
+          this.log.warn(`GitHub PR state check failed for #${prNumber}: ${fmtErr(e)}`);
+          continue;
+        }
       }
 
-      if (!isOpen) {
+      if (!shouldContinue) {
         this.tracked.delete(prNumber);
-        this.log.info("Stopped preview keepalive for closed PR", {
+        this.log.info("Stopped preview keepalive", {
           pr_number: String(prNumber),
           url: preview.url,
+          reason: reviewBranches !== null ? "left_review" : "pr_closed",
         });
         continue;
       }
@@ -234,6 +284,15 @@ class GhCliGitHubClient implements GitHubClient {
     const payload = JSON.parse(stdout) as PullRequestApiPayload;
     return payload.state === "open";
   }
+
+  async getPullRequestHeadBranch(config: GitHubPreviewConfig, prNumber: number): Promise<string | null> {
+    const stdout = await ghApi(
+      [`repos/${config.repoOwner}/${config.repoName}/pulls/${prNumber}`],
+      config.requestTimeoutMs,
+    );
+    const payload = JSON.parse(stdout) as PullRequestApiPayload;
+    return payload.head?.ref ?? null;
+  }
 }
 
 class FetchPreviewPinger implements PreviewPinger {
@@ -245,6 +304,57 @@ class FetchPreviewPinger implements PreviewPinger {
     });
 
     return response.status;
+  }
+}
+
+class GhCliLinearClient implements LinearClient {
+  constructor(private readonly endpoint: string, private readonly apiKey: string) {}
+
+  async listBranchesInStates(states: string[]): Promise<string[]> {
+    if (states.length === 0) return [];
+
+    const query = `
+      query BranchesInStates($states: [String!]!) {
+        issues(
+          filter: { state: { name: { in: $states } } }
+          first: 250
+        ) {
+          nodes { branchName }
+        }
+      }
+    `;
+
+    let response: Response;
+    try {
+      response = await fetch(this.endpoint, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: this.apiKey,
+        },
+        body: JSON.stringify({ query, variables: { states } }),
+        signal: AbortSignal.timeout(30000),
+      });
+    } catch (e) {
+      throw new Error(`Linear API request failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+
+    if (!response.ok) {
+      throw new Error(`Linear API returned HTTP ${response.status}`);
+    }
+
+    const json = (await response.json()) as {
+      data?: { issues: { nodes: Array<{ branchName: string | null }> } };
+      errors?: Array<{ message: string }>;
+    };
+
+    if (json.errors?.length) {
+      throw new Error(`Linear GraphQL errors: ${json.errors.map(e => e.message).join("; ")}`);
+    }
+
+    return (json.data?.issues.nodes ?? [])
+      .map(n => n.branchName)
+      .filter((b): b is string => typeof b === "string" && b.length > 0);
   }
 }
 

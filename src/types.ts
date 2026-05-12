@@ -79,6 +79,8 @@ export interface GitHubPreviewConfig {
   commentPollLimit: number;
   keepAliveIntervalMs: number;
   requestTimeoutMs: number;
+  /** Linear issue states that indicate a PR is under review. When non-empty, warming stops when no Linear issue with the PR's branch is in one of these states. */
+  inReviewStates: string[];
 }
 
 export interface WorkspaceConfig {

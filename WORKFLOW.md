@@ -22,6 +22,8 @@ github_preview:
   comment_poll_limit: 100
   keepalive_interval_ms: 180000
   request_timeout_ms: 30000
+  in_review_states:
+    - In Review
 notifications:
   slack:
     webhook_url: $SLACK_COMPLETION_WEBHOOK_URL
