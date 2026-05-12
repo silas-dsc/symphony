@@ -149,7 +149,7 @@ export async function runAgentAttempt(
 
 /**
  * Try Claude first; if it is rate-limited or unavailable, fall through to
- * Codex and then to a local LLM (if LOCAL_LLM_ENDPOINT is set).
+ * hosted Codex or an explicit local OSS provider.
  */
 async function spawnWithFailover(
   prompt: string,
@@ -185,10 +185,11 @@ async function spawnWithFailover(
 
   // ── Codex fallback ─────────────────────────────────────────────────────────
   // Only pass --oss --local-provider if LOCAL_LLM_PROVIDER is explicitly set.
-  // Without it, codex runs normally against its own default backend (Claude).
+  // Otherwise use hosted Codex with the configured GPT model.
   const localProvider = process.env.LOCAL_LLM_PROVIDER || undefined;
   try {
-    onEvent({ type: "notification", message: `[symphony] Trying local LLM fallback (${localProvider})`, provider: localProvider });
+    const fallbackLabel = localProvider ? `local LLM fallback (${localProvider})` : "Codex fallback (GPT)";
+    onEvent({ type: "notification", message: `[symphony] Trying ${fallbackLabel}`, provider: localProvider ?? "codex" });
     const localResult = await spawnCodexAgent(prompt, cwd, abortController, onEvent, localProvider);
     if (localResult.success) return localResult;
     // If Claude was blocked and local LLM also failed, return a specific error so
@@ -214,6 +215,9 @@ export function isRateLimitText(text: string): boolean {
     t.includes("hit your limit") ||
     t.includes("you've hit") ||
     t.includes("you have hit") ||
+    t.includes("out of extra usage") ||
+    t.includes("you're out of extra usage") ||
+    t.includes("you are out of extra usage") ||
     t.includes("rate limit") ||
     t.includes("rate_limit") ||
     t.includes("overloaded")
@@ -290,6 +294,7 @@ async function spawnClaude(
     let success = false;
     let resultError: string | undefined;
     let isRateLimited = false;
+    let completionSummary: string | undefined;
     const stderrBuf: string[] = [];
 
     proc.stderr.on("data", (chunk: Buffer) => {
@@ -349,10 +354,15 @@ async function spawnClaude(
         }
 
         const content = event.message.content ?? [];
+        const textBlocks: string[] = [];
         for (const block of content) {
           if (block.type === "text" && block.text?.trim()) {
+            textBlocks.push(block.text);
             onEvent({ type: "notification", message: block.text.slice(0, 300) });
           }
+        }
+        if (textBlocks.length > 0) {
+          completionSummary = textBlocks.join("\n\n").trim().slice(0, 4000);
         }
       }
 
@@ -408,12 +418,12 @@ async function spawnClaude(
       rl.close();
 
       if (abortController.signal.aborted) {
-        resolve({ success: false, error: "aborted", inputTokens, outputTokens, totalTokens: inputTokens + outputTokens, turnCount });
+        resolve({ success: false, error: "aborted", inputTokens, outputTokens, totalTokens: inputTokens + outputTokens, turnCount, completionSummary });
         return;
       }
 
       if (success) {
-        resolve({ success: true, inputTokens, outputTokens, totalTokens: inputTokens + outputTokens, turnCount });
+        resolve({ success: true, inputTokens, outputTokens, totalTokens: inputTokens + outputTokens, turnCount, completionSummary });
       } else {
         // Check stderr for rate-limit signals even if not detected via events.
         const stderrJoined = stderrBuf.join(" ");
@@ -422,12 +432,12 @@ async function spawnClaude(
         }
 
         if (isRateLimited) {
-          resolve({ success: false, error: ERR_RATE_LIMITED, inputTokens, outputTokens, totalTokens: inputTokens + outputTokens, turnCount });
+          resolve({ success: false, error: ERR_RATE_LIMITED, inputTokens, outputTokens, totalTokens: inputTokens + outputTokens, turnCount, completionSummary });
           return;
         }
 
         const errDetail = resultError ?? (stderrBuf.length ? stderrBuf.join("; ") : `exit code ${code}`);
-        resolve({ success: false, error: errDetail, inputTokens, outputTokens, totalTokens: inputTokens + outputTokens, turnCount });
+        resolve({ success: false, error: errDetail, inputTokens, outputTokens, totalTokens: inputTokens + outputTokens, turnCount, completionSummary });
       }
     });
 

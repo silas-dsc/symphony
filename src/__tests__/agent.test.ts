@@ -12,6 +12,12 @@ describe("isRateLimitText", () => {
     expect(isRateLimitText("You’ve hit your limit")).toBe(true);
   });
 
+  it("matches Claude extra-usage exhaustion phrasing", () => {
+    expect(isRateLimitText("You're out of extra usage")).toBe(true);
+    expect(isRateLimitText("You are out of extra usage until tomorrow")).toBe(true);
+    expect(isRateLimitText("agent_reported_error: You’re out of extra usage")).toBe(true);
+  });
+
   it("matches 'rate limit', 'rate_limit', 'overloaded'", () => {
     expect(isRateLimitText("API rate limit exceeded")).toBe(true);
     expect(isRateLimitText("error: rate_limit_exceeded")).toBe(true);
@@ -48,6 +54,8 @@ describe("renderPrompt", () => {
     url: "https://linear.app/x/issue/ABC-123",
     labels: ["bug"],
     blockedBy: [],
+    assignee: null,
+    creator: null,
     createdAt: new Date("2026-01-01T00:00:00Z"),
     updatedAt: new Date("2026-01-02T00:00:00Z"),
   };

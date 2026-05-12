@@ -4,6 +4,11 @@ export interface BlockerRef {
   state: string | null;
 }
 
+export interface IssuePerson {
+  name: string;
+  email: string | null;
+}
+
 export interface Issue {
   id: string;
   identifier: string;
@@ -15,6 +20,8 @@ export interface Issue {
   url: string | null;
   labels: string[];
   blockedBy: BlockerRef[];
+  assignee: IssuePerson | null;
+  creator: IssuePerson | null;
   createdAt: Date | null;
   updatedAt: Date | null;
 }
@@ -29,11 +36,22 @@ export interface WorkflowDefinition {
 export interface WorkflowConfig {
   tracker: TrackerConfig;
   polling: PollingConfig;
+  githubPreview: GitHubPreviewConfig;
   workspace: WorkspaceConfig;
   hooks: HooksConfig;
   agent: AgentConfig;
+  notifications: NotificationsConfig;
   server?: ServerConfig;
   autoUpdate: AutoUpdateConfig;
+}
+
+export interface NotificationsConfig {
+  slack: SlackNotificationsConfig | null;
+}
+
+export interface SlackNotificationsConfig {
+  webhookUrl: string;
+  userMap: Record<string, string>;
 }
 
 export interface TrackerConfig {
@@ -50,6 +68,17 @@ export interface TrackerConfig {
 
 export interface PollingConfig {
   intervalMs: number;
+}
+
+export interface GitHubPreviewConfig {
+  enabled: boolean;
+  repoOwner: string;
+  repoName: string;
+  commentPattern: string;
+  urlTemplate: string;
+  commentPollLimit: number;
+  keepAliveIntervalMs: number;
+  requestTimeoutMs: number;
 }
 
 export interface WorkspaceConfig {
@@ -100,6 +129,7 @@ export interface AgentResult {
   outputTokens: number;
   totalTokens: number;
   turnCount: number;
+  completionSummary?: string;
 }
 
 export interface RateLimitInfo {
@@ -147,6 +177,11 @@ export interface RunningEntry {
   done: Promise<void>;
 }
 
+export interface TrackedIssueEntry {
+  issue: Issue;
+  completionSummary: string | null;
+}
+
 export interface RetryEntry {
   issueId: string;
   identifier: string;
@@ -160,6 +195,7 @@ export interface OrchestratorState {
   pollIntervalMs: number;
   maxConcurrentAgents: number;
   running: Map<string, RunningEntry>;
+  trackedIssues: Map<string, TrackedIssueEntry>;
   claimed: Set<string>;
   retryAttempts: Map<string, RetryEntry>;
   totalInputTokens: number;

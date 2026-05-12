@@ -6,6 +6,7 @@ import type { AgentResult, AgentEventCallback } from "./types.js";
 export const CLAUDE_HAIKU_MODEL  = process.env.CLAUDE_HAIKU_MODEL  ?? "claude-haiku-4-5";
 export const CLAUDE_SONNET_MODEL = process.env.CLAUDE_SONNET_MODEL ?? "claude-sonnet-4-5";
 export const CLAUDE_OPUS_MODEL   = process.env.CLAUDE_OPUS_MODEL   ?? "claude-opus-4-5";
+export const CODEX_MODEL         = process.env.CODEX_MODEL         ?? "gpt-5";
 
 // Sentinel error strings used by spawnClaude to signal the caller to failover.
 export const ERR_RATE_LIMITED = "rate_limited";
@@ -158,9 +159,30 @@ export async function selectClaudeModel(
  * Assumes `codex` is on PATH and handles its own auth.
  * If `provider` is set (via LOCAL_LLM_PROVIDER env), passes
  * --oss --local-provider <provider> to use a local model (e.g. ollama).
- * Without it, codex runs normally against its own default backend.
+ * Without it, codex runs against the hosted Codex backend using CODEX_MODEL.
  * Optionally reads CODEX_ENDPOINT to set OPENAI_BASE_URL for proxies.
  */
+export function buildCodexExecArgs(provider?: string): {
+  args: string[];
+  providerLabel: string;
+  modelLabel: string;
+} {
+  if (provider) {
+    const localModel = process.env.LOCAL_LLM_MODEL ?? "qwen3.5";
+    return {
+      args: ["exec", "--oss", "--local-provider", provider, "-m", localModel, "--dangerously-bypass-approvals-and-sandbox"],
+      providerLabel: provider,
+      modelLabel: localModel,
+    };
+  }
+
+  return {
+    args: ["exec", "-m", CODEX_MODEL, "--dangerously-bypass-approvals-and-sandbox"],
+    providerLabel: "codex",
+    modelLabel: CODEX_MODEL,
+  };
+}
+
 export async function spawnCodexAgent(
   prompt: string,
   cwd: string,
@@ -177,31 +199,25 @@ export async function spawnCodexAgent(
     const codexEndpoint = process.env.CODEX_ENDPOINT;
     if (codexEndpoint) childEnv.OPENAI_BASE_URL = codexEndpoint;
 
-    // Build args for `codex exec`.
-    // For local OSS providers (e.g. ollama): --oss --local-provider <provider> [-m <model>]
-    const localProviderArgs: string[] = [];
-    if (provider) {
-      localProviderArgs.push("--oss", "--local-provider", provider);
-      const localModel = process.env.LOCAL_LLM_MODEL ?? "qwen3.5";
-      localProviderArgs.push("-m", localModel);
-    }
+    const { args, providerLabel } = buildCodexExecArgs(provider);
 
     // `--dangerously-bypass-approvals-and-sandbox` runs without confirmation prompts.
     const proc = spawn(
       "codex",
-      ["exec", ...localProviderArgs, "--dangerously-bypass-approvals-and-sandbox", prompt],
+      [...args, prompt],
       { cwd, env: childEnv, stdio: ["ignore", "pipe", "pipe"] },
     );
 
-    const providerLabel = provider ?? "codex";
     if (proc.pid) onEvent({ type: "process_spawned", pid: proc.pid, provider: providerLabel });
 
     let hasOutput = false;
+    const stdoutBuf: string[] = [];
     const stderrBuf: string[] = [];
 
     proc.stdout.on("data", (chunk: Buffer) => {
       const text = chunk.toString();
       if (text.trim()) hasOutput = true;
+      if (text.trim()) stdoutBuf.push(text.trim());
       onEvent({ type: "notification", message: text.slice(0, 300), provider: providerLabel });
     });
     proc.stderr.on("data", (chunk: Buffer) => {
@@ -226,11 +242,26 @@ export async function spawnCodexAgent(
       const success = code === 0 && hasOutput;
       if (success) {
         onEvent({ type: "turn_completed", provider: providerLabel });
-        resolve({ success: true, inputTokens: 0, outputTokens: 0, totalTokens: 0, turnCount: 1 });
+        resolve({
+          success: true,
+          inputTokens: 0,
+          outputTokens: 0,
+          totalTokens: 0,
+          turnCount: 1,
+          completionSummary: stdoutBuf.join("\n").trim().slice(0, 4000) || undefined,
+        });
       } else {
         const err = stderrBuf.join("; ") || `codex exit ${code}`;
         onEvent({ type: "turn_failed", message: err, provider: providerLabel });
-        resolve({ success: false, error: err, inputTokens: 0, outputTokens: 0, totalTokens: 0, turnCount: 0 });
+        resolve({
+          success: false,
+          error: err,
+          inputTokens: 0,
+          outputTokens: 0,
+          totalTokens: 0,
+          turnCount: 0,
+          completionSummary: stdoutBuf.join("\n").trim().slice(0, 4000) || undefined,
+        });
       }
     });
 

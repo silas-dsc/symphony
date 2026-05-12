@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from "vitest";
 import {
+  buildCodexExecArgs,
   parseResetTimeMs,
   setClaudeBlockedUntil,
   isClaudeBlocked,
@@ -55,5 +56,45 @@ describe("claude block state", () => {
   it("treats past timestamps as not blocked", () => {
     setClaudeBlockedUntil(Date.now() - 1000);
     expect(isClaudeBlocked()).toBe(false);
+  });
+});
+
+describe("buildCodexExecArgs", () => {
+  it("uses hosted Codex with a GPT model by default", () => {
+    const result = buildCodexExecArgs();
+
+    expect(result.providerLabel).toBe("codex");
+    expect(result.modelLabel).toBe("gpt-5");
+    expect(result.args).toEqual([
+      "exec",
+      "-m",
+      "gpt-5",
+      "--dangerously-bypass-approvals-and-sandbox",
+    ]);
+  });
+
+  it("uses the explicit local provider when configured", () => {
+    const prevModel = process.env.LOCAL_LLM_MODEL;
+    process.env.LOCAL_LLM_MODEL = "qwen-local";
+
+    const result = buildCodexExecArgs("ollama");
+
+    expect(result.providerLabel).toBe("ollama");
+    expect(result.modelLabel).toBe("qwen-local");
+    expect(result.args).toEqual([
+      "exec",
+      "--oss",
+      "--local-provider",
+      "ollama",
+      "-m",
+      "qwen-local",
+      "--dangerously-bypass-approvals-and-sandbox",
+    ]);
+
+    if (prevModel === undefined) {
+      delete process.env.LOCAL_LLM_MODEL;
+    } else {
+      process.env.LOCAL_LLM_MODEL = prevModel;
+    }
   });
 });

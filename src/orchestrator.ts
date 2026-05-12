@@ -12,7 +12,9 @@ import type {
   RetrySnapshot,
 } from "./types.js";
 import { loadWorkflow, validateConfig } from "./config.js";
+import { GitHubPreviewWarmer } from "./github-preview.js";
 import * as linear from "./linear.js";
+import { isCompletionState, sendSlackCompletionNotification } from "./notifications.js";
 import { removeWorkspace } from "./workspace.js";
 import { runAgentAttempt } from "./agent.js";
 import { claudeBlockedUntil } from "./llm.js";
@@ -40,6 +42,7 @@ export class Orchestrator {
   private tickTimer: ReturnType<typeof setTimeout> | null = null;
   private watcher: fs.FSWatcher | null = null;
   private reloadTimer: ReturnType<typeof setTimeout> | null = null;
+  private previewWarmer: GitHubPreviewWarmer | null = null;
   private log: Logger;
 
   constructor(workflowPath: string, logger: Logger) {
@@ -51,11 +54,13 @@ export class Orchestrator {
     this.promptTemplate = workflow.promptTemplate;
     this.symphonyRoot = workflow.symphonyRoot;
     this.derived = computeDerived(this.config);
+    this.previewWarmer = this.createPreviewWarmer();
 
     this.state = {
       pollIntervalMs: this.config.polling.intervalMs,
       maxConcurrentAgents: this.config.agent.maxConcurrentAgents,
       running: new Map(),
+      trackedIssues: new Map(),
       claimed: new Set(),
       retryAttempts: new Map(),
       totalInputTokens: 0,
@@ -259,6 +264,7 @@ export class Orchestrator {
     this.promptTemplate = workflow.promptTemplate;
     this.symphonyRoot = workflow.symphonyRoot;
     this.derived = computeDerived(this.config);
+    this.previewWarmer = this.createPreviewWarmer();
     this.state.pollIntervalMs = this.config.polling.intervalMs;
     this.state.maxConcurrentAgents = this.config.agent.maxConcurrentAgents;
     this.log.info("WORKFLOW.md reloaded");
@@ -272,6 +278,10 @@ export class Orchestrator {
 
   private async tick(): Promise<void> {
     await this.reconcile();
+
+    if (this.previewWarmer) {
+      await this.previewWarmer.reconcile();
+    }
 
     const validationError = validateConfig(this.config);
     if (validationError) {
@@ -294,6 +304,17 @@ export class Orchestrator {
       running: this.state.running.size,
       retrying: this.state.retryAttempts.size,
     });
+
+    const activeIds = new Set(candidates.map(issue => issue.id));
+    for (const issue of candidates) {
+      const tracked = this.state.trackedIssues.get(issue.id);
+      this.state.trackedIssues.set(issue.id, {
+        issue,
+        completionSummary: tracked?.completionSummary ?? null,
+      });
+    }
+
+    await this.reconcileTrackedStates(activeIds);
 
     const sorted = this.sortForDispatch(candidates);
     for (const issue of sorted) {
@@ -372,6 +393,10 @@ export class Orchestrator {
         e.lastEvent = event.type;
         e.lastEventAt = new Date();
         if (event.message) e.lastMessage = event.message;
+        if (event.message) {
+          const tracked = this.state.trackedIssues.get(issue.id);
+          if (tracked) tracked.completionSummary = event.message;
+        }
         if (event.tokens) {
           e.inputTokens = event.tokens.input;
           e.outputTokens = event.tokens.output;
@@ -422,6 +447,11 @@ export class Orchestrator {
       done,
     };
 
+    const tracked = this.state.trackedIssues.get(issue.id);
+    this.state.trackedIssues.set(issue.id, {
+      issue,
+      completionSummary: tracked?.completionSummary ?? null,
+    });
     this.state.running.set(issue.id, entry);
     this.state.claimed.add(issue.id);
     this.state.retryAttempts.delete(issue.id);
@@ -436,6 +466,11 @@ export class Orchestrator {
   private handleWorkerExit(issueId: string, result: AgentResult): void {
     const entry = this.state.running.get(issueId);
     if (!entry) return;
+
+    const tracked = this.state.trackedIssues.get(issueId);
+    if (tracked && result.completionSummary?.trim()) {
+      tracked.completionSummary = result.completionSummary.trim();
+    }
 
     const durationSeconds = (Date.now() - entry.startedAt.getTime()) / 1000;
     this.state.totalSecondsRunning += durationSeconds;
@@ -471,6 +506,94 @@ export class Orchestrator {
       });
       this.scheduleRetry(issueId, entry.issueIdentifier, nextAttempt, result.error ?? null, delay);
     }
+  }
+
+  private async reconcileTrackedStates(activeIds: Set<string>): Promise<void> {
+    const idsToRefresh = Array.from(this.state.trackedIssues.keys()).filter(
+      id => !activeIds.has(id) && !this.state.running.has(id)
+    );
+    if (idsToRefresh.length === 0) return;
+
+    let refreshed: Array<{ id: string; identifier: string; state: string }>;
+    try {
+      refreshed = await linear.fetchIssueStatesByIds(this.config.tracker, idsToRefresh);
+    } catch (e) {
+      this.log.error(`Tracked issue refresh failed: ${fmtErr(e)}`);
+      return;
+    }
+
+    for (const { id, state } of refreshed) {
+      const tracked = this.state.trackedIssues.get(id);
+      if (!tracked) continue;
+
+      const stateLower = state.toLowerCase();
+      if (this.derived.terminalStatesLower.includes(stateLower)) {
+        await this.handleTerminalIssue(id, tracked.issue, state, tracked.completionSummary, false);
+      } else if (!this.derived.activeStatesLower.includes(stateLower)) {
+        this.clearRetry(id);
+        this.state.claimed.delete(id);
+        this.state.trackedIssues.delete(id);
+      } else {
+        tracked.issue = { ...tracked.issue, state };
+      }
+    }
+  }
+
+  private clearRetry(issueId: string): void {
+    const retryEntry = this.state.retryAttempts.get(issueId);
+    if (!retryEntry) return;
+    clearTimeout(retryEntry.timer);
+    this.state.retryAttempts.delete(issueId);
+  }
+
+  private async handleTerminalIssue(
+    issueId: string,
+    issue: Issue,
+    state: string,
+    completionSummary: string | null,
+    abortRunningEntry: boolean,
+  ): Promise<void> {
+    this.log.info(`Issue reached terminal state, stopping agent`, {
+      issue_id: issueId,
+      issue_identifier: issue.identifier,
+      state,
+    });
+
+    if (abortRunningEntry) {
+      const runningEntry = this.state.running.get(issueId);
+      runningEntry?.abortController.abort();
+      this.state.running.delete(issueId);
+    }
+
+    this.clearRetry(issueId);
+    this.state.claimed.delete(issueId);
+    this.state.trackedIssues.delete(issueId);
+
+    if (this.config.notifications.slack && issue.url && isCompletionState(state)) {
+      try {
+        await sendSlackCompletionNotification(
+          issue,
+          state,
+          completionSummary,
+          this.config.notifications.slack,
+          this.log,
+        );
+      } catch (e) {
+        this.log.warn(`Slack completion notification failed: ${fmtErr(e)}`, {
+          issue_id: issueId,
+          issue_identifier: issue.identifier,
+          state,
+        });
+      }
+    }
+
+    removeWorkspace(
+      this.config.workspace.root,
+      issue.identifier,
+      this.config.hooks.beforeRemove,
+      this.config.hooks.timeoutMs,
+      this.log,
+    ).catch(e => this.log.warn(`Workspace cleanup failed: ${fmtErr(e)}`));
   }
 
   // ─── Retry queue ───────────────────────────────────────────────────────────
@@ -574,21 +697,14 @@ export class Orchestrator {
 
       const stateLower = state.toLowerCase();
       if (this.derived.terminalStatesLower.includes(stateLower)) {
-        this.log.info(`Issue reached terminal state, stopping agent`, {
-          issue_id: id,
-          issue_identifier: entry.issueIdentifier,
+        const tracked = this.state.trackedIssues.get(id);
+        await this.handleTerminalIssue(
+          id,
+          tracked?.issue ?? entry.issue,
           state,
-        });
-        entry.abortController.abort();
-        this.state.running.delete(id);
-        this.state.claimed.delete(id);
-        removeWorkspace(
-          this.config.workspace.root,
-          entry.issueIdentifier,
-          this.config.hooks.beforeRemove,
-          this.config.hooks.timeoutMs,
-          this.log,
-        ).catch(e => this.log.warn(`Workspace cleanup failed: ${fmtErr(e)}`));
+          tracked?.completionSummary ?? entry.lastMessage,
+          true,
+        );
       } else if (!this.derived.activeStatesLower.includes(stateLower)) {
         this.log.info(`Issue moved to non-active state, stopping agent`, {
           issue_id: id,
@@ -598,8 +714,11 @@ export class Orchestrator {
         entry.abortController.abort();
         this.state.running.delete(id);
         this.state.claimed.delete(id);
+        this.state.trackedIssues.delete(id);
       } else {
         entry.issue = { ...entry.issue, state };
+        const tracked = this.state.trackedIssues.get(id);
+        if (tracked) tracked.issue = { ...tracked.issue, state };
       }
     }
   }
@@ -631,6 +750,14 @@ export class Orchestrator {
     } catch (e) {
       this.log.warn(`Startup cleanup failed (non-fatal): ${fmtErr(e)}`);
     }
+  }
+
+  private createPreviewWarmer(): GitHubPreviewWarmer | null {
+    if (!this.config.githubPreview.enabled) return null;
+    return new GitHubPreviewWarmer({
+      config: this.config.githubPreview,
+      logger: this.log,
+    });
   }
 }
 

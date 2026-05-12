@@ -1,4 +1,4 @@
-import type { Issue, BlockerRef, TrackerConfig } from "./types.js";
+import type { Issue, BlockerRef, IssuePerson, TrackerConfig } from "./types.js";
 
 export type LinearErrorCode =
   | "linear_api_request"
@@ -82,6 +82,16 @@ function expectString(value: unknown, field: string): string {
   return value;
 }
 
+function normalizePerson(value: unknown): IssuePerson | null {
+  if (!value || typeof value !== "object") return null;
+  const person = value as Record<string, unknown>;
+  if (typeof person.name !== "string" || !person.name.trim()) return null;
+  return {
+    name: person.name,
+    email: typeof person.email === "string" && person.email.trim() ? person.email : null,
+  };
+}
+
 function normalizeIssue(node: Record<string, unknown>): Issue {
   const labelsData = node.labels as { nodes: Array<{ name: string }> } | null;
   const labels = (labelsData?.nodes ?? []).map(l => l.name.toLowerCase());
@@ -114,6 +124,8 @@ function normalizeIssue(node: Record<string, unknown>): Issue {
     url: (node.url as string | null) ?? null,
     labels,
     blockedBy,
+    assignee: normalizePerson(node.assignee),
+    creator: normalizePerson(node.creator),
     createdAt: node.createdAt ? new Date(node.createdAt as string) : null,
     updatedAt: node.updatedAt ? new Date(node.updatedAt as string) : null,
   };
@@ -132,6 +144,8 @@ const CANDIDATE_QUERY_PROJECT = `
       nodes {
         id identifier title description priority
         state { name }
+        assignee { name email }
+        creator { name email }
         branchName url
         labels { nodes { name } }
         inverseRelations {
@@ -160,6 +174,8 @@ const CANDIDATE_QUERY_TEAM = `
       nodes {
         id identifier title description priority
         state { name }
+        assignee { name email }
+        creator { name email }
         branchName url
         labels { nodes { name } }
         inverseRelations {

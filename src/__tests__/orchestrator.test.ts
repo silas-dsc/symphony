@@ -1,0 +1,122 @@
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import type { Issue, Logger, OrchestratorState } from "../types.js";
+import { Orchestrator } from "../orchestrator.js";
+import * as linear from "../linear.js";
+import * as workspace from "../workspace.js";
+
+vi.mock("../linear.js", async () => {
+  const actual = await vi.importActual<typeof import("../linear.js")>("../linear.js");
+  return {
+    ...actual,
+    fetchIssueStatesByIds: vi.fn(),
+  };
+});
+
+vi.mock("../workspace.js", async () => {
+  const actual = await vi.importActual<typeof import("../workspace.js")>("../workspace.js");
+  return {
+    ...actual,
+    removeWorkspace: vi.fn().mockResolvedValue(undefined),
+  };
+});
+
+function makeLogger(): Logger {
+  return {
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+  };
+}
+
+describe("Orchestrator Slack completion notifications", () => {
+  const originalFetch = globalThis.fetch;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    delete process.env.TEST_SLACK_WEBHOOK_URL;
+  });
+
+  it("posts a Slack message when a tracked issue moves to a completion state", async () => {
+    process.env.TEST_SLACK_WEBHOOK_URL = "https://hooks.slack.test/services/COMPLETE";
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "symphony-orchestrator-"));
+    const workflowPath = path.join(tmpDir, "WORKFLOW.md");
+    fs.writeFileSync(workflowPath, `---
+tracker:
+  kind: linear
+  api_key: test-linear-key
+  project_slug: demo
+workspace:
+  root: ${tmpDir}
+notifications:
+  slack:
+    webhook_url: $TEST_SLACK_WEBHOOK_URL
+    user_map:
+      owner@example.com: UOWNER
+      Reporter Example: UREPORTER
+---
+
+Prompt body`, "utf8");
+
+    const issue: Issue = {
+      id: "issue-1",
+      identifier: "ABC-123",
+      title: "Improve team visibility when Linear tickets are completed",
+      description: "Ship a Slack completion summary so non-technical stakeholders know what landed.",
+      priority: 1,
+      state: "In Progress",
+      branchName: null,
+      url: "https://linear.app/example/issue/ABC-123",
+      labels: ["ops", "visibility"],
+      blockedBy: [],
+      assignee: { name: "Owner Example", email: "owner@example.com" },
+      creator: { name: "Reporter Example", email: "reporter@example.com" },
+      createdAt: new Date("2026-01-01T00:00:00Z"),
+      updatedAt: new Date("2026-01-02T00:00:00Z"),
+    };
+
+    vi.mocked(linear.fetchIssueStatesByIds).mockResolvedValue([
+      { id: issue.id, identifier: issue.identifier, state: "Done" },
+    ]);
+
+    const fetchMock = vi.fn().mockResolvedValue(new Response("ok", { status: 200 }));
+    globalThis.fetch = fetchMock as typeof fetch;
+
+    const orchestrator = new Orchestrator(workflowPath, makeLogger());
+    const state = (orchestrator as unknown as { state: OrchestratorState }).state;
+    state.trackedIssues.set(issue.id, {
+      issue,
+      completionSummary: "Added a plain-English summary, stakeholder context, Slack mentions, and the Linear link to completion notifications.",
+    });
+
+    await (orchestrator as unknown as {
+      reconcileTrackedStates(activeIds: Set<string>): Promise<void>;
+    }).reconcileTrackedStates(new Set());
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("https://hooks.slack.test/services/COMPLETE");
+
+    const payload = JSON.parse(String(init.body)) as { text: string; blocks: Array<Record<string, unknown>> };
+    expect(payload.text).toContain("ABC-123 completed");
+    expect(JSON.stringify(payload.blocks)).toContain("plain-English summary");
+    expect(JSON.stringify(payload.blocks)).toContain("non-technical stakeholders know what landed");
+    expect(JSON.stringify(payload.blocks)).toContain("<@UOWNER>");
+    expect(JSON.stringify(payload.blocks)).toContain("<@UREPORTER>");
+    expect(JSON.stringify(payload.blocks)).toContain("https://linear.app/example/issue/ABC-123");
+    expect(vi.mocked(workspace.removeWorkspace)).toHaveBeenCalledWith(
+      tmpDir,
+      issue.identifier,
+      undefined,
+      600000,
+      expect.any(Object),
+    );
+    expect(state.trackedIssues.has(issue.id)).toBe(false);
+  });
+});

@@ -143,6 +143,14 @@ tracker:
 polling:
   interval_ms: 30000        # how often to poll Linear (ms)
 
+github_preview:
+  enabled: true
+  repo_owner: my-org
+  repo_name: my-repo
+  comment_pattern: 'deployed to .*? Preview \(Web\) PR #(?<pr>\d+)'
+  url_template: 'https://preview-web-pr-{{pr}}.example.com/'
+  keepalive_interval_ms: 180000
+
 workspace:
   root: ~/code/workspaces   # where per-ticket clones are created
 
@@ -157,6 +165,13 @@ agent:
   max_concurrent_agents: 3
   max_turns: 30
   max_retry_backoff_ms: 300000
+
+notifications:
+  slack:
+    webhook_url: $SLACK_COMPLETION_WEBHOOK_URL
+    user_map:
+      jane@example.com: U01234567
+      John Linear: U08976543
 ---
 
 You are an autonomous coding agent working on {{ issue.identifier }}: {{ issue.title }}
@@ -175,6 +190,14 @@ You are an autonomous coding agent working on {{ issue.identifier }}: {{ issue.t
 | `tracker.endpoint` | `https://api.linear.app/graphql` | Linear GraphQL endpoint |
 | `tracker.api_key` | `$LINEAR_API_KEY` | Override env-var lookup with a literal key (not recommended) |
 | `polling.interval_ms` | `30000` | Poll interval in milliseconds |
+| `github_preview.enabled` | `false` | When true, poll GitHub PR comments for preview deployment comments and keep matching preview URLs warm |
+| `github_preview.repo_owner` | — | GitHub repo owner to poll with `gh api` |
+| `github_preview.repo_name` | — | GitHub repo name to poll with `gh api` |
+| `github_preview.comment_pattern` | — | Case-insensitive regex used to detect deployment comments; use the first capture group or a named `pr` group for the PR number |
+| `github_preview.url_template` | — | Preview URL template; must include `{{pr}}` so Symphony can build the keepalive URL |
+| `github_preview.comment_poll_limit` | `100` | Number of recent GitHub issue comments to inspect on each orchestrator tick |
+| `github_preview.keepalive_interval_ms` | `180000` | Interval between keepalive requests while the PR remains open |
+| `github_preview.request_timeout_ms` | `30000` | Timeout for both `gh api` calls and preview warm-up requests |
 | `workspace.root` | system temp dir | Absolute path (supports `~`) where per-ticket workspaces are created |
 | `hooks.after_create` | — | Shell script run once after the workspace directory is created |
 | `hooks.before_run` | — | Shell script run before each agent attempt |
@@ -185,6 +208,8 @@ You are an autonomous coding agent working on {{ issue.identifier }}: {{ issue.t
 | `agent.max_turns` | `20` | Maximum Claude turns per attempt before the agent is considered stalled |
 | `agent.max_retry_backoff_ms` | `300000` | Maximum retry back-off (ms) for failed agents |
 | `agent.max_concurrent_agents_by_state` | `{}` | Per-state concurrency cap, e.g. `{ "in progress": 2 }` |
+| `notifications.slack.webhook_url` | — | Slack incoming webhook URL. When set, Symphony posts a delivery update after tracked issues move into a completion state |
+| `notifications.slack.user_map` | `{}` | Map Linear names or emails to Slack user IDs or raw mention strings so involved people are tagged in completion posts |
 | `server.port` | `7777` | Port for the status HTTP server (loopback only) |
 | `auto_update.enabled` | `true` | Periodically pull new commits from the Symphony git remote, rebuild, and restart |
 | `auto_update.interval_ms` | `300000` | Poll interval (ms) for the self-updater |
