@@ -111,7 +111,7 @@ export function buildBatchedSlackPayload(
 
   const parts = ["DONE:", itemsText];
   if (allMentions.size > 0) {
-    parts.push([...allMentions].join(", "));
+    parts.push("", [...allMentions].join(", "));
   }
   const message = parts.join("\n");
 
@@ -135,6 +135,12 @@ export async function sendBatchedSlackNotification(
   logger: Logger,
 ): Promise<void> {
   const payload = buildBatchedSlackPayload(items, slack);
+
+  logger.info("Sending batched Slack notification", {
+    count: items.length,
+    identifiers: items.map(i => i.issue.identifier).join(", "),
+    preview: payload.text.slice(0, 200),
+  });
 
   let response: Response;
   try {

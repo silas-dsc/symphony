@@ -672,6 +672,12 @@ export class Orchestrator {
       !n.issue.updatedAt || n.issue.updatedAt.getTime() > twentyFourHoursAgo
     );
 
+    this.log.info("Flushing Slack batch", {
+      queued: pending.length,
+      after_filter: items.length,
+      dropped: pending.length - items.length,
+    });
+
     if (items.length > 0) {
       try {
         await sendBatchedSlackNotification(items, slack, this.log);
