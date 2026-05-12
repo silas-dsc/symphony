@@ -25,7 +25,25 @@ github_preview:
 notifications:
   slack:
     webhook_url: $SLACK_COMPLETION_WEBHOOK_URL
-    user_map: {}
+    user_map:
+      erin@teamdsc.com.au: U0ARLN893PW
+      augustopini@gmail.com: U0APSQ0J23G
+      hrindova.nika@gmail.com: U0AN19380DB
+      Nika: U0AN19380DB
+      jess@teamdsc.com.au: UCYMPSKRN
+      Jess Quilty: UCYMPSKRN
+      kirsty@teamdsc.com.au: UNM4YHW5U
+      Kirsty Jones: UNM4YHW5U
+      nicolette@teamdsc.com.au: U06E04DG2G3
+      Nicolette Louw: U06E04DG2G3
+      jessica@teamdsc.com.au: U06KD7538DV
+      Jessica Forrester: U06KD7538DV
+      kristen@teamdsc.com.au: U033EP20RPT
+      Kristen Shaw: U033EP20RPT
+      silas@teamdsc.com.au: U09NHAL0Q2G
+      Silas Palmer: U09NHAL0Q2G
+      evie@teamdsc.com.au: U0G6GTL1E
+      Evie Naufal: U0G6GTL1E
 workspace:
   root: ~/code/team-dsc-workspaces
 hooks:
@@ -955,8 +973,3 @@ If you have a genuinely external blocker (per the table above), move the issue t
 - One `## Original ticket description (preserved)` comment per issue — never re-create on retries.
 - Do not move to `In Review` until every phase's Definition of Done is ticked, all PR comments resolved, and self-review is clean.
 - When out-of-scope issues are found, file a Linear Backlog ticket — never expand the current PR.
-
-     notifications:
-       slack:
-         webhook_url: $SLACK_COMPLETION_WEBHOOK_URL
-         user_map: {}
