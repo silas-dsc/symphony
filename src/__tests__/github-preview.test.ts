@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  buildIssueCommentsApiArgs,
   GitHubPreviewWarmer,
   extractPreviewDeployment,
   type GitHubClient,
@@ -44,6 +45,20 @@ describe("extractPreviewDeployment", () => {
 
   it("ignores unrelated comments", () => {
     expect(extractPreviewDeployment("looks good to me", createConfig().commentPattern, createConfig().urlTemplate)).toBeNull();
+  });
+
+  it("builds a GET request for issue comment polling", () => {
+    expect(buildIssueCommentsApiArgs(createConfig())).toEqual([
+      "-X",
+      "GET",
+      "repos/team-dsc/team-dsc/issues/comments",
+      "--field",
+      "per_page=100",
+      "--field",
+      "sort=updated",
+      "--field",
+      "direction=desc",
+    ]);
   });
 });
 

@@ -8,6 +8,7 @@ import { ensureWorkspace, runHook } from "./workspace.js";
 import {
   selectClaudeModel,
   spawnCodexAgent,
+  spawnOllamaClaudeAgent,
   ERR_RATE_LIMITED,
   ERR_UNAVAILABLE,
   setClaudeBlockedUntil,
@@ -149,7 +150,7 @@ export async function runAgentAttempt(
 
 /**
  * Try Claude first; if it is rate-limited or unavailable, fall through to
- * hosted Codex or an explicit local OSS provider.
+ * Codex and then to the Ollama Claude launcher.
  */
 async function spawnWithFailover(
   prompt: string,
@@ -185,26 +186,61 @@ async function spawnWithFailover(
 
   // ── Codex fallback ─────────────────────────────────────────────────────────
   // Only pass --oss --local-provider if LOCAL_LLM_PROVIDER is explicitly set.
-  // Otherwise use hosted Codex with the configured GPT model.
+  // Otherwise use hosted Codex with its account-appropriate default model.
   const localProvider = process.env.LOCAL_LLM_PROVIDER || undefined;
   try {
-    const fallbackLabel = localProvider ? `local LLM fallback (${localProvider})` : "Codex fallback (GPT)";
-    onEvent({ type: "notification", message: `[symphony] Trying ${fallbackLabel}`, provider: localProvider ?? "codex" });
+    const configuredCodexModel = process.env.CODEX_MODEL || undefined;
+    const providerLabel = localProvider ?? "codex";
+    const fallbackLabel = localProvider
+      ? `local LLM fallback (${localProvider})`
+      : configuredCodexModel
+        ? `Codex fallback (${configuredCodexModel})`
+        : "Codex fallback";
+    onEvent({ type: "notification", message: `[symphony] Trying ${fallbackLabel}`, provider: providerLabel });
     const localResult = await spawnCodexAgent(prompt, cwd, abortController, onEvent, localProvider);
     if (localResult.success) return localResult;
-    // If Claude was blocked and local LLM also failed, return a specific error so
-    // the orchestrator can delay the next retry until Claude becomes available
-    // rather than spinning every 300 s against a wall that won't move.
-    if (isClaudeBlocked()) {
-      return { success: false, error: `claude_blocked: ${localResult.error ?? "unknown"}`, inputTokens: 0, outputTokens: 0, totalTokens: 0, turnCount: 0 };
-    }
-    return { success: false, error: `all_providers_failed: ${localResult.error ?? "unknown"}`, inputTokens: 0, outputTokens: 0, totalTokens: 0, turnCount: 0 };
+
+    onEvent({ type: "notification", message: "[symphony] Codex failed — trying Ollama Claude fallback (qwen3.5)", provider: "ollama/claude" });
+    const ollamaResult = await spawnOllamaClaudeAgent(prompt, cwd, abortController, onEvent);
+    if (ollamaResult.success) return ollamaResult;
+
+    return {
+      success: false,
+      error: formatFailoverError("ollama/claude", ollamaResult.error, isClaudeBlocked()),
+      inputTokens: 0,
+      outputTokens: 0,
+      totalTokens: 0,
+      turnCount: 0,
+    };
   } catch (e) {
-    if (isClaudeBlocked()) {
-      return { success: false, error: `claude_blocked: ${String(e).slice(0, 200)}`, inputTokens: 0, outputTokens: 0, totalTokens: 0, turnCount: 0 };
-    }
-    return { success: false, error: `all_providers_failed: ${String(e).slice(0, 200)}`, inputTokens: 0, outputTokens: 0, totalTokens: 0, turnCount: 0 };
+    return {
+      success: false,
+      error: formatFailoverError(localProvider ?? "codex", String(e).slice(0, 200), isClaudeBlocked()),
+      inputTokens: 0,
+      outputTokens: 0,
+      totalTokens: 0,
+      turnCount: 0,
+    };
   }
+}
+
+export function formatFailoverError(provider: string, providerError: string | undefined, claudeIsBlocked: boolean): string {
+  if (providerError === ERR_RATE_LIMITED) {
+    return claudeIsBlocked
+      ? `claude_blocked: ${provider} rate-limited`
+      : `all_providers_failed: ${provider} rate-limited`;
+  }
+
+  if (providerError === ERR_UNAVAILABLE) {
+    return claudeIsBlocked
+      ? `claude_blocked: ${provider} unavailable`
+      : `all_providers_failed: ${provider} unavailable`;
+  }
+
+  const detail = providerError ?? "unknown";
+  return claudeIsBlocked
+    ? `claude_blocked: ${provider} failed: ${detail}`
+    : `all_providers_failed: ${provider} failed: ${detail}`;
 }
 
 export function isRateLimitText(text: string): boolean {
@@ -215,6 +251,8 @@ export function isRateLimitText(text: string): boolean {
     t.includes("hit your limit") ||
     t.includes("you've hit") ||
     t.includes("you have hit") ||
+    t.includes("usage limit") ||
+    t.includes("hit your usage limit") ||
     t.includes("out of extra usage") ||
     t.includes("you're out of extra usage") ||
     t.includes("you are out of extra usage") ||

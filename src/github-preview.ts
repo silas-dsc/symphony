@@ -43,6 +43,16 @@ export interface ExtractedPreviewDeployment {
   url: string;
 }
 
+export function buildIssueCommentsApiArgs(config: GitHubPreviewConfig): string[] {
+  return [
+    "-X", "GET",
+    `repos/${config.repoOwner}/${config.repoName}/issues/comments`,
+    "--field", `per_page=${config.commentPollLimit}`,
+    "--field", "sort=updated",
+    "--field", "direction=desc",
+  ];
+}
+
 export interface GitHubPreviewWarmerOptions {
   config: GitHubPreviewConfig;
   logger: Logger;
@@ -201,15 +211,7 @@ export class GitHubPreviewWarmer {
 
 class GhCliGitHubClient implements GitHubClient {
   async listIssueComments(config: GitHubPreviewConfig): Promise<GitHubIssueComment[]> {
-    const stdout = await ghApi(
-      [
-        `repos/${config.repoOwner}/${config.repoName}/issues/comments`,
-        "--field", `per_page=${config.commentPollLimit}`,
-        "--field", "sort=updated",
-        "--field", "direction=desc",
-      ],
-      config.requestTimeoutMs,
-    );
+    const stdout = await ghApi(buildIssueCommentsApiArgs(config), config.requestTimeoutMs);
     const payload = JSON.parse(stdout) as GitHubCommentApiPayload[];
     if (!Array.isArray(payload)) return [];
 

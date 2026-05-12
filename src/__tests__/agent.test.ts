@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { isRateLimitText, renderPrompt } from "../agent.js";
+import { formatFailoverError, isRateLimitText, renderPrompt } from "../agent.js";
 import type { Issue } from "../types.js";
 
 describe("isRateLimitText", () => {
@@ -16,6 +16,11 @@ describe("isRateLimitText", () => {
     expect(isRateLimitText("You're out of extra usage")).toBe(true);
     expect(isRateLimitText("You are out of extra usage until tomorrow")).toBe(true);
     expect(isRateLimitText("agent_reported_error: You’re out of extra usage")).toBe(true);
+  });
+
+  it("matches usage-limit phrasing", () => {
+    expect(isRateLimitText("You've hit your usage limit. Try again later.")).toBe(true);
+    expect(isRateLimitText("ERROR: You've hit your usage limit")).toBe(true);
   });
 
   it("matches 'rate limit', 'rate_limit', 'overloaded'", () => {
@@ -69,5 +74,15 @@ describe("renderPrompt", () => {
   it("renders attempt number", () => {
     const out = renderPrompt("attempt={{ attempt }}", issue, 3, "/x");
     expect(out).toBe("attempt=3");
+  });
+});
+
+describe("formatFailoverError", () => {
+  it("shows Codex rate limits when Claude is blocked", () => {
+    expect(formatFailoverError("codex", "rate_limited", true)).toBe("claude_blocked: codex rate-limited");
+  });
+
+  it("keeps generic failures under all_providers_failed when Claude is available", () => {
+    expect(formatFailoverError("codex", "boom", false)).toBe("all_providers_failed: codex failed: boom");
   });
 });
