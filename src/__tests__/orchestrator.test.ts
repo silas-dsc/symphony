@@ -279,4 +279,71 @@ Prompt body`, "utf8");
       expect.any(Object),
     );
   });
+
+  it("still sends Slack for a terminal ticket after startup cleanup on restart", async () => {
+    process.env.TEST_SLACK_WEBHOOK_URL = "https://hooks.slack.test/services/COMPLETE";
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "symphony-orchestrator-"));
+    const workflowPath = path.join(tmpDir, "WORKFLOW.md");
+    fs.writeFileSync(workflowPath, `---
+tracker:
+  kind: linear
+  api_key: test-linear-key
+  project_slug: demo
+workspace:
+  root: ${tmpDir}
+notifications:
+  slack:
+    webhook_url: $TEST_SLACK_WEBHOOK_URL
+    user_map:
+      owner@example.com: UOWNER
+      Reporter Example: UREPORTER
+---
+
+Prompt body`, "utf8");
+
+    const issue: Issue = {
+      id: "issue-4",
+      identifier: "ABC-126",
+      title: "Notify after restart for unmarked completed tickets",
+      description: "A restart should not suppress the first completion notification.",
+      priority: 1,
+      state: "Done",
+      branchName: null,
+      url: "https://linear.app/example/issue/ABC-126",
+      labels: ["ops"],
+      blockedBy: [],
+      assignee: { name: "Owner Example", email: "owner@example.com" },
+      creator: { name: "Reporter Example", email: "reporter@example.com" },
+      createdAt: new Date("2026-01-01T00:00:00Z"),
+      updatedAt: new Date("2026-01-02T00:00:00Z"),
+    };
+
+    vi.mocked(linear.fetchIssuesByStates).mockResolvedValue([
+      { id: issue.id, identifier: issue.identifier },
+    ]);
+    vi.mocked(linear.fetchIssuesByIds).mockResolvedValue([issue]);
+
+    const fetchMock = vi.fn().mockResolvedValue(new Response("ok", { status: 200 }));
+    globalThis.fetch = fetchMock as typeof fetch;
+
+    const orchestrator = new Orchestrator(workflowPath, makeLogger());
+    const state = (orchestrator as unknown as { state: OrchestratorState }).state;
+
+    await (orchestrator as unknown as {
+      startupCleanup(): Promise<void>;
+    }).startupCleanup();
+
+    expect(state.knownTerminalIssueIds.has(issue.id)).toBe(false);
+
+    await (orchestrator as unknown as {
+      reconcileTerminalIssues(): Promise<void>;
+    }).reconcileTerminalIssues();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(linear.addSlackNotificationComment)).toHaveBeenCalledWith(
+      expect.any(Object),
+      issue.id,
+    );
+    expect(state.knownTerminalIssueIds.has(issue.id)).toBe(true);
+  });
 });

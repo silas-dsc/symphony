@@ -782,7 +782,6 @@ export class Orchestrator {
 
       let cleaned = 0;
       for (const issue of terminalIssues) {
-        this.state.knownTerminalIssueIds.add(issue.id);
         await removeWorkspace(
           this.config.workspace.root,
           issue.identifier,
