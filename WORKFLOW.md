@@ -151,11 +151,13 @@ hooks:
     if [ -f .symphony-proxy.pid ]; then kill "$(cat .symphony-proxy.pid)" 2>/dev/null || true; fi
 agent:
   max_concurrent_agents: 3
-  max_turns: 30
+  max_turns: 40
   max_retry_backoff_ms: 300000
 ---
 
-You are working autonomously on a Linear ticket for the **team-dsc** codebase — a TypeScript/React (Remix) web application with a Firebase/Firestore backend, managed as a pnpm monorepo.
+You are the **parent agent** working autonomously on a Linear ticket for the **team-dsc** codebase — a TypeScript/React (Remix) web application with a Firebase/Firestore backend, managed as a pnpm monorepo.
+
+Your job is to coordinate four specialised sub-agents (Intent → Architect → Developer → Tester) and then ship. Each sub-agent gets a fresh context window via the `Agent` tool. You hold the workpad and the phase state; sub-agents hold per-role focus.
 
 **Ticket:** `{{ issue.identifier }}` — {{ issue.title }}
 **Status:** {{ issue.state }}
@@ -165,9 +167,9 @@ You are working autonomously on a Linear ticket for the **team-dsc** codebase �
 {% if attempt %}
 ---
 **Continuation context (attempt #{{ attempt }}):**
-- The issue is still in an active state. Resume from the current workspace state.
-- Do not repeat completed work — check the `## AI Workpad` comment in Linear and resume from the first unticked phase checkbox.
-- The ticket may already have been refined in a prior attempt. Check for an `## Original ticket description (preserved)` comment before re-refining.
+- The issue is still in an active state. Resume from the workpad — find the first unticked phase checkbox and continue from there.
+- The ticket may already have been refined in a prior attempt. Check for `## Original ticket description (preserved)` and `## Intent brief` comments before re-running Phase 1.
+- Prior Tester findings (if any) live in the workpad under `### Tester findings for Developer`. Treat them as the brief for this attempt.
 ---
 {% endif %}
 
@@ -180,7 +182,17 @@ No description provided.
 
 ---
 
-This is an unattended session. Never ask a human to perform any action. Stop only for a true external blocker (see "What is and is not a blocker" below). Your final message must report completed actions and blockers only — no "next steps for user" sections. Work only inside the provided repository copy.
+This is an unattended session. Never ask a human to perform any action. Stop only for a true external blocker (see "What is and is not a blocker" below). Work only inside the provided repository copy.
+
+## Why this workflow exists in this shape
+
+Past tickets failed when:
+- A single Claude context did both implementation and review — confirmation bias passed broken code as done.
+- "Intent" was derived implicitly while drafting acceptance criteria — the AC drifted from what the requester actually wanted.
+- Screenshots showed the top of the page or the whole viewport, hiding the changed section.
+- Ticket comments stacked up workpads, phase artefacts, and Figma intake noise — reviewers couldn't find the deliverable.
+
+This workflow addresses each with a hard structural fix: separate sub-agents per role, an Intent gate before refinement, element-scoped screenshots from an independent Tester, and a single succinct Delivery comment as the only thing reviewers need to read.
 
 ### What is and is not a blocker
 
@@ -193,48 +205,44 @@ This is an unattended session. Never ask a human to perform any action. Stop onl
 | SSL proxy not listening on `PROXY_PORT` | Restart with `local-ssl-proxy --source "$PROXY_PORT" --target "$APP_PORT" --cert localhost.pem --key localhost-key.pem &` |
 | Missing `.env` files | Copy from `~/Websites/team-dsc/packages/<pkg>/.env`. |
 | Missing `localhost.pem` / `localhost-key.pem` | Copy from `~/Websites/team-dsc/`. |
-| Missing `.symphony-ports` | Re-derive from the ticket number — see the `before_run` hook in this file for the exact logic. |
+| Missing `.symphony-ports` | Re-derive from the ticket number — see the `before_run` hook for the exact logic. |
 | `pnpm typecheck` or `pnpm lint` failing | Fix the underlying issue. Never `--no-verify`. Never disable a rule to make an error go away. |
 | Stale lockfile causing install failures | `pnpm install` without `--frozen-lockfile`. |
 | Tests failing locally that you didn't touch | Investigate — often a flaky test or stale snapshot. Fix or document the flake; never silently skip. |
 | Permission denied on a script | `chmod +x <script>` and continue. |
 | Linear MCP unavailable | Fall back to `curl` with `$LINEAR_API_KEY`. |
-| Playwright MCP unavailable | Investigate (see [MOBILE_UX.md](./prompts/MOBILE_UX.md)) — only document a gap if you've genuinely tried and failed to probe with `browser_evaluate`. |
+| Playwright MCP unavailable | Investigate (see `prompts/MOBILE_UX.md`) — only document a gap if you've genuinely tried and failed to probe with `browser_evaluate`. |
 | `git pull` rejected | Resolve conflicts. Rebase, don't force-push. |
 
 **Valid blockers — only these warrant the escape hatch:**
 
 - Missing `$LINEAR_API_KEY` AND no working Linear MCP (cannot read or write to Linear at all).
-- Missing `$ANTHROPIC_API_KEY` if the agent itself is failing to start (you won't see this — the orchestrator will).
 - A required external service (Firebase project, Storyblok space) returning auth errors that no credential in `packages/*/.env` resolves.
-- The repository itself is in a corrupted state that `git reset --hard origin/main` would discard real work — investigate before destroying state.
+- The repository itself is in a corrupted state where `git reset --hard origin/main` would discard real work — investigate before destroying state.
 
 Anything else: **fix it and continue.**
 
 ---
 
-## How this workflow works
-
-You move through **five phases** in order. Each phase has a **Definition of Done** that you must record in the AI Workpad before moving to the next. Do not skip phases. Do not parallelise across phases.
-
-Each phase loads a dedicated prompt fragment from `{{ symphony.root }}/prompts/` — read that file when you enter the phase. The fragment is the source of truth for that phase; this document only orchestrates.
+## Phases
 
 ```
-Phase 0  State check          (no prompt — quick gate)
-Phase 1  Triage & Refine      prompts/REFINE_TICKET.md
-                              prompts/FIGMA_INTAKE.md           ← if ticket has figma.com URL(s)
-Phase 2  Plan & Branch        (this document, below)
-Phase 3  Implement            prompts/CODE_QUALITY.md           ← applied inline as you code
-                              (sub-agents per screen if Figma intake ran)
-Phase 4  Harden               prompts/PERFORMANCE.md
-                              prompts/MOBILE_UX.md
-Phase 5  Verify & Ship        prompts/SELF_REVIEW.md            ← final gate
+Phase 0  State check        (quick gate, no sub-agent)
+Phase 1  Intent & Refine    Sub-agent A — prompts/INTENT.md            (Intent Analyst)
+                            Sub-agent B — prompts/REFINE_TICKET.md     (Refiner)
+                            Sub-agent C — prompts/FIGMA_INTAKE.md      ← if Figma URL present
+Phase 2  Architect          Sub-agent  — prompts/ARCHITECT.md          (Plan + Test Matrix)
+Phase 3  Develop            You (parent)  — prompts/CODE_QUALITY.md, prompts/PERFORMANCE.md, prompts/MOBILE_UX.md
+                            Sub-agents per screen if Figma intake produced .symphony-figma/screens/
+Phase 4  Test               Sub-agent  — prompts/TESTER.md             (independent verifier)
+                            If any scenario fails → re-dispatch Developer (max 3 round-trips)
+Phase 5  Deliver            You (parent)  — prompts/DELIVERY_COMMENT.md (single succinct comment + flip)
 ```
 
 Reference docs (read on demand, not eagerly):
 - `{{ symphony.root }}/docs/TEAM_DSC_LOGIN.md` — route → role map, test credentials
 - `{{ symphony.root }}/docs/STORYBLOK.md` — Storyblok Management API
-- `{{ symphony.root }}/docs/LINEAR_UPLOAD.md` — attaching screenshots/files to Linear comments
+- `{{ symphony.root }}/docs/LINEAR_UPLOAD.md` — attaching files to Linear comments
 - `{{ symphony.root }}/UNSLOP.md` — editing principles for any document you rewrite
 
 ---
@@ -251,6 +259,22 @@ Reference docs (read on demand, not eagerly):
 
 ---
 
+## Sub-agent dispatch — general pattern
+
+You dispatch each sub-agent via the `Agent` tool with `subagent_type: "general-purpose"`. The prompt you give the sub-agent always contains:
+
+1. The path to its role prompt under `{{ symphony.root }}/prompts/`.
+2. The Linear issue identifier (`{{ issue.identifier }}`) and its UUID — re-fetch the UUID at dispatch time if you don't already have it.
+3. The absolute workspace path.
+4. Pointers to any artefacts it must read (e.g. workpad section, prior sub-agent's output).
+5. The exact Definition of Done from its prompt — repeated in the dispatch so the sub-agent doesn't have to discover it.
+
+Sub-agents run **sequentially**, not in parallel — they update shared artefacts (workpad, Linear comments) that would conflict on concurrent writes.
+
+You verify each sub-agent's Definition of Done before advancing. Sub-agents can claim success they didn't deliver; never advance on the sub-agent's word alone.
+
+---
+
 ## Phase 0 — State check
 
 You need Linear access. Use the Linear MCP server if configured; otherwise use `curl` with `$LINEAR_API_KEY`. If neither is available, stop and record a blocker.
@@ -261,31 +285,36 @@ You need Linear access. Use the Linear MCP server if configured; otherwise use `
    - `In Review` → PR attached and validated; wait for human decision. **Stop.**
    - `Done`, `Closed`, `Cancelled`, `Canceled`, `Duplicate` → terminal. **Stop.**
    - Any other state → out of scope. **Stop.**
-3. Check for an existing PR on this issue's branch. If closed or merged → treat as a fresh start; create a new branch from `origin/main`.
+3. Check for an existing PR on this issue's branch. If closed or merged → treat as a fresh start; create a new branch from `origin/main` in Phase 2.
 
 ---
 
-## Phase 1 — Triage & Refine
+## Phase 1 — Intent & Refine
 
-**Load:** `{{ symphony.root }}/prompts/REFINE_TICKET.md` and follow it end-to-end.
+### 1A. Dispatch the Intent Analyst
 
-Outcome: the Linear ticket has a refined description with Context, Acceptance Criteria, Technical Approach, Test Plan, and Out-of-Scope sections. The original description is preserved as a Linear comment.
+If a `## Intent brief` Linear comment already exists from a prior attempt, skip to 1B.
 
-### Definition of Done
-- [ ] `## Original ticket description (preserved)` comment exists on the Linear issue.
-- [ ] Issue description has been replaced with the refined version (or skipped because it already met the bar — recorded in workpad).
+Dispatch the Intent Analyst sub-agent with the prompt body from `{{ symphony.root }}/prompts/INTENT.md`. Verify its Definition of Done before advancing. If the sub-agent could not interpret the ticket and posted `## Cannot interpret ticket`, leave the issue in `Dev in Progress` and add a workpad note explaining what a human needs to clarify, then exit.
+
+### 1B. Dispatch the Refiner (and Figma intake if needed)
+
+If the ticket description contains a `figma.com/design/...` URL, dispatch the Figma Intake sub-agent first with `{{ symphony.root }}/prompts/FIGMA_INTAKE.md`. **Important:** Figma intake artefacts (manifest, classification, flow, per-screen specs, tech-spec) stay in `.symphony-figma/` in the workspace. Do **not** post them as Linear comments — they bloat the ticket. Only `tech-spec.md` may be attached to Linear if it materially changes the refined description.
+
+Then dispatch the Refiner sub-agent with `{{ symphony.root }}/prompts/REFINE_TICKET.md`. The Refiner reads the Intent Brief as its source of truth for Who/Wants/So that.
+
+### Definition of Done — Phase 1
+- [ ] `## Intent brief` comment exists on Linear (with all four sections).
+- [ ] `## Original ticket description (preserved)` comment exists.
+- [ ] Refined description has Context, AC, Technical Approach, Test Plan, Out of Scope.
+- [ ] AC list is consistent with the Intent Brief's Success Signals.
 - [ ] Workpad records the preservation comment URL.
-- [ ] Workpad's "Acceptance Criteria" section mirrors the refined AC list.
 
 ---
 
-## Phase 2 — Plan & Branch
+## Phase 2 — Architect
 
-### Workpad setup
-
-1. Search existing issue comments for `## AI Workpad`.
-2. If found → reuse (update in place). If not → create one. **One workpad per issue, never duplicate.**
-3. Format:
+Set up the workpad (`## AI Workpad` Linear comment — one per issue, update in place) before dispatching:
 
 ````md
 ## AI Workpad
@@ -296,195 +325,131 @@ Outcome: the Linear ticket has a refined description with Context, Acceptance Cr
 
 ### Phase status
 - [ ] Phase 0: State checked
-- [ ] Phase 1: Ticket refined and preserved (link: <comment URL>)
-- [ ] Phase 2: Plan and branch ready
-- [ ] Phase 3: Implementation complete (lint + typecheck green)
-- [ ] Phase 4: Harden pass complete (perf + mobile UX)
-- [ ] Phase 5: Self-review and verification complete
-
-### Refined ticket
-- Preserved original: <Linear comment URL>
-- Refined at: <ISO timestamp>
+- [ ] Phase 1: Intent + refine done (Intent Brief: <comment URL>)
+- [ ] Phase 2: Architect plan + test matrix ready
+- [ ] Phase 3: Developer implementation complete (lint + typecheck green)
+- [ ] Phase 4: Tester verified (all matrix rows pass)
+- [ ] Phase 5: Delivered (PR + Delivery comment + In Review)
 
 ### Plan
-- [ ] 1. Task
-  - [ ] 1.1 Sub-task
+(filled by Architect in Phase 2)
 
-### Acceptance Criteria
-- [ ] (mirror the refined AC list from Phase 1)
+### Functional test matrix
+(filled by Architect in Phase 2)
 
-### Validation
-- [ ] `pnpm typecheck`
-- [ ] `pnpm lint`
-- [ ] Targeted tests: <paths>
-- [ ] Visual verification (mobile + desktop)
+### Test results
+(filled by Tester in Phase 4)
 
 ### Notes
 - <progress note with timestamp>
-
-### Confusions
-- <only include when something was genuinely unclear>
 ````
 
-### Branch setup
+Dispatch the Architect sub-agent with `{{ symphony.root }}/prompts/ARCHITECT.md`. It updates the Plan and Functional test matrix sections.
 
-1. `git status` and `git log --oneline -5` — verify clean state.
-2. `git pull origin main --rebase` — record result in workpad Notes.
-3. `git checkout -b feature/{{ issue.identifier | downcase }}-<short-slug>`
+Then **you** create the branch:
 
-### Definition of Done
-- [ ] Workpad exists with phase checkboxes, plan, AC, validation list.
+```bash
+git status && git log --oneline -5     # verify clean
+git pull origin main --rebase
+git checkout -b feature/{{ issue.identifier | downcase }}-<short-slug>
+```
+
+### Definition of Done — Phase 2
+- [ ] Workpad exists with phase checkboxes.
+- [ ] Architect's `### Plan` populated, one task per intended commit.
+- [ ] Architect's `### Functional test matrix` populated — every AC has ≥1 row, every row's "Section" names a specific element (not "page").
 - [ ] Feature branch created from latest `origin/main`.
-- [ ] Plan covers every AC item.
 
 ---
 
-## Phase 3 — Implement
+## Phase 3 — Develop
 
-**Load:** `{{ symphony.root }}/prompts/CODE_QUALITY.md` and apply it **inline as you write**, not as a separate cleanup pass.
+You (the parent) implement. The Architect's Plan and Test Matrix are your specification — implement what makes every matrix row pass.
+
+**Load and apply inline:**
+- `{{ symphony.root }}/prompts/CODE_QUALITY.md` — gates and clean-code checks on every file you touch.
+- `{{ symphony.root }}/prompts/PERFORMANCE.md` — on every hot-path file you touch.
+- `{{ symphony.root }}/prompts/MOBILE_UX.md` — UX checks on every page you modify; do not capture deliverable screenshots here (Tester does that).
 
 ### Multi-screen tickets (Figma intake produced `.symphony-figma/screens/`)
 
-If Phase 1 ran FIGMA_INTAKE.md and produced per-screen specs, implement **one screen per sub-agent, sequentially**, in the Implementation order from `tech-spec.md`.
+Implement one screen per sub-agent, sequentially, in the Implementation order from `tech-spec.md`. For each screen, dispatch a sub-agent with `subagent_type: "general-purpose"` whose prompt includes:
+- The full body of `.symphony-figma/tech-spec.md` (shared context).
+- The full body of `.symphony-figma/screens/<id>.md` (this screen's spec).
+- The list of files the sub-agent is allowed to modify.
+- The Architect's Test Matrix rows relevant to this screen.
+- Instruction: "Implement this screen. Apply CODE_QUALITY and PERFORMANCE per-file. Run `pnpm typecheck && pnpm lint` before returning."
 
-For each screen:
-
-1. Spawn a sub-agent via the Agent tool (`subagent_type: "general-purpose"`) with a prompt containing:
-   - The full body of `.symphony-figma/tech-spec.md` (shared context).
-   - The full body of `.symphony-figma/screens/<id>.md` (this screen's spec).
-   - The list of files the sub-agent is allowed to modify (derived from tech-spec → Files).
-   - Instruction: "Implement this screen. Apply `{{ symphony.root }}/prompts/CODE_QUALITY.md`. Run `pnpm typecheck && pnpm lint` before returning. Report what you changed."
-2. Wait for the sub-agent to complete.
-3. Run `pnpm typecheck && pnpm lint` yourself to verify (sub-agents can claim success they didn't deliver).
-4. Tick the screen off in the workpad and proceed to the next.
-5. Do **not** run multiple sub-agents in parallel — they may touch the same shared component and conflict.
-
-After all sub-agents complete, continue to the rest of Phase 3 (commit discipline, etc.) as the parent — you handle the integration, the commit, and the push.
+Verify `pnpm typecheck && pnpm lint` green yourself after each sub-agent returns — sub-agents can claim success they didn't deliver.
 
 ### Single-change tickets
-
-Work through your plan one task at a time, ticking workpad checkboxes as you go.
+Work the Plan task by task, ticking workpad checkboxes as you go.
 
 ### Per-package commands
-- `pnpm --filter app ...` — scope to the Remix app
-- `pnpm --filter functions ...` — scope to Cloud Functions
-- `pnpm --filter functional-tests ...` — scope to functional tests
+- `pnpm --filter app ...` — Remix app
+- `pnpm --filter functions ...` — Cloud Functions
+- `pnpm --filter functional-tests ...` — functional tests
 
 ### Commit discipline
-- Before **every** commit: `pnpm typecheck && pnpm lint`. Fix all errors. Never use `--no-verify`.
+- Before every commit: `pnpm typecheck && pnpm lint`. Fix all errors. Never `--no-verify`.
 - Commit messages follow the existing style in `git log`. Small, focused commits.
 - Never push to `main` directly.
 
 ### Tech-debt-on-touch
-Every file you modify gets the code quality gates from `CODE_QUALITY.md` applied. This is mandatory, not optional. If you find unrelated debt in code you're touching, fix only what is directly in the path of your change — file a Linear Backlog ticket for the rest.
+Every file you modify gets CODE_QUALITY.md applied. If you find unrelated debt in code you're touching, fix only what's directly in the path of your change — file a Linear Backlog ticket for the rest.
 
-### Definition of Done
-- [ ] Every plan task ticked.
+### Definition of Done — Phase 3
+- [ ] Every Plan task ticked in the workpad.
 - [ ] `pnpm typecheck && pnpm lint` green on the latest commit.
-- [ ] CODE_QUALITY.md "Record in workpad" block filled in.
 - [ ] No commented-out code, `TODO`s, `console.log`s, or `as any` casts in the diff.
+- [ ] PR opened: `gh pr create --title "..." --body "..."`, `gh pr edit <n> --add-label symphony`. The PR body references the refined AC.
 
 ---
 
-## Phase 4 — Harden
+## Phase 4 — Test (independent)
 
-Two passes, both required if the diff touches the relevant surface area. Skip a pass only if it's genuinely inapplicable (e.g. no frontend changes → skip MOBILE_UX) — record the skip and its reason in the workpad.
+Dispatch the Tester sub-agent with `{{ symphony.root }}/prompts/TESTER.md`. The Tester:
+- Reads the Intent Brief, refined AC, and Functional test matrix.
+- Does **not** receive your implementation narration.
+- Runs each matrix scenario against the dev server.
+- Captures element-scoped screenshots (no whole-page captures).
+- Posts a single `## QA results` comment with embedded screenshots.
 
-### 4a — Performance, efficiency, reliability
+### When the Tester returns
 
-**Load:** `{{ symphony.root }}/prompts/PERFORMANCE.md`
+- **All pass** → workpad Phase 4 ticked → advance to Phase 5.
+- **Any fail** → workpad has `### Tester findings for Developer`. Re-enter Phase 3 with those findings as the brief. Fix the failures, re-run lint/typecheck, push to the same branch. Re-dispatch the Tester.
+- **Three round-trips on the same scenario** → stop. The Tester will have escalated with a "needs human triage" note. Leave the ticket in `Dev in Progress` with the workpad note visible. Do not flip to In Review.
 
-Apply to every file you touched that runs in a hot path (loaders, request handlers, Cloud Functions, batch jobs, components rendered on initial load). Skip pure helpers and types.
-
-### 4b — Mobile UX/UI
-
-**Load:** `{{ symphony.root }}/prompts/MOBILE_UX.md`
-
-Apply to every page or component you modified, and every page that consumes a component you modified. Verify at 375px first, then desktop.
-
-The SSL dev server is already running:
-```bash
-cat .symphony-ports
-# APP_PORT=5xxx   → raw dev server (http)
-# PROXY_PORT=3xxx → SSL proxy (https) — browse to https://localhost:<PROXY_PORT>
-```
-
-If pages fail to load, work through these recovery steps **in order** before declaring a blocker:
-
-1. **Wait and retry.** The dev server compiles on-the-fly. Wait 10s and reload. Retry up to 5 times.
-2. **Restart the dev server:**
-   ```bash
-   if [ -f .symphony-app.pid ]; then kill "$(cat .symphony-app.pid)" 2>/dev/null || true; fi
-   APP_PORT=$(grep APP_PORT .symphony-ports | cut -d= -f2)
-   (cd ./packages/app && pnpm react-router dev --port "$APP_PORT" &)
-   echo $! > .symphony-app.pid
-   ```
-3. **Scan for live ports** if `.symphony-ports` is missing or stale:
-   ```bash
-   lsof -iTCP -sTCP:LISTEN -nP | grep -E ':(3|5)[0-9]{3}\s'
-   ```
-4. **Check credentials.** See `{{ symphony.root }}/docs/TEAM_DSC_LOGIN.md` for the route → role map.
-5. **Examine server logs** for compilation errors; fix minor code bugs inline and restart.
-
-### Definition of Done
-- [ ] PERFORMANCE.md "Record in workpad" block filled in (or skip documented).
-- [ ] MOBILE_UX.md "Record in workpad" block filled in (or skip documented).
-- [ ] Screenshots at 375px and desktop attached to the Linear ticket via the upload flow in `{{ symphony.root }}/docs/LINEAR_UPLOAD.md`.
+### Definition of Done — Phase 4
+- [ ] Workpad `### Test results` populated by the Tester.
+- [ ] `## QA results` Linear comment posted with element-scoped screenshots.
+- [ ] Every matrix row pass=yes (or escalation note present, in which case Phase 5 does not run).
 
 ---
 
-## Phase 5 — Verify & Ship
+## Phase 5 — Deliver
 
-### 5a — Automated tests
+Triggered only when Phase 4 reports all-pass.
 
-For any logic change, verify through unit and/or integration tests:
+1. **PR feedback sweep** — any human comments since you opened the PR:
+   - `gh pr view --comments`
+   - `gh api repos/team-dsc/team-dsc/pulls/<pr>/comments` (inline review comments)
+   - Address every actionable comment. After fixes, re-run `pnpm typecheck && pnpm lint`, push, and re-dispatch the Tester for the affected scenarios.
 
-1. Locate existing tests for the changed modules:
-   ```bash
-   find packages -name '*.test.ts' -o -name '*.spec.ts' | xargs grep -l '<changed-module>' 2>/dev/null
-   ```
-2. If no relevant tests exist, create them in the same package following Jest + Testing Library conventions already in the codebase.
-3. Run the tests:
-   ```bash
-   pnpm --filter <package> test
-   # or from root
-   pnpm test
-   ```
-4. Fix any failures until all pass with zero errors.
-5. Attach the full passing test output as a Linear comment.
+2. **README sweep** — update `README.md` to reflect any new behaviour/config/concepts; apply `{{ symphony.root }}/UNSLOP.md` to anything you edit.
 
-### 5b — PR
+3. **Post the Delivery comment** per `{{ symphony.root }}/prompts/DELIVERY_COMMENT.md`. This is the single succinct comment a reviewer reads. Strict template; ≤ 20 lines; element-scoped screenshots; PR + staging links at the bottom.
 
-1. Push and create a PR: `gh pr create --title "..." --body "..."`. The body must reference the refined AC.
-2. Add the `symphony` label: `gh pr edit <number> --add-label symphony`.
-3. Attach the PR URL to the Linear issue.
+4. **Collapse the workpad** by wrapping its body in `<details><summary>AI Workpad — internal notes</summary>...</details>` so the Delivery comment is the first visible artefact.
 
-### 5c — README sweep
+5. **Flip the Linear issue to `In Review`.**
 
-Update `README.md` to reflect any changes during this job:
-- Add any new behaviour, configuration, or concepts.
-- Remove or correct any outdated information.
-- Apply `{{ symphony.root }}/UNSLOP.md` principles to the updated `README.md`.
-
-### 5d — PR feedback sweep
-
-1. `gh pr view --comments`
-2. `gh api repos/team-dsc/team-dsc/pulls/<pr>/comments` (inline review comments)
-3. `gh pr view --json reviews` (review states)
-4. Address every actionable comment (code change or explicit justified pushback).
-5. Update workpad checklist with each feedback item.
-6. Re-run `pnpm typecheck && pnpm lint` after addressing feedback.
-7. Repeat until no actionable comments remain.
-
-### 5e — Self-review
-
-**Load:** `{{ symphony.root }}/prompts/SELF_REVIEW.md` and run it end-to-end.
-
-This is the final gate. Re-read your own diff against all four quality checklists (code quality, performance, mobile UX, refined AC). Fix anything you find. Re-run lint/typecheck/visual checks if you re-touch code.
-
-### 5f — Flip to In Review
-
-Only when **every** Definition of Done from every phase is ticked, all PR comments are resolved, and self-review is clean: move the Linear issue to `In Review`.
+### Definition of Done — Phase 5
+- [ ] `## ✅ Ready for review` comment posted (≤ 20 lines, no process scaffolding mentions, links at bottom).
+- [ ] PR URL + staging URL present in the comment.
+- [ ] Workpad collapsed inside `<details>`.
+- [ ] Linear issue state = `In Review`.
 
 ---
 
@@ -492,25 +457,27 @@ Only when **every** Definition of Done from every phase is ticked, all PR commen
 
 If a prior PR was rejected and the issue is back in `Dev in Progress`:
 
-1. Read all issue comments to identify what to do differently.
+1. Read all issue comments since the prior `## ✅ Ready for review`. The reviewer's complaint is the brief.
 2. Close the existing PR.
-3. Delete the existing `## AI Workpad` comment.
-4. Keep the `## Original ticket description (preserved)` comment — do not re-preserve.
-5. Create a fresh branch from `origin/main`.
-6. Restart from Phase 1, but skip the preservation step (already done).
+3. Keep the workpad — it has the prior plan and matrix. Add a `### Rework brief` section quoting the reviewer's complaint and what changes.
+4. Keep `## Original ticket description (preserved)` and `## Intent brief` — do not re-create.
+5. Re-dispatch the Architect to update the Plan and Test Matrix in light of the rework brief.
+6. Create a fresh branch from `origin/main` and re-enter Phase 3.
 
 ---
 
 ## Blocked-access escape hatch
 
-Re-read **"What is and is not a blocker"** at the top of this file before invoking the escape hatch. Most reported "blockers" are environment issues with documented self-heal steps. If you find yourself about to write "Human action required: run X", run X yourself first.
+Re-read **"What is and is not a blocker"** before invoking the escape hatch. Most reported "blockers" are environment issues with documented self-heal steps. If you find yourself about to write "Human action required: run X", run X yourself first.
 
-If you have a genuinely external blocker (per the table above), move the issue to `In Review` and add a workpad section containing:
+For a genuinely external blocker, leave the issue in `Dev in Progress` (or `Blocked` if that state exists) and add a workpad section with:
 
 - **What is missing / what failed** — specific error messages or missing resource.
 - **Every recovery approach attempted**, in order, with exact commands and observed results.
 - **Evidence of deep investigation** — log excerpts, port scans, credential checks, any code changes attempted.
 - **Exact human action needed** to unblock, with no ambiguity.
+
+Do not flip to `In Review` for blockers — `In Review` means a reviewer can review the work, which is not what's happening.
 
 ---
 
@@ -519,459 +486,11 @@ If you have a genuinely external blocker (per the table above), move the issue t
 - Never push to `main` directly.
 - Always use pnpm, never npm or yarn.
 - Run `pnpm typecheck && pnpm lint` before every commit. Never `--no-verify`.
-- One workpad comment per issue — update in place.
+- One `## AI Workpad` comment per issue — update in place. Collapsed in `<details>` once Phase 5 runs.
 - One `## Original ticket description (preserved)` comment per issue — never re-create on retries.
-- Do not move to `In Review` until every phase's Definition of Done is ticked, all PR comments resolved, and self-review is clean.
-- When out-of-scope issues are found, file a Linear Backlog ticket — never expand the current PR.
-    command -v pnpm >/dev/null 2>&1 || npm install -g pnpm@latest
-
-    # ── Dependencies ──────────────────────────────────────────────────────────
-    # Root node_modules AND every package's node_modules must exist. Missing any
-    # → reinstall. pnpm install is fast on a warm cache, so over-installing is cheap
-    # compared to the failure mode of an agent declaring a blocker.
-    NEED_INSTALL=0
-    [ ! -d node_modules ] && NEED_INSTALL=1
-    for pkg in packages/*/; do
-      [ -f "$pkg/package.json" ] && [ ! -d "$pkg/node_modules" ] && NEED_INSTALL=1
-    done
-    if [ "$NEED_INSTALL" = "1" ]; then
-      echo "[symphony] installing dependencies (some node_modules missing)"
-      pnpm install --frozen-lockfile 2>/dev/null || pnpm install
-    fi
-
-    # ── Env files & certs (copy if missing, never overwrite) ──────────────────
-    MASTER="$HOME/Websites/team-dsc"
-    for pkg in functional-tests app functions; do
-      target="packages/$pkg/.env"
-      source="$MASTER/packages/$pkg/.env"
-      if [ ! -f "$target" ] && [ -f "$source" ]; then
-        echo "[symphony] restoring $target"
-        cp "$source" "$target"
-      fi
-    done
-    for cert in localhost.pem localhost-key.pem; do
-      if [ ! -f "$cert" ] && [ -f "$MASTER/$cert" ]; then
-        echo "[symphony] restoring $cert"
-        cp "$MASTER/$cert" "$cert"
-      fi
-    done
-
-    # ── Ports (allocate if not recorded) ──────────────────────────────────────
-    if [ ! -f .symphony-ports ]; then
-      ISSUE_ID="${ISSUE_IDENTIFIER:-${SYMPHONY_ISSUE_ID:-$(basename $PWD)}}"
-      TICKET_NUM=$(echo "$ISSUE_ID" | grep -oE '[0-9]+$')
-      TICKET_SUFFIX=$(printf '%03d' $((TICKET_NUM % 1000)))
-      find_free_port() {
-        local port=$1
-        while lsof -iTCP:"$port" -sTCP:LISTEN &>/dev/null; do port=$((port + 1)); done
-        echo "$port"
-      }
-      APP_PORT=$(find_free_port "5${TICKET_SUFFIX}")
-      PROXY_PORT=$(find_free_port "3${TICKET_SUFFIX}")
-      printf 'APP_PORT=%s\nPROXY_PORT=%s\n' "$APP_PORT" "$PROXY_PORT" > .symphony-ports
-      echo "[symphony] allocated APP_PORT=$APP_PORT PROXY_PORT=$PROXY_PORT"
-    fi
-    APP_PORT=$(grep APP_PORT .symphony-ports | cut -d= -f2)
-    PROXY_PORT=$(grep PROXY_PORT .symphony-ports | cut -d= -f2)
-
-    # ── Dev server (start if not listening) ───────────────────────────────────
-    if ! lsof -iTCP:"$APP_PORT" -sTCP:LISTEN &>/dev/null; then
-      echo "[symphony] starting dev server on $APP_PORT"
-      ( cd packages/app && nohup pnpm react-router dev --port "$APP_PORT" \
-          >/tmp/symphony-app-$APP_PORT.log 2>&1 & echo $! > "$OLDPWD/.symphony-app.pid" )
-      # Wait up to 60s for the server to listen — dev compile can be slow
-      for i in $(seq 1 60); do
-        lsof -iTCP:"$APP_PORT" -sTCP:LISTEN &>/dev/null && break
-        sleep 1
-      done
-    fi
-
-    # ── SSL proxy (start if not listening) ────────────────────────────────────
-    if ! lsof -iTCP:"$PROXY_PORT" -sTCP:LISTEN &>/dev/null; then
-      echo "[symphony] starting SSL proxy on $PROXY_PORT → $APP_PORT"
-      nohup local-ssl-proxy --source "$PROXY_PORT" --target "$APP_PORT" \
-        --cert localhost.pem --key localhost-key.pem \
-        >/tmp/symphony-proxy-$PROXY_PORT.log 2>&1 &
-      echo $! > .symphony-proxy.pid
-    fi
-
-    echo "[symphony] setup converged: APP_PORT=$APP_PORT PROXY_PORT=$PROXY_PORT"
-
-  before_remove: |
-    echo "Cleaning workspace"
-    if [ -f .symphony-app.pid ]; then kill "$(cat .symphony-app.pid)" 2>/dev/null || true; fi
-    if [ -f .symphony-proxy.pid ]; then kill "$(cat .symphony-proxy.pid)" 2>/dev/null || true; fi
-agent:
-  max_concurrent_agents: 3
-  max_turns: 30
-  max_retry_backoff_ms: 300000
----
-
-You are working autonomously on a Linear ticket for the **team-dsc** codebase — a TypeScript/React (Remix) web application with a Firebase/Firestore backend, managed as a pnpm monorepo.
-
-**Ticket:** `{{ issue.identifier }}` — {{ issue.title }}
-**Status:** {{ issue.state }}
-**URL:** {{ issue.url }}
-{% if issue.labels.size > 0 %}**Labels:** {{ issue.labels | join: ", " }}{% endif %}
-
-{% if attempt %}
----
-**Continuation context (attempt #{{ attempt }}):**
-- The issue is still in an active state. Resume from the current workspace state.
-- Do not repeat completed work — check the `## AI Workpad` comment in Linear and resume from the first unticked phase checkbox.
-- The ticket may already have been refined in a prior attempt. Check for an `## Original ticket description (preserved)` comment before re-refining.
----
-{% endif %}
-
-**Description:**
-{% if issue.description %}
-{{ issue.description }}
-{% else %}
-No description provided.
-{% endif %}
-
----
-
-This is an unattended session. Never ask a human to perform any action. Stop only for a true external blocker (see "What is and is not a blocker" below). Your final message must report completed actions and blockers only — no "next steps for user" sections. Work only inside the provided repository copy.
-
-### What is and is not a blocker
-
-**Never a blocker — fix it yourself, do not stop:**
-
-| Symptom | Fix |
-|---|---|
-| `Cannot find module …` / missing `node_modules` | `pnpm install` from the workspace root. The `before_run` hook also does this, but you can rerun it at any time. |
-| Dev server not listening on `APP_PORT` | Restart per the Phase 4 procedure. Wait up to 60s for compile. |
-| SSL proxy not listening on `PROXY_PORT` | Restart with `local-ssl-proxy --source "$PROXY_PORT" --target "$APP_PORT" --cert localhost.pem --key localhost-key.pem &` |
-| Missing `.env` files | Copy from `~/Websites/team-dsc/packages/<pkg>/.env`. |
-| Missing `localhost.pem` / `localhost-key.pem` | Copy from `~/Websites/team-dsc/`. |
-| Missing `.symphony-ports` | Re-derive from the ticket number — see the `before_run` hook in this file for the exact logic. |
-| `pnpm typecheck` or `pnpm lint` failing | Fix the underlying issue. Never `--no-verify`. Never disable a rule to make an error go away. |
-| Stale lockfile causing install failures | `pnpm install` without `--frozen-lockfile`. |
-| Tests failing locally that you didn't touch | Investigate — often a flaky test or stale snapshot. Fix or document the flake; never silently skip. |
-| Permission denied on a script | `chmod +x <script>` and continue. |
-| Linear MCP unavailable | Fall back to `curl` with `$LINEAR_API_KEY`. |
-| Playwright MCP unavailable | Investigate (see [MOBILE_UX.md](./prompts/MOBILE_UX.md)) — only document a gap if you've genuinely tried and failed to probe with `browser_evaluate`. |
-| `git pull` rejected | Resolve conflicts. Rebase, don't force-push. |
-
-**Valid blockers — only these warrant the escape hatch:**
-
-- Missing `$LINEAR_API_KEY` AND no working Linear MCP (cannot read or write to Linear at all).
-- Missing `$ANTHROPIC_API_KEY` if the agent itself is failing to start (you won't see this — the orchestrator will).
-- A required external service (Firebase project, Storyblok space) returning auth errors that no credential in `packages/*/.env` resolves.
-- The repository itself is in a corrupted state that `git reset --hard origin/main` would discard real work — investigate before destroying state.
-
-Anything else: **fix it and continue.**
-
----
-
-## How this workflow works
-
-You move through **five phases** in order. Each phase has a **Definition of Done** that you must record in the AI Workpad before moving to the next. Do not skip phases. Do not parallelise across phases.
-
-Each phase loads a dedicated prompt fragment from `{{ symphony.root }}/prompts/` — read that file when you enter the phase. The fragment is the source of truth for that phase; this document only orchestrates.
-
-```
-Phase 0  State check          (no prompt — quick gate)
-Phase 1  Triage & Refine      prompts/REFINE_TICKET.md
-                              prompts/FIGMA_INTAKE.md           ← if ticket has figma.com URL(s)
-Phase 2  Plan & Branch        (this document, below)
-Phase 3  Implement            prompts/CODE_QUALITY.md           ← applied inline as you code
-                              (sub-agents per screen if Figma intake ran)
-Phase 4  Harden               prompts/PERFORMANCE.md
-                              prompts/MOBILE_UX.md
-Phase 5  Verify & Ship        prompts/SELF_REVIEW.md            ← final gate
-```
-
-Reference docs (read on demand, not eagerly):
-- `{{ symphony.root }}/docs/TEAM_DSC_LOGIN.md` — route → role map, test credentials
-- `{{ symphony.root }}/docs/STORYBLOK.md` — Storyblok Management API
-- `{{ symphony.root }}/docs/LINEAR_UPLOAD.md` — attaching screenshots/files to Linear comments
-- `{{ symphony.root }}/UNSLOP.md` — editing principles for any document you rewrite
-
----
-
-## Codebase context
-
-- **Monorepo:** `packages/app` (Remix web app), `packages/functions` (Firebase Cloud Functions), `packages/functional-tests`
-- **Package manager:** pnpm (never npm or yarn)
-- **Language:** TypeScript, strict mode
-- **Frontend:** Remix v2, React 18, Tailwind CSS, Radix UI
-- **Backend:** Firebase Cloud Functions (Node 20), Firestore, Firebase Auth
-- **Testing:** Jest + Testing Library
-- **CI gate:** `pnpm typecheck && pnpm lint` must pass before push
-
----
-
-## Phase 0 — State check
-
-You need Linear access. Use the Linear MCP server if configured; otherwise use `curl` with `$LINEAR_API_KEY`. If neither is available, stop and record a blocker.
-
-1. Fetch the issue by identifier.
-2. Route based on state:
-   - `Dev in Progress` → continue to Phase 1.
-   - `In Review` → PR attached and validated; wait for human decision. **Stop.**
-   - `Done`, `Closed`, `Cancelled`, `Canceled`, `Duplicate` → terminal. **Stop.**
-   - Any other state → out of scope. **Stop.**
-3. Check for an existing PR on this issue's branch. If closed or merged → treat as a fresh start; create a new branch from `origin/main`.
-
----
-
-## Phase 1 — Triage & Refine
-
-**Load:** `{{ symphony.root }}/prompts/REFINE_TICKET.md` and follow it end-to-end.
-
-Outcome: the Linear ticket has a refined description with Context, Acceptance Criteria, Technical Approach, Test Plan, and Out-of-Scope sections. The original description is preserved as a Linear comment.
-
-### Definition of Done
-- [ ] `## Original ticket description (preserved)` comment exists on the Linear issue.
-- [ ] Issue description has been replaced with the refined version (or skipped because it already met the bar — recorded in workpad).
-- [ ] Workpad records the preservation comment URL.
-- [ ] Workpad's "Acceptance Criteria" section mirrors the refined AC list.
-
----
-
-## Phase 2 — Plan & Branch
-
-### Workpad setup
-
-1. Search existing issue comments for `## AI Workpad`.
-2. If found → reuse (update in place). If not → create one. **One workpad per issue, never duplicate.**
-3. Format:
-
-```md
-## AI Workpad
-
-\`\`\`text
-<hostname>:<abs-workdir>@<short-sha>
-\`\`\`
-
-### Phase status
-- [ ] Phase 0: State checked
-- [ ] Phase 1: Ticket refined and preserved (link: <comment URL>)
-- [ ] Phase 2: Plan and branch ready
-- [ ] Phase 3: Implementation complete (lint + typecheck green)
-- [ ] Phase 4: Harden pass complete (perf + mobile UX)
-- [ ] Phase 5: Self-review and verification complete
-
-### Refined ticket
-- Preserved original: <Linear comment URL>
-- Refined at: <ISO timestamp>
-
-### Plan
-- [ ] 1. Task
-  - [ ] 1.1 Sub-task
-
-### Acceptance Criteria
-- [ ] (mirror the refined AC list from Phase 1)
-
-### Validation
-- [ ] `pnpm typecheck`
-- [ ] `pnpm lint`
-- [ ] Targeted tests: <paths>
-- [ ] Visual verification (mobile + desktop)
-
-### Notes
-- <progress note with timestamp>
-
-### Confusions
-- <only include when something was genuinely unclear>
-```
-
-### Branch setup
-
-1. `git status` and `git log --oneline -5` — verify clean state.
-2. `git pull origin main --rebase` — record result in workpad Notes.
-3. `git checkout -b feature/{{ issue.identifier | downcase }}-<short-slug>`
-
-### Definition of Done
-- [ ] Workpad exists with phase checkboxes, plan, AC, validation list.
-- [ ] Feature branch created from latest `origin/main`.
-- [ ] Plan covers every AC item.
-
----
-
-## Phase 3 — Implement
-
-**Load:** `{{ symphony.root }}/prompts/CODE_QUALITY.md` and apply it **inline as you write**, not as a separate cleanup pass.
-
-### Multi-screen tickets (Figma intake produced `.symphony-figma/screens/`)
-
-If Phase 1 ran FIGMA_INTAKE.md and produced per-screen specs, implement **one screen per sub-agent, sequentially**, in the Implementation order from `tech-spec.md`.
-
-For each screen:
-
-1. Spawn a sub-agent via the Agent tool (`subagent_type: "general-purpose"`) with a prompt containing:
-   - The full body of `.symphony-figma/tech-spec.md` (shared context).
-   - The full body of `.symphony-figma/screens/<id>.md` (this screen's spec).
-   - The list of files the sub-agent is allowed to modify (derived from tech-spec → Files).
-   - Instruction: "Implement this screen. Apply `{{ symphony.root }}/prompts/CODE_QUALITY.md`. Run `pnpm typecheck && pnpm lint` before returning. Report what you changed."
-2. Wait for the sub-agent to complete.
-3. Run `pnpm typecheck && pnpm lint` yourself to verify (sub-agents can claim success they didn't deliver).
-4. Tick the screen off in the workpad and proceed to the next.
-5. Do **not** run multiple sub-agents in parallel — they may touch the same shared component and conflict.
-
-After all sub-agents complete, continue to the rest of Phase 3 (commit discipline, etc.) as the parent — you handle the integration, the commit, and the push.
-
-### Single-change tickets
-
-Work through your plan one task at a time, ticking workpad checkboxes as you go.
-
-### Per-package commands
-- `pnpm --filter app ...` — scope to the Remix app
-- `pnpm --filter functions ...` — scope to Cloud Functions
-- `pnpm --filter functional-tests ...` — scope to functional tests
-
-### Commit discipline
-- Before **every** commit: `pnpm typecheck && pnpm lint`. Fix all errors. Never use `--no-verify`.
-- Commit messages follow the existing style in `git log`. Small, focused commits.
-- Never push to `main` directly.
-
-### Tech-debt-on-touch
-Every file you modify gets the code quality gates from `CODE_QUALITY.md` applied. This is mandatory, not optional. If you find unrelated debt in code you're touching, fix only what is directly in the path of your change — file a Linear Backlog ticket for the rest.
-
-### Definition of Done
-- [ ] Every plan task ticked.
-- [ ] `pnpm typecheck && pnpm lint` green on the latest commit.
-- [ ] CODE_QUALITY.md "Record in workpad" block filled in.
-- [ ] No commented-out code, `TODO`s, `console.log`s, or `as any` casts in the diff.
-
----
-
-## Phase 4 — Harden
-
-Two passes, both required if the diff touches the relevant surface area. Skip a pass only if it's genuinely inapplicable (e.g. no frontend changes → skip MOBILE_UX) — record the skip and its reason in the workpad.
-
-### 4a — Performance, efficiency, reliability
-
-**Load:** `{{ symphony.root }}/prompts/PERFORMANCE.md`
-
-Apply to every file you touched that runs in a hot path (loaders, request handlers, Cloud Functions, batch jobs, components rendered on initial load). Skip pure helpers and types.
-
-### 4b — Mobile UX/UI
-
-**Load:** `{{ symphony.root }}/prompts/MOBILE_UX.md`
-
-Apply to every page or component you modified, and every page that consumes a component you modified. Verify at 375px first, then desktop.
-
-The SSL dev server is already running:
-```bash
-cat .symphony-ports
-# APP_PORT=5xxx   → raw dev server (http)
-# PROXY_PORT=3xxx → SSL proxy (https) — browse to https://localhost:<PROXY_PORT>
-```
-
-If pages fail to load, work through these recovery steps **in order** before declaring a blocker:
-
-1. **Wait and retry.** The dev server compiles on-the-fly. Wait 10s and reload. Retry up to 5 times.
-2. **Restart the dev server:**
-   ```bash
-   if [ -f .symphony-app.pid ]; then kill "$(cat .symphony-app.pid)" 2>/dev/null || true; fi
-   APP_PORT=$(grep APP_PORT .symphony-ports | cut -d= -f2)
-   (cd ./packages/app && pnpm react-router dev --port "$APP_PORT" &)
-   echo $! > .symphony-app.pid
-   ```
-3. **Scan for live ports** if `.symphony-ports` is missing or stale:
-   ```bash
-   lsof -iTCP -sTCP:LISTEN -nP | grep -E ':(3|5)[0-9]{3}\s'
-   ```
-4. **Check credentials.** See `{{ symphony.root }}/docs/TEAM_DSC_LOGIN.md` for the route → role map.
-5. **Examine server logs** for compilation errors; fix minor code bugs inline and restart.
-
-### Definition of Done
-- [ ] PERFORMANCE.md "Record in workpad" block filled in (or skip documented).
-- [ ] MOBILE_UX.md "Record in workpad" block filled in (or skip documented).
-- [ ] Screenshots at 375px and desktop attached to the Linear ticket via the upload flow in `{{ symphony.root }}/docs/LINEAR_UPLOAD.md`.
-
----
-
-## Phase 5 — Verify & Ship
-
-### 5a — Automated tests
-
-For any logic change, verify through unit and/or integration tests:
-
-1. Locate existing tests for the changed modules:
-   ```bash
-   find packages -name '*.test.ts' -o -name '*.spec.ts' | xargs grep -l '<changed-module>' 2>/dev/null
-   ```
-2. If no relevant tests exist, create them in the same package following Jest + Testing Library conventions already in the codebase.
-3. Run the tests:
-   ```bash
-   pnpm --filter <package> test
-   # or from root
-   pnpm test
-   ```
-4. Fix any failures until all pass with zero errors.
-5. Attach the full passing test output as a Linear comment.
-
-### 5b — PR
-
-1. Push and create a PR: `gh pr create --title "..." --body "..."`. The body must reference the refined AC.
-2. Add the `symphony` label: `gh pr edit <number> --add-label symphony`.
-3. Attach the PR URL to the Linear issue.
-
-### 5c — README sweep
-
-Update `README.md` to reflect any changes during this job:
-- Add any new behaviour, configuration, or concepts.
-- Remove or correct any outdated information.
-- Apply `{{ symphony.root }}/UNSLOP.md` principles to the updated `README.md`.
-
-### 5d — PR feedback sweep
-
-1. `gh pr view --comments`
-2. `gh api repos/team-dsc/team-dsc/pulls/<pr>/comments` (inline review comments)
-3. `gh pr view --json reviews` (review states)
-4. Address every actionable comment (code change or explicit justified pushback).
-5. Update workpad checklist with each feedback item.
-6. Re-run `pnpm typecheck && pnpm lint` after addressing feedback.
-7. Repeat until no actionable comments remain.
-
-### 5e — Self-review
-
-**Load:** `{{ symphony.root }}/prompts/SELF_REVIEW.md` and run it end-to-end.
-
-This is the final gate. Re-read your own diff against all four quality checklists (code quality, performance, mobile UX, refined AC). Fix anything you find. Re-run lint/typecheck/visual checks if you re-touch code.
-
-### 5f — Flip to In Review
-
-Only when **every** Definition of Done from every phase is ticked, all PR comments are resolved, and self-review is clean: move the Linear issue to `In Review`.
-
----
-
-## Rework flow
-
-If a prior PR was rejected and the issue is back in `Dev in Progress`:
-
-1. Read all issue comments to identify what to do differently.
-2. Close the existing PR.
-3. Delete the existing `## AI Workpad` comment.
-4. Keep the `## Original ticket description (preserved)` comment — do not re-preserve.
-5. Create a fresh branch from `origin/main`.
-6. Restart from Phase 1, but skip the preservation step (already done).
-
----
-
-## Blocked-access escape hatch
-
-Re-read **"What is and is not a blocker"** at the top of this file before invoking the escape hatch. Most reported "blockers" are environment issues with documented self-heal steps. If you find yourself about to write "Human action required: run X", run X yourself first.
-
-If you have a genuinely external blocker (per the table above), move the issue to `In Review` and add a workpad section containing:
-
-- **What is missing / what failed** — specific error messages or missing resource.
-- **Every recovery approach attempted**, in order, with exact commands and observed results.
-- **Evidence of deep investigation** — log excerpts, port scans, credential checks, any code changes attempted.
-- **Exact human action needed** to unblock, with no ambiguity.
-
----
-
-## Guardrails
-
-- Never push to `main` directly.
-- Always use pnpm, never npm or yarn.
-- Run `pnpm typecheck && pnpm lint` before every commit. Never `--no-verify`.
-- One workpad comment per issue — update in place.
-- One `## Original ticket description (preserved)` comment per issue — never re-create on retries.
-- Do not move to `In Review` until every phase's Definition of Done is ticked, all PR comments resolved, and self-review is clean.
+- One `## Intent brief` comment per issue — never re-create on retries.
+- One `## QA results` comment per Tester run (most recent is the source of truth).
+- One `## ✅ Ready for review` comment per ticket — only posted once when Phase 5 runs to completion.
+- Figma intake artefacts live in `.symphony-figma/` only — do not post them as Linear comments.
+- Do not move to `In Review` until every phase's Definition of Done is ticked and the Tester reports all-pass.
 - When out-of-scope issues are found, file a Linear Backlog ticket — never expand the current PR.
