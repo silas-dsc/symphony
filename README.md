@@ -375,15 +375,23 @@ Symphony has a two-stage feedback loop that lets the workflow learn from its own
 
 **Stage 1 — per-ticket retrospective (automatic).** When `retrospective.enabled` is `true` and a Symphony-tracked Linear issue reaches a `retrospective.trigger_states` state (default just `Done`), the orchestrator spawns a one-shot Claude session inside the workspace before cleanup. That session reads the Linear comments (Intent Brief → Workpad → QA results → Delivery → human review comments), the git diff, and the GitHub PR thread, then appends one structured JSON line to `lessons/lessons.jsonl`. See `prompts/RETROSPECTIVE.md` for the schema. The retrospective never modifies code, Linear, or GitHub — it just records.
 
-**Stage 2 — meta-improvement pass (operator-triggered).** Run `npm run meta-improve` to spawn a Claude session in the Symphony repo with `prompts/META_IMPROVE.md`. It reads `lessons/lessons.jsonl` (filtered to a configurable window, default 30 days), clusters lessons by `primary_miss` and `tags`, identifies the top 1–3 patterns that meet the actionability threshold (≥ 3 occurrences with agreeing root cause and a clear proposed edit), and proposes narrow edits to `WORKFLOW.md` and `prompts/*.md` on a new branch. It writes a `META_IMPROVE_REPORT.md` and pushes the branch. **The operator reviews the branch and opens the PR** — meta-improvement does not push to `main`, does not open a PR, and does not edit `.ts` files.
+**Stage 2 — meta-improvement pass (operator-triggered).** Run `npm run meta-improve` to spawn a Claude session in the Symphony repo with `prompts/META_IMPROVE.md`. It reads `lessons/lessons.jsonl` (filtered to a configurable window, default 30 days), clusters lessons by `primary_miss` and `tags`, and identifies up to 3 patterns that meet the actionability threshold (≥ 3 occurrences with agreeing root cause and a clear proposed edit). For each pattern it then:
+
+1. Creates an individual branch `meta-improve/<date>-<slug>` off `main`, applies a narrow (≤ 20-line) edit to one `WORKFLOW.md` or `prompts/*.md` file, pushes, and opens an individual PR.
+2. Cherry-picks every pattern's commit into a long-lived `proposed` branch (force-refreshed each run) and opens or updates a combined PR from `proposed → main`.
+3. Writes `META_IMPROVE_REPORT.md` on the `proposed` branch summarising what was done and what wasn't.
+
+**Stage 3 — independent meta-review (automatic).** For every PR opened (individual + combined), the meta-pass dispatches a **Meta-reviewer** sub-agent (`prompts/META_REVIEW.md`) that reads the diff and the motivating lessons with fresh eyes and posts one structured `## 🔍 Meta-review` comment with: verdict (approve / request changes / discuss), risk level, what the edit does, whether it actually addresses the stated pattern, concrete concerns, and a recommended next step. It's advisory — it doesn't submit a formal GitHub review and doesn't merge.
+
+The operator's contract: open the PR list, read each PR's meta-review comment, click merge on the ones they agree with, close the ones they don't. To take everything in one go, merge the combined `proposed → main` PR; the individual PRs close automatically when their commits land in main. The meta-pass never merges, never pushes to `main`, never edits `.ts` files, and never adds new prompts.
 
 ```bash
 npm run meta-improve                    # last 30 days, default lessons path
 npm run meta-improve -- --window 7d     # last week only
-npm run meta-improve -- --dry-run       # write report to /tmp, don't commit or push
+npm run meta-improve -- --dry-run       # write report to /tmp, don't push, don't open PRs
 ```
 
-Once the meta-improvement PR is merged, Symphony's existing `auto_update` loop picks up the new prompts on its next poll and restarts. The next batch of retrospectives is the regression test: if the targeted pattern stops appearing in `lessons.jsonl`, the change worked.
+Once an individual or combined PR is merged, Symphony's existing `auto_update` loop picks up the new prompts on its next poll and restarts. The next batch of retrospectives is the regression test: if the targeted pattern stops appearing in `lessons.jsonl`, the change worked.
 
 The lessons file is git-tracked by default so improvements travel with the repo. If you'd rather keep ticket-level data out of git, add `lessons/lessons.jsonl` to `.gitignore` locally — the meta-pass reads the file path from the workflow config so a local-only file works the same way.
 
