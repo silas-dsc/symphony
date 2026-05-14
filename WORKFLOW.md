@@ -241,9 +241,11 @@ Phase 1  Intent & Refine    Sub-agent A — prompts/INTENT.md            (Intent
 Phase 2  Architect          Sub-agent  — prompts/ARCHITECT.md          (Plan + Test Matrix)
 Phase 3  Develop            You (parent)  — prompts/CODE_QUALITY.md, prompts/PERFORMANCE.md, prompts/MOBILE_UX.md
                             Sub-agents per screen if Figma intake produced .symphony-figma/screens/
-Phase 4  Test               Sub-agent  — prompts/TESTER.md             (independent verifier)
+Phase 4   Test              Sub-agent  — prompts/TESTER.md             (independent verifier)
                             If any scenario fails → re-dispatch Developer (max 3 round-trips)
-Phase 5  Deliver            You (parent)  — prompts/DELIVERY_COMMENT.md (single succinct comment + flip)
+Phase 4.5 Code review       Sub-agent  — prompts/CODE_REVIEW.md        (independent senior-engineer review)
+                            If Blocking findings → re-dispatch Developer + targeted Tester re-run (max 2 round-trips)
+Phase 5   Deliver           You (parent)  — prompts/DELIVERY_COMMENT.md (single succinct comment + flip)
 ```
 
 Reference docs (read on demand, not eagerly):
@@ -336,6 +338,7 @@ Set up the workpad (`## AI Workpad` Linear comment — one per issue, update in 
 - [ ] Phase 2: Architect plan + test matrix ready
 - [ ] Phase 3: Developer implementation complete (lint + typecheck green)
 - [ ] Phase 4: Tester verified (all matrix rows pass)
+- [ ] Phase 4.5: Code review approved (no blocking findings)
 - [ ] Phase 5: Delivered (PR + Delivery comment + In Review)
 
 ### Plan
@@ -346,6 +349,9 @@ Set up the workpad (`## AI Workpad` Linear comment — one per issue, update in 
 
 ### Test results
 (filled by Tester in Phase 4)
+
+### Code review results
+(filled by Code Reviewer in Phase 4.5)
 
 ### Notes
 - <progress note with timestamp>
@@ -431,13 +437,40 @@ Dispatch the Tester sub-agent with `{{ symphony.root }}/prompts/TESTER.md`. The 
 ### Definition of Done — Phase 4
 - [ ] Workpad `### Test results` populated by the Tester.
 - [ ] `## QA results` Linear comment posted with element-scoped screenshots.
-- [ ] Every matrix row pass=yes (or escalation note present, in which case Phase 5 does not run).
+- [ ] Every matrix row pass=yes (or escalation note present, in which case Phase 4.5 and Phase 5 do not run).
+
+---
+
+## Phase 4.5 — Code review (independent)
+
+Triggered only when Phase 4 reports all-pass. The Code Reviewer catches what the Tester can't — subtle bugs outside the matrix, security issues, hidden cross-cutting impact — at a strict severity bar ("would a senior engineer block merge?").
+
+Dispatch the Code Reviewer sub-agent with `{{ symphony.root }}/prompts/CODE_REVIEW.md`. Pass it:
+- The PR URL.
+- The path to the workpad (it reads `### Functional test matrix` to know what's already covered).
+- The absolute workspace path (so it can run `git diff origin/main...HEAD`).
+
+The Code Reviewer posts one `## 🔍 Code review (automated)` comment on the PR with a verdict (approve / request changes), a risk grade, Blocking findings, Suggestions, and a re-test scope hint for any Blocking fixes.
+
+### When the Code Reviewer returns
+
+- **Verdict: approve** → workpad Phase 4.5 ticked → advance to Phase 5. Suggestions in the review remain on the PR for the human reviewer to consider; you do NOT need to address them before delivery.
+- **Verdict: request changes** → workpad has Blocking findings. Re-enter Phase 3 with those Blocking items (and only those Blocking items) as the brief. After fixing:
+  - Run `pnpm typecheck && pnpm lint`.
+  - Re-run the Tester **only on the matrix scenarios the Code Reviewer named in `### Re-test scope`**. If the Code Reviewer wrote "no re-test needed", skip the Tester re-run.
+  - Re-dispatch the Code Reviewer.
+- **Two round-trips on the same Blocking finding** → stop. The Code Reviewer will have added an `### Escalation` block. Leave the ticket in `Dev in Progress` with a workpad note: "Code review loop exhausted — needs human triage". Do not flip to In Review.
+
+### Definition of Done — Phase 4.5
+- [ ] Workpad `### Code review results` populated with the verdict, risk, and any Blocking items + Suggestions.
+- [ ] `## 🔍 Code review (automated)` comment posted on the PR.
+- [ ] Either Verdict = approve, or escalation note present (in which case Phase 5 does not run).
 
 ---
 
 ## Phase 5 — Deliver
 
-Triggered only when Phase 4 reports all-pass.
+Triggered only when Phase 4.5 reports approve.
 
 1. **PR feedback sweep** — any human comments since you opened the PR:
    - `gh pr view --comments`
@@ -497,7 +530,8 @@ Do not flip to `In Review` for blockers — `In Review` means a reviewer can rev
 - One `## Original ticket description (preserved)` comment per issue — never re-create on retries.
 - One `## Intent brief` comment per issue — never re-create on retries.
 - One `## QA results` comment per Tester run (most recent is the source of truth).
+- One `## 🔍 Code review (automated)` PR comment per Code Reviewer run (most recent is the source of truth).
 - One `## ✅ Ready for review` comment per ticket — only posted once when Phase 5 runs to completion.
 - Figma intake artefacts live in `.symphony-figma/` only — do not post them as Linear comments.
-- Do not move to `In Review` until every phase's Definition of Done is ticked and the Tester reports all-pass.
+- Do not move to `In Review` until every phase's Definition of Done is ticked, the Tester reports all-pass, and the Code Reviewer's verdict is approve.
 - When out-of-scope issues are found, file a Linear Backlog ticket — never expand the current PR.
