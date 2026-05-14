@@ -34,3 +34,6 @@ Desktop.ini
 
 # Claude Code project settings
 .claude/
+
+# Meta-improve transient windowed lesson files
+.meta-improve-window-*.jsonl

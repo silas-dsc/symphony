@@ -1,4 +1,5 @@
 import * as fs from "node:fs";
+import * as path from "node:path";
 import type {
   Issue,
   WorkflowConfig,
@@ -15,9 +16,10 @@ import { loadWorkflow, validateConfig } from "./config.js";
 import { GitHubPreviewWarmer } from "./github-preview.js";
 import * as linear from "./linear.js";
 import { isCompletionState, sendBatchedSlackNotification } from "./notifications.js";
-import { removeWorkspace } from "./workspace.js";
+import { getWorkspacePath, removeWorkspace } from "./workspace.js";
 import { runAgentAttempt } from "./agent.js";
 import { claudeBlockedUntil } from "./llm.js";
+import { runRetrospective } from "./retrospective.js";
 
 function fmtErr(e: unknown): string {
   if (e instanceof Error) return e.message;
@@ -640,13 +642,48 @@ export class Orchestrator {
       }
     }
 
-    removeWorkspace(
-      this.config.workspace.root,
-      issue.identifier,
-      this.config.hooks.beforeRemove,
-      this.config.hooks.timeoutMs,
-      this.log,
-    ).catch(e => this.log.warn(`Workspace cleanup failed: ${fmtErr(e)}`));
+    void this.retrospectThenCleanup(issue, state);
+  }
+
+  /**
+   * Best-effort retrospective sub-agent → workspace cleanup. Runs in the
+   * background so it doesn't block the orchestrator tick loop. Sequenced so
+   * the workspace exists while the retrospective runs and is removed after.
+   */
+  private async retrospectThenCleanup(issue: Issue, state: string): Promise<void> {
+    const retro = this.config.retrospective;
+    const triggerStatesLower = retro.triggerStates.map(s => s.toLowerCase());
+    const shouldRetrospect = retro.enabled && triggerStatesLower.includes(state.toLowerCase());
+
+    if (shouldRetrospect) {
+      try {
+        await runRetrospective({
+          issue,
+          terminalState: state,
+          workspacePath: getWorkspacePath(this.config.workspace.root, issue.identifier),
+          symphonyRoot: this.symphonyRoot,
+          config: retro,
+          mcpConfigPath: resolveAgentMcpConfigPath(this.symphonyRoot),
+          logger: this.log,
+        });
+      } catch (e) {
+        this.log.warn(`Retrospective threw: ${fmtErr(e)}`, {
+          issue_identifier: issue.identifier,
+        });
+      }
+    }
+
+    try {
+      await removeWorkspace(
+        this.config.workspace.root,
+        issue.identifier,
+        this.config.hooks.beforeRemove,
+        this.config.hooks.timeoutMs,
+        this.log,
+      );
+    } catch (e) {
+      this.log.warn(`Workspace cleanup failed: ${fmtErr(e)}`);
+    }
   }
 
   // ─── Slack batch ───────────────────────────────────────────────────────────
@@ -866,4 +903,17 @@ function computeDerived(config: WorkflowConfig): DerivedConfig {
     activeStatesLower: config.tracker.activeStates.map(s => s.toLowerCase()),
     terminalStatesLower: config.tracker.terminalStates.map(s => s.toLowerCase()),
   };
+}
+
+/**
+ * Resolve the agent-shared MCP config path. Mirrors agent.ts's
+ * resolveAgentMcpConfig — kept private there because it's an implementation
+ * detail of the agent module; duplicated here (small, stable shape) so the
+ * retrospective can share the same MCP server set without us re-exporting.
+ */
+function resolveAgentMcpConfigPath(symphonyRoot: string): string | undefined {
+  const explicit = process.env.SYMPHONY_AGENT_MCP_CONFIG;
+  if (explicit && fs.existsSync(explicit)) return explicit;
+  const defaultPath = path.join(symphonyRoot, "agent-mcp.json");
+  return fs.existsSync(defaultPath) ? defaultPath : undefined;
 }

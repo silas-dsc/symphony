@@ -95,6 +95,7 @@ function buildConfig(raw: Record<string, unknown>, baseDir: string): WorkflowCon
   const agent = ((raw.agent ?? {}) as Record<string, unknown>);
   const server = raw.server as Record<string, unknown> | undefined;
   const autoUpdate = ((raw.auto_update ?? {}) as Record<string, unknown>);
+  const retrospective = ((raw.retrospective ?? {}) as Record<string, unknown>);
 
   const apiKeyRaw = (tracker.api_key as string | undefined) ?? "$LINEAR_API_KEY";
   const apiKey = resolveEnvVar(apiKeyRaw);
@@ -187,6 +188,15 @@ function buildConfig(raw: Record<string, unknown>, baseDir: string): WorkflowCon
         : null,
       buildCommand: (autoUpdate.build_command as string | undefined) ?? "npm run build",
       installCommand: (autoUpdate.install_command as string | undefined) ?? "npm install",
+    },
+    retrospective: {
+      enabled: (retrospective.enabled as boolean | undefined) ?? false,
+      triggerStates: (retrospective.trigger_states as string[] | undefined) ?? ["Done"],
+      lessonsPath: typeof retrospective.lessons_path === "string"
+        ? resolvePath(retrospective.lessons_path, baseDir)
+        : path.join(baseDir, "lessons", "lessons.jsonl"),
+      maxTurns: (retrospective.max_turns as number | undefined) ?? 15,
+      timeoutMs: (retrospective.timeout_ms as number | undefined) ?? 300000,
     },
   };
 }

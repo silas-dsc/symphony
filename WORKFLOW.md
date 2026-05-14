@@ -153,6 +153,13 @@ agent:
   max_concurrent_agents: 3
   max_turns: 40
   max_retry_backoff_ms: 300000
+retrospective:
+  enabled: true
+  trigger_states:
+    - Done
+  lessons_path: lessons/lessons.jsonl
+  max_turns: 15
+  timeout_ms: 300000
 ---
 
 You are the **parent agent** working autonomously on a Linear ticket for the **team-dsc** codebase — a TypeScript/React (Remix) web application with a Firebase/Firestore backend, managed as a pnpm monorepo.
