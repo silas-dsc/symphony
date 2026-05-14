@@ -218,6 +218,11 @@ You are an autonomous coding agent working on {{ issue.identifier }}: {{ issue.t
 | `auto_update.repo_root` | Symphony checkout | Absolute path to the Symphony git working tree (rarely needs overriding) |
 | `auto_update.build_command` | `npm run build` | Command run after a successful pull |
 | `auto_update.install_command` | `npm install` | Command run when `package.json` or `package-lock.json` changes |
+| `retrospective.enabled` | `false` | When true, run a retrospective sub-agent each time a Symphony-tracked ticket reaches a terminal state — appends one structured JSON line to the lessons log |
+| `retrospective.trigger_states` | `["Done"]` | Terminal states that trigger a retrospective; case-insensitive |
+| `retrospective.lessons_path` | `<symphony>/lessons/lessons.jsonl` | Absolute or relative path to the JSONL file the retrospective appends to |
+| `retrospective.max_turns` | `15` | Max Claude turns per retrospective before it's aborted |
+| `retrospective.timeout_ms` | `300000` | Hard wall-clock timeout per retrospective run |
 
 #### Prompt template variables
 
@@ -349,16 +354,38 @@ node dist/status.js --refresh-ms 500  # faster refresh
 
 ```
 src/
-  index.ts        — entry point; CLI args, logger, starts orchestrator + status server
-  orchestrator.ts — poll loop, dispatch, retry queue, state reconciliation
-  agent.ts        — spawns `claude` subprocess, streams JSON events, returns AgentResult
-  linear.ts       — GraphQL client for Linear (issues, states, team URL)
-  workspace.ts    — creates/removes per-ticket directories; runs hooks via bash -l
-  config.ts       — parses WORKFLOW.md (YAML front matter + Liquid prompt template)
-  server.ts       — tiny HTTP server on 127.0.0.1:<port> serving GET /status as JSON
-  status.ts       — full-screen ANSI TUI; polls /status and re-renders in place
-  types.ts        — shared TypeScript interfaces
+  index.ts          — entry point; CLI args, logger, starts orchestrator + status server
+  orchestrator.ts   — poll loop, dispatch, retry queue, state reconciliation
+  agent.ts          — spawns `claude` subprocess, streams JSON events, returns AgentResult
+  retrospective.ts  — spawns a one-shot retrospective `claude` process per terminal ticket
+  meta-improve.ts   — CLI that reads lessons.jsonl and proposes prompt edits on a branch
+  linear.ts         — GraphQL client for Linear (issues, states, team URL)
+  workspace.ts      — creates/removes per-ticket directories; runs hooks via bash -l
+  config.ts         — parses WORKFLOW.md (YAML front matter + Liquid prompt template)
+  server.ts         — tiny HTTP server on 127.0.0.1:<port> serving GET /status as JSON
+  status.ts         — full-screen ANSI TUI; polls /status and re-renders in place
+  types.ts          — shared TypeScript interfaces
 ```
+
+---
+
+## Continuous self-improvement
+
+Symphony has a two-stage feedback loop that lets the workflow learn from its own misses without unsupervised prompt drift.
+
+**Stage 1 — per-ticket retrospective (automatic).** When `retrospective.enabled` is `true` and a Symphony-tracked Linear issue reaches a `retrospective.trigger_states` state (default just `Done`), the orchestrator spawns a one-shot Claude session inside the workspace before cleanup. That session reads the Linear comments (Intent Brief → Workpad → QA results → Delivery → human review comments), the git diff, and the GitHub PR thread, then appends one structured JSON line to `lessons/lessons.jsonl`. See `prompts/RETROSPECTIVE.md` for the schema. The retrospective never modifies code, Linear, or GitHub — it just records.
+
+**Stage 2 — meta-improvement pass (operator-triggered).** Run `npm run meta-improve` to spawn a Claude session in the Symphony repo with `prompts/META_IMPROVE.md`. It reads `lessons/lessons.jsonl` (filtered to a configurable window, default 30 days), clusters lessons by `primary_miss` and `tags`, identifies the top 1–3 patterns that meet the actionability threshold (≥ 3 occurrences with agreeing root cause and a clear proposed edit), and proposes narrow edits to `WORKFLOW.md` and `prompts/*.md` on a new branch. It writes a `META_IMPROVE_REPORT.md` and pushes the branch. **The operator reviews the branch and opens the PR** — meta-improvement does not push to `main`, does not open a PR, and does not edit `.ts` files.
+
+```bash
+npm run meta-improve                    # last 30 days, default lessons path
+npm run meta-improve -- --window 7d     # last week only
+npm run meta-improve -- --dry-run       # write report to /tmp, don't commit or push
+```
+
+Once the meta-improvement PR is merged, Symphony's existing `auto_update` loop picks up the new prompts on its next poll and restarts. The next batch of retrospectives is the regression test: if the targeted pattern stops appearing in `lessons.jsonl`, the change worked.
+
+The lessons file is git-tracked by default so improvements travel with the repo. If you'd rather keep ticket-level data out of git, add `lessons/lessons.jsonl` to `.gitignore` locally — the meta-pass reads the file path from the workflow config so a local-only file works the same way.
 
 ---
 

@@ -9,6 +9,7 @@
   "bin": {
     "symphony": "./dist/index.js",
     "symphony-status": "./dist/status.js",
+    "symphony-meta-improve": "./dist/meta-improve.js",
     "symphony-supervisor": "./bin/symphony-supervisor.sh"
   },
   "scripts": {
@@ -17,6 +18,7 @@
     "start": "node dist/index.js",
     "start:watch": "./bin/symphony-supervisor.sh",
     "status": "node dist/status.js",
+    "meta-improve": "node dist/meta-improve.js",
     "test": "vitest run",
     "test:watch": "vitest"
   },
