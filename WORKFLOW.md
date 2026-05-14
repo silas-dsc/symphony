@@ -70,8 +70,28 @@ hooks:
       nvm use >/dev/null 2>&1 || nvm install
     fi
 
-    # ── pnpm on PATH ──────────────────────────────────────────────────────────
-    command -v pnpm >/dev/null 2>&1 || npm install -g pnpm@latest
+    # ── pnpm on PATH (pinned, Node-compatible) ────────────────────────────────
+    # pnpm v11+ requires Node 22.13+. team-dsc's .nvmrc currently pins Node 20,
+    # so install pnpm v10 explicitly — v10 supports Node 18+. If an
+    # incompatible pnpm is already on PATH (`pnpm --version` crashes on
+    # require('node:sqlite') under Node 20), force a reinstall.
+    PNPM_REQUIRED_MAJOR=10
+    pnpm_needs_install=0
+    if ! command -v pnpm >/dev/null 2>&1; then
+      pnpm_needs_install=1
+    elif ! pnpm --version >/dev/null 2>&1; then
+      echo "[symphony] existing pnpm crashes under this Node — reinstalling pinned version"
+      pnpm_needs_install=1
+    else
+      pnpm_major=$(pnpm --version 2>/dev/null | cut -d. -f1)
+      if [ "${pnpm_major:-0}" -gt "$PNPM_REQUIRED_MAJOR" ]; then
+        echo "[symphony] installed pnpm major=$pnpm_major exceeds pinned $PNPM_REQUIRED_MAJOR — reinstalling"
+        pnpm_needs_install=1
+      fi
+    fi
+    if [ "$pnpm_needs_install" = "1" ]; then
+      npm install -g "pnpm@${PNPM_REQUIRED_MAJOR}"
+    fi
 
     # ── Dependencies ──────────────────────────────────────────────────────────
     # Root node_modules AND every package's node_modules must exist. Missing any
@@ -84,7 +104,14 @@ hooks:
     done
     if [ "$NEED_INSTALL" = "1" ]; then
       echo "[symphony] installing dependencies (some node_modules missing)"
-      pnpm install --frozen-lockfile 2>/dev/null || pnpm install
+      # Try a frozen-lockfile install first (fast, deterministic). Fall back to
+      # a regular install only when the lockfile is stale. Any other failure
+      # (network, corrupted store) propagates — silently continuing leaves the
+      # workspace half-installed and the agent dies with module-not-found.
+      if ! pnpm install --frozen-lockfile; then
+        echo "[symphony] frozen-lockfile install failed — retrying without lockfile pin"
+        pnpm install
+      fi
     fi
 
     # ── Env files & certs (copy if missing, never overwrite) ──────────────────
