@@ -71,11 +71,11 @@ hooks:
     fi
 
     # ── pnpm on PATH (pinned, Node-compatible) ────────────────────────────────
-    # pnpm v11+ requires Node 22.13+. team-dsc's .nvmrc currently pins Node 20,
-    # so install pnpm v10 explicitly — v10 supports Node 18+. If an
+    # pnpm v11+ requires Node 22.13+. team-dsc's .nvmrc currently pins Node 22,
+    # so install pnpm v11 explicitly — v11 supports Node 18+. If an
     # incompatible pnpm is already on PATH (`pnpm --version` crashes on
     # require('node:sqlite') under Node 20), force a reinstall.
-    PNPM_REQUIRED_MAJOR=10
+    PNPM_REQUIRED_MAJOR=11
     pnpm_needs_install=0
     if ! command -v pnpm >/dev/null 2>&1; then
       pnpm_needs_install=1
