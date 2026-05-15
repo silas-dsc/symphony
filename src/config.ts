@@ -88,6 +88,7 @@ function buildConfig(raw: Record<string, unknown>, baseDir: string): WorkflowCon
   const tracker = ((raw.tracker ?? {}) as Record<string, unknown>);
   const polling = ((raw.polling ?? {}) as Record<string, unknown>);
   const githubPreview = ((raw.github_preview ?? {}) as Record<string, unknown>);
+  const keepAlive = ((raw.keep_alive ?? {}) as Record<string, unknown>);
   const notifications = ((raw.notifications ?? {}) as Record<string, unknown>);
   const slack = ((notifications.slack ?? {}) as Record<string, unknown>);
   const workspace = ((raw.workspace ?? {}) as Record<string, unknown>);
@@ -147,7 +148,11 @@ function buildConfig(raw: Record<string, unknown>, baseDir: string): WorkflowCon
       commentPollLimit: (githubPreview.comment_poll_limit as number | undefined) ?? 100,
       keepAliveIntervalMs: (githubPreview.keepalive_interval_ms as number | undefined) ?? 180000,
       requestTimeoutMs: (githubPreview.request_timeout_ms as number | undefined) ?? 30000,
-      inReviewStates: (githubPreview.in_review_states as string[] | undefined) ?? [],
+    },
+    keepAlive: {
+      urls: (keepAlive.urls as string[] | undefined) ?? [],
+      intervalMs: (keepAlive.interval_ms as number | undefined) ?? 180000,
+      requestTimeoutMs: (keepAlive.request_timeout_ms as number | undefined) ?? 30000,
     },
     workspace: {
       root: workspaceRoot,
