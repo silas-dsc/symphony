@@ -44,6 +44,20 @@ export interface WorkflowConfig {
   notifications: NotificationsConfig;
   server?: ServerConfig;
   autoUpdate: AutoUpdateConfig;
+  retrospective: RetrospectiveConfig;
+}
+
+export interface RetrospectiveConfig {
+  /** When true, run a retrospective sub-agent each time a Symphony-tracked ticket reaches a terminal state. */
+  enabled: boolean;
+  /** Terminal states that should trigger a retrospective. Lowercased before comparison. */
+  triggerStates: string[];
+  /** Absolute path to the lessons.jsonl file the retrospective appends to. */
+  lessonsPath: string;
+  /** Max turns the retrospective Claude session is allowed before aborting. */
+  maxTurns: number;
+  /** Hard timeout for a single retrospective run, in ms. */
+  timeoutMs: number;
 }
 
 export interface KeepAliveConfig {

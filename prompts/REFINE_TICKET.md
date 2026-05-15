@@ -1,6 +1,8 @@
-# Phase 1 — Ticket refinement
+# Phase 1B — Ticket refinement
 
-You run this **before any branch is created or any code is written**. The goal: turn the raw ticket into an implementation-ready spec with explicit acceptance criteria, technical approach, and test plan. Skipping this phase is the single biggest cause of off-target PRs.
+Runs **after** the Intent Analyst sub-agent (Phase 1A) has posted a `## Intent brief` Linear comment. You use the Intent Brief as your source of truth for Who/Wants/So that — do not re-derive it.
+
+Your output: a refined description on the Linear ticket with explicit Context, Acceptance Criteria, Technical Approach, Test Plan, and Out of Scope. The original description is preserved as a comment.
 
 ## Idempotency
 
@@ -8,16 +10,16 @@ You may be invoked multiple times on the same ticket (retries). Before doing any
 
 ## Steps
 
-### 0. Figma URL detection
+### 0. Figma artefacts
 
-If the ticket description contains a `figma.com/design/...` URL, **stop and run `{{ symphony.root }}/prompts/FIGMA_INTAKE.md` end-to-end first**. Its outputs (Technical Approach, Test Plan, per-screen ACs, tech spec) become the substance of the refined description below — you'll fill in Context and Out-of-Scope, but the implementation-relevant sections are produced by FIGMA_INTAKE.
+The parent agent dispatches the Figma Intake sub-agent before you if the ticket has a `figma.com/design/...` URL. Look for `.symphony-figma/tech-spec.md` in the workspace. If present, its Files / Routes / Shared components / Data flow sections become the substance of your Technical Approach, and the per-screen `.md` files supply AC for the Test Plan. Figma intake artefacts live in the workspace only — do not re-post them as Linear comments.
 
-If the ticket has multiple Figma URLs, run FIGMA_INTAKE once per URL into separate `.symphony-figma/<short-name>/` subdirectories and consolidate their tech specs into one Technical Approach section.
+If there's no `.symphony-figma/` directory, the ticket has no design — proceed with the codebase-only investigation below.
 
-If the ticket has no Figma URL, continue with step 1 below as normal.
-
-### 1. Read the current description critically
-Identify gaps: missing repro steps, unstated acceptance criteria, ambiguous scope, no test plan, vague success metric. If the description is already implementation-ready and passes UNSLOP, record that in the workpad and skip the rewrite.
+### 1. Read the Intent Brief and the current description
+- Open the `## Intent brief` Linear comment. Its Who/Wants/So that is the canonical statement of intent — your refined description must remain consistent with it.
+- Read the current description critically against the Intent Brief. Identify gaps: missing repro steps, unstated acceptance criteria, ambiguous scope, no test plan, vague success metric.
+- If the description is already implementation-ready, consistent with the Intent Brief, and passes UNSLOP — record that in the workpad and skip the rewrite.
 
 ### 2. Investigate the codebase to fill gaps
 - Locate the routes, components, functions, and types the change touches.
@@ -116,6 +118,7 @@ Record the URL of the original-description comment under the workpad's "Refined 
 
 All of the following must be true before moving to Phase 2:
 
+- [ ] `## Intent brief` comment exists (produced by Phase 1A) and the refined description is consistent with it.
 - [ ] An `## Original ticket description (preserved)` comment exists on the Linear issue.
 - [ ] The Linear issue description has been replaced with the refined version (or skipped because it already met the bar — recorded in workpad).
 - [ ] The refined description contains all five sections: Context, Acceptance Criteria, Technical Approach, Test Plan, Out of Scope.
