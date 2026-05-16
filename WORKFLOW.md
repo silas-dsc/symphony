@@ -14,7 +14,7 @@ tracker:
 polling:
   interval_ms: 30000
 github_preview:
-  enabled: true
+  enabled: false
   repo_owner: team-dsc
   repo_name: team-dsc
   comment_pattern: 'deployed to .*? - Team DSC Production Preview \(Web\) PR #(?<pr>\d+)'
