@@ -238,8 +238,12 @@ export class StaticUrlWarmer {
 
   async reconcile(): Promise<void> {
     const currentMs = this.now();
-    const hour = new Date(currentMs).getHours();
-    if (hour < 7 || hour >= 19) return;
+    const local = new Date(currentMs);
+    const day = local.getDay();
+    const hour = local.getHours();
+    // Weekends only (Sat/Sun), 09:00–16:59 local time.
+    if (day !== 0 && day !== 6) return;
+    if (hour < 9 || hour >= 17) return;
     for (const url of this.cfg.urls) {
       const last = this.lastPingAtMs.get(url) ?? null;
       if (last !== null && currentMs - last < this.cfg.intervalMs) continue;
