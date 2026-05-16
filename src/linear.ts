@@ -1,4 +1,29 @@
-import type { Issue, BlockerRef, TrackerConfig } from "./types.js";
+import type { Issue, BlockerRef, IssuePerson, TrackerConfig } from "./types.js";
+
+export type LinearErrorCode =
+  | "linear_api_request"
+  | "linear_api_status"
+  | "linear_graphql_errors"
+  | "linear_unknown_payload"
+  | "linear_missing_end_cursor"
+  | "linear_invalid_response";
+
+export class LinearError extends Error {
+  readonly code: LinearErrorCode;
+  readonly status?: number;
+  readonly graphqlErrors?: Array<{ message: string }>;
+  constructor(
+    code: LinearErrorCode,
+    message: string,
+    extra?: { status?: number; graphqlErrors?: Array<{ message: string }> },
+  ) {
+    super(message);
+    this.name = "LinearError";
+    this.code = code;
+    if (extra?.status !== undefined) this.status = extra.status;
+    if (extra?.graphqlErrors !== undefined) this.graphqlErrors = extra.graphqlErrors;
+  }
+}
 
 interface GraphQLResponse<T> {
   data?: T;
@@ -23,23 +48,48 @@ async function graphql<T>(
       signal: AbortSignal.timeout(30000),
     });
   } catch (e) {
-    throw { code: "linear_api_request", error: String(e) };
+    throw new LinearError("linear_api_request", e instanceof Error ? e.message : String(e));
   }
 
   if (!response.ok) {
     let body = "";
     try { body = await response.text(); } catch { /* ignore */ }
-    throw { code: "linear_api_status", status: response.status, body };
+    throw new LinearError(
+      "linear_api_status",
+      `Linear API returned HTTP ${response.status}: ${body.slice(0, 300)}`,
+      { status: response.status },
+    );
   }
 
   const json = (await response.json()) as GraphQLResponse<T>;
   if (json.errors?.length) {
-    throw { code: "linear_graphql_errors", errors: json.errors };
+    const msg = json.errors.map(e => e.message).join("; ");
+    throw new LinearError("linear_graphql_errors", `GraphQL errors: ${msg}`, { graphqlErrors: json.errors });
   }
   if (!json.data) {
-    throw { code: "linear_unknown_payload" };
+    throw new LinearError("linear_unknown_payload", "Linear response had neither data nor errors");
   }
   return json.data;
+}
+
+function expectString(value: unknown, field: string): string {
+  if (typeof value !== "string") {
+    throw new LinearError(
+      "linear_invalid_response",
+      `Expected issue.${field} to be string, got ${value === null ? "null" : typeof value}`,
+    );
+  }
+  return value;
+}
+
+function normalizePerson(value: unknown): IssuePerson | null {
+  if (!value || typeof value !== "object") return null;
+  const person = value as Record<string, unknown>;
+  if (typeof person.name !== "string" || !person.name.trim()) return null;
+  return {
+    name: person.name,
+    email: typeof person.email === "string" && person.email.trim() ? person.email : null,
+  };
 }
 
 function normalizeIssue(node: Record<string, unknown>): Issue {
@@ -53,8 +103,8 @@ function normalizeIssue(node: Record<string, unknown>): Issue {
       if (!r.issue) return null;
       const st = r.issue.state as { name: string } | null;
       return {
-        id: r.issue.id as string | null,
-        identifier: r.issue.identifier as string | null,
+        id: (r.issue.id as string | null) ?? null,
+        identifier: (r.issue.identifier as string | null) ?? null,
         state: st?.name ?? null,
       };
     })
@@ -64,9 +114,9 @@ function normalizeIssue(node: Record<string, unknown>): Issue {
   const state = node.state as { name: string } | null;
 
   return {
-    id: node.id as string,
-    identifier: node.identifier as string,
-    title: node.title as string,
+    id: expectString(node.id, "id"),
+    identifier: expectString(node.identifier, "identifier"),
+    title: expectString(node.title, "title"),
     description: (node.description as string | null) ?? null,
     priority: typeof priority === "number" ? priority : null,
     state: state?.name ?? "",
@@ -74,6 +124,8 @@ function normalizeIssue(node: Record<string, unknown>): Issue {
     url: (node.url as string | null) ?? null,
     labels,
     blockedBy,
+    assignee: normalizePerson(node.assignee),
+    creator: normalizePerson(node.creator),
     createdAt: node.createdAt ? new Date(node.createdAt as string) : null,
     updatedAt: node.updatedAt ? new Date(node.updatedAt as string) : null,
   };
@@ -92,6 +144,8 @@ const CANDIDATE_QUERY_PROJECT = `
       nodes {
         id identifier title description priority
         state { name }
+        assignee { name email }
+        creator { name email }
         branchName url
         labels { nodes { name } }
         inverseRelations {
@@ -120,6 +174,8 @@ const CANDIDATE_QUERY_TEAM = `
       nodes {
         id identifier title description priority
         state { name }
+        assignee { name email }
+        creator { name email }
         branchName url
         labels { nodes { name } }
         inverseRelations {
@@ -168,12 +224,53 @@ export async function fetchCandidateIssues(config: TrackerConfig): Promise<Issue
 
     if (!data.issues.pageInfo.hasNextPage) break;
     if (!data.issues.pageInfo.endCursor) {
-      throw { code: "linear_missing_end_cursor" };
+      throw new LinearError("linear_missing_end_cursor", "Linear pagination returned hasNextPage with no cursor");
     }
     after = data.issues.pageInfo.endCursor;
   }
 
   return issues;
+}
+
+const ISSUES_BY_IDS_QUERY = `
+  query IssuesByIds($ids: [ID!]!) {
+    issues(filter: { id: { in: $ids } }) {
+      nodes {
+        id identifier title description priority
+        state { name }
+        assignee { name email }
+        creator { name email }
+        branchName url
+        labels { nodes { name } }
+        inverseRelations {
+          nodes {
+            type
+            issue { id identifier state { name } }
+          }
+        }
+        createdAt updatedAt
+      }
+    }
+  }
+`;
+
+interface IssuesByIdsPayload {
+  issues: {
+    nodes: Record<string, unknown>[];
+  };
+}
+
+export async function fetchIssuesByIds(config: TrackerConfig, ids: string[]): Promise<Issue[]> {
+  if (ids.length === 0) return [];
+
+  const data: IssuesByIdsPayload = await graphql<IssuesByIdsPayload>(
+    config.endpoint,
+    config.apiKey,
+    ISSUES_BY_IDS_QUERY,
+    { ids },
+  );
+
+  return data.issues.nodes.map(normalizeIssue);
 }
 
 const ISSUES_BY_STATES_QUERY_PROJECT = `
@@ -291,6 +388,44 @@ interface OrgPayload {
   organization: { urlKey: string };
 }
 
+const SLACK_NOTIFICATION_COMMENT = "Slack notification sent";
+
+const ISSUE_COMMENTS_QUERY = `
+  query IssueComments($issueId: String!, $first: Int!, $after: String) {
+    issue(id: $issueId) {
+      comments(first: $first, after: $after) {
+        nodes { body }
+        pageInfo { hasNextPage endCursor }
+      }
+    }
+  }
+`;
+
+interface IssueCommentsPayload {
+  issue: {
+    comments: IssueCommentsConnection;
+  } | null;
+}
+
+interface IssueCommentsConnection {
+  nodes: Array<{ body: string | null }>;
+  pageInfo: { hasNextPage: boolean; endCursor: string | null };
+}
+
+const COMMENT_CREATE_MUTATION = `
+  mutation CommentCreate($issueId: String!, $body: String!) {
+    commentCreate(input: { issueId: $issueId, body: $body }) {
+      success
+    }
+  }
+`;
+
+interface CommentCreatePayload {
+  commentCreate: {
+    success: boolean;
+  } | null;
+}
+
 /**
  * Best-effort lookup of the Linear team URL — `https://linear.app/<orgKey>/team/<teamKey>`.
  * Returns null on any failure; callers should treat the URL as optional UI sugar.
@@ -304,6 +439,50 @@ export async function fetchTeamUrl(config: TrackerConfig): Promise<string | null
     return `https://linear.app/${orgKey}/team/${config.teamKey}/all`;
   } catch {
     return null;
+  }
+}
+
+export async function hasSlackNotificationComment(
+  config: TrackerConfig,
+  issueId: string,
+): Promise<boolean> {
+  let after: string | null = null;
+
+  while (true) {
+    const data: IssueCommentsPayload = await graphql<IssueCommentsPayload>(
+      config.endpoint,
+      config.apiKey,
+      ISSUE_COMMENTS_QUERY,
+      { issueId, first: 50, after },
+    );
+
+    const comments: IssueCommentsConnection | undefined = data.issue?.comments;
+    if (!comments) return false;
+    if (comments.nodes.some((comment: { body: string | null }) => comment.body?.trim() === SLACK_NOTIFICATION_COMMENT)) {
+      return true;
+    }
+
+    if (!comments.pageInfo.hasNextPage) return false;
+    if (!comments.pageInfo.endCursor) {
+      throw new LinearError("linear_missing_end_cursor", "Linear comment pagination returned hasNextPage with no cursor");
+    }
+    after = comments.pageInfo.endCursor;
+  }
+}
+
+export async function addSlackNotificationComment(
+  config: TrackerConfig,
+  issueId: string,
+): Promise<void> {
+  const data = await graphql<CommentCreatePayload>(
+    config.endpoint,
+    config.apiKey,
+    COMMENT_CREATE_MUTATION,
+    { issueId, body: SLACK_NOTIFICATION_COMMENT },
+  );
+
+  if (!data.commentCreate?.success) {
+    throw new LinearError("linear_unknown_payload", "Linear commentCreate did not report success");
   }
 }
 

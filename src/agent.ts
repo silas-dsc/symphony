@@ -1,11 +1,14 @@
 import { spawn } from "node:child_process";
 import * as readline from "node:readline";
+import * as fs from "node:fs";
+import * as path from "node:path";
 import { Liquid } from "liquidjs";
-import type { Issue, AgentResult, WorkflowConfig, RateLimitInfo, AgentEvent, AgentEventCallback } from "./types.js";
+import type { Issue, AgentResult, WorkflowConfig, RateLimitInfo, AgentEvent, AgentEventCallback, Logger } from "./types.js";
 import { ensureWorkspace, runHook } from "./workspace.js";
 import {
   selectClaudeModel,
   spawnCodexAgent,
+  spawnOllamaClaudeAgent,
   ERR_RATE_LIMITED,
   ERR_UNAVAILABLE,
   setClaudeBlockedUntil,
@@ -72,7 +75,8 @@ export async function runAgentAttempt(
   promptTemplate: string,
   symphonyRoot: string,
   abortController: AbortController,
-  onEvent: AgentEventCallback
+  onEvent: AgentEventCallback,
+  logger?: Logger,
 ): Promise<AgentResult> {
   const { path: wsPath, createdNow } = await ensureWorkspace(
     config.workspace.root,
@@ -80,11 +84,11 @@ export async function runAgentAttempt(
   );
 
   if (createdNow && config.hooks.afterCreate) {
-    await runHook(config.hooks.afterCreate, wsPath, config.hooks.timeoutMs);
+    await runHook(config.hooks.afterCreate, wsPath, config.hooks.timeoutMs, logger);
   }
 
   if (config.hooks.beforeRun) {
-    await runHook(config.hooks.beforeRun, wsPath, config.hooks.timeoutMs);
+    await runHook(config.hooks.beforeRun, wsPath, config.hooks.timeoutMs, logger);
   }
 
   let prompt: string;
@@ -107,9 +111,14 @@ export async function runAgentAttempt(
     onEvent({ type: "notification", message: `[symphony] model selected: ${selectedModel}` });
   }
 
+  const mcpConfigPath = resolveAgentMcpConfig(symphonyRoot);
+  if (mcpConfigPath) {
+    onEvent({ type: "notification", message: `[symphony] mcp config: ${mcpConfigPath}` });
+  }
+
   try {
     onEvent({ type: "session_started" });
-    const result = await spawnWithFailover(prompt, wsPath, config.agent.maxTurns, abortController, onEvent, selectedModel);
+    const result = await spawnWithFailover(prompt, wsPath, config.agent.maxTurns, abortController, onEvent, selectedModel, mcpConfigPath);
     success = result.success;
     errorMsg = result.error;
     inputTokens = result.inputTokens;
@@ -117,14 +126,14 @@ export async function runAgentAttempt(
     turnCount = result.turnCount;
   } catch (e) {
     if (!abortController.signal.aborted) {
-      errorMsg = String(e);
+      errorMsg = e instanceof Error ? e.message : String(e);
     }
   } finally {
     if (config.hooks.afterRun) {
       try {
-        await runHook(config.hooks.afterRun, wsPath, config.hooks.timeoutMs);
+        await runHook(config.hooks.afterRun, wsPath, config.hooks.timeoutMs, logger);
       } catch (e) {
-        console.warn(`[symphony] after_run hook failed for ${issue.identifier}: ${e}`);
+        logger?.warn(`after_run hook failed`, { identifier: issue.identifier, error: e instanceof Error ? e.message : String(e) });
       }
     }
   }
@@ -141,7 +150,7 @@ export async function runAgentAttempt(
 
 /**
  * Try Claude first; if it is rate-limited or unavailable, fall through to
- * Codex and then to a local LLM (if LOCAL_LLM_ENDPOINT is set).
+ * Codex and then to the Ollama Claude launcher.
  */
 async function spawnWithFailover(
   prompt: string,
@@ -150,13 +159,14 @@ async function spawnWithFailover(
   abortController: AbortController,
   onEvent: AgentEventCallback,
   model: string | undefined,
+  mcpConfigPath: string | undefined,
 ): Promise<AgentResult> {
   // ── Claude ──────────────────────────────────────────────────────────────────
   // Skip Claude entirely if it is known to be rate-limited right now.
   if (!isClaudeBlocked()) {
     let claudeResult: AgentResult | undefined;
     try {
-      claudeResult = await spawnClaude(prompt, cwd, maxTurns, abortController, onEvent, model);
+      claudeResult = await spawnClaude(prompt, cwd, maxTurns, abortController, onEvent, model, mcpConfigPath);
     } catch {
       claudeResult = { success: false, error: ERR_UNAVAILABLE, inputTokens: 0, outputTokens: 0, totalTokens: 0, turnCount: 0 };
     }
@@ -176,50 +186,106 @@ async function spawnWithFailover(
 
   // ── Codex fallback ─────────────────────────────────────────────────────────
   // Only pass --oss --local-provider if LOCAL_LLM_PROVIDER is explicitly set.
-  // Without it, codex runs normally against its own default backend (Claude).
+  // Otherwise use hosted Codex with its account-appropriate default model.
   const localProvider = process.env.LOCAL_LLM_PROVIDER || undefined;
   try {
-    onEvent({ type: "notification", message: `[symphony] Trying local LLM fallback (${localProvider})`, provider: localProvider });
+    const configuredCodexModel = process.env.CODEX_MODEL || undefined;
+    const providerLabel = localProvider ?? "codex";
+    const fallbackLabel = localProvider
+      ? `local LLM fallback (${localProvider})`
+      : configuredCodexModel
+        ? `Codex fallback (${configuredCodexModel})`
+        : "Codex fallback";
+    onEvent({ type: "notification", message: `[symphony] Trying ${fallbackLabel}`, provider: providerLabel });
     const localResult = await spawnCodexAgent(prompt, cwd, abortController, onEvent, localProvider);
     if (localResult.success) return localResult;
-    // If Claude was blocked and local LLM also failed, return a specific error so
-    // the orchestrator can delay the next retry until Claude becomes available
-    // rather than spinning every 300 s against a wall that won't move.
-    if (isClaudeBlocked()) {
-      return { success: false, error: `claude_blocked: ${localResult.error ?? "unknown"}`, inputTokens: 0, outputTokens: 0, totalTokens: 0, turnCount: 0 };
-    }
-    return { success: false, error: `all_providers_failed: ${localResult.error ?? "unknown"}`, inputTokens: 0, outputTokens: 0, totalTokens: 0, turnCount: 0 };
+
+    onEvent({ type: "notification", message: "[symphony] Codex failed — trying Ollama Claude fallback (qwen3.5)", provider: "ollama/claude" });
+    const ollamaResult = await spawnOllamaClaudeAgent(prompt, cwd, abortController, onEvent);
+    if (ollamaResult.success) return ollamaResult;
+
+    return {
+      success: false,
+      error: formatFailoverError("ollama/claude", ollamaResult.error, isClaudeBlocked()),
+      inputTokens: 0,
+      outputTokens: 0,
+      totalTokens: 0,
+      turnCount: 0,
+    };
   } catch (e) {
-    if (isClaudeBlocked()) {
-      return { success: false, error: `claude_blocked: ${String(e).slice(0, 200)}`, inputTokens: 0, outputTokens: 0, totalTokens: 0, turnCount: 0 };
-    }
-    return { success: false, error: `all_providers_failed: ${String(e).slice(0, 200)}`, inputTokens: 0, outputTokens: 0, totalTokens: 0, turnCount: 0 };
+    return {
+      success: false,
+      error: formatFailoverError(localProvider ?? "codex", String(e).slice(0, 200), isClaudeBlocked()),
+      inputTokens: 0,
+      outputTokens: 0,
+      totalTokens: 0,
+      turnCount: 0,
+    };
   }
 }
 
-function isRateLimitText(text: string): boolean {
+export function formatFailoverError(provider: string, providerError: string | undefined, claudeIsBlocked: boolean): string {
+  if (providerError === ERR_RATE_LIMITED) {
+    return claudeIsBlocked
+      ? `claude_blocked: ${provider} rate-limited`
+      : `all_providers_failed: ${provider} rate-limited`;
+  }
+
+  if (providerError === ERR_UNAVAILABLE) {
+    return claudeIsBlocked
+      ? `claude_blocked: ${provider} unavailable`
+      : `all_providers_failed: ${provider} unavailable`;
+  }
+
+  const detail = providerError ?? "unknown";
+  return claudeIsBlocked
+    ? `claude_blocked: ${provider} failed: ${detail}`
+    : `all_providers_failed: ${provider} failed: ${detail}`;
+}
+
+export function isRateLimitText(text: string): boolean {
   const t = text.toLowerCase()
     // Normalise Unicode apostrophes/quotes to ASCII so matches are robust
     .replace(/[\u2018\u2019\u201a\u201b]/g, "'");
-  return (
+  if (
     t.includes("hit your limit") ||
     t.includes("you've hit") ||
     t.includes("you have hit") ||
+    t.includes("usage limit") ||
+    t.includes("hit your usage limit") ||
+    t.includes("out of extra usage") ||
+    t.includes("you're out of extra usage") ||
+    t.includes("you are out of extra usage") ||
     t.includes("rate limit") ||
     t.includes("rate_limit") ||
-    t.includes("overloaded") ||
-    t.includes(" 429") ||
-    t.includes(" 529")
-  );
+    t.includes("overloaded")
+  ) return true;
+  // Match HTTP 429/529 only when adjacent to an HTTP/status context, so e.g.
+  // "line 429" or "PR #529" in agent output don't trigger a false failover.
+  if (/\b(?:http|status|code|error)[\s/:]*(?:429|529)\b/i.test(text)) return true;
+  return false;
+}
+
+/**
+ * Resolve the path to the agent's MCP config (e.g. for chrome-devtools-mcp).
+ * Prefers $SYMPHONY_AGENT_MCP_CONFIG when set, else `<symphonyRoot>/agent-mcp.json`.
+ * Returns undefined if no file is found, so the agent runs with the user's default MCPs only.
+ */
+function resolveAgentMcpConfig(symphonyRoot: string): string | undefined {
+  const explicit = process.env.SYMPHONY_AGENT_MCP_CONFIG;
+  if (explicit && fs.existsSync(explicit)) return explicit;
+  const defaultPath = path.join(symphonyRoot, "agent-mcp.json");
+  return fs.existsSync(defaultPath) ? defaultPath : undefined;
 }
 
 async function spawnClaude(
   prompt: string,
   cwd: string,
-  _maxTurns: number,
+  maxTurns: number,
   abortController: AbortController,
   onEvent: AgentEventCallback,
   model: string | undefined,
+  mcpConfigPath: string | undefined,
 ): Promise<AgentResult> {
   return new Promise((resolve, reject) => {
     // Build a clean env for the spawned `claude`. An empty `ANTHROPIC_API_KEY=""`
@@ -233,12 +299,14 @@ async function spawnClaude(
     }
 
     const modelArgs = model ? ["--model", model] : [];
+    const mcpArgs = mcpConfigPath ? ["--mcp-config", mcpConfigPath] : [];
 
     const proc = spawn(
       "claude",
       [
         "-p",
         ...modelArgs,
+        ...mcpArgs,
         "--output-format", "stream-json",
         "--verbose",
         "--dangerously-skip-permissions",
@@ -264,6 +332,7 @@ async function spawnClaude(
     let success = false;
     let resultError: string | undefined;
     let isRateLimited = false;
+    let completionSummary: string | undefined;
     const stderrBuf: string[] = [];
 
     proc.stderr.on("data", (chunk: Buffer) => {
@@ -312,16 +381,26 @@ async function spawnClaude(
         if (usage) {
           const inp = usage.input_tokens ?? 0;
           const out = usage.output_tokens ?? 0;
+          // Claude's stream-json reports cumulative session totals on each
+          // assistant event, so we take max rather than sum. If a future
+          // stream-json schema reports per-turn deltas, this will silently
+          // collapse to "max single turn" — verify against the final `result`
+          // event's totals (also handled below).
           inputTokens = Math.max(inputTokens, inp);
           outputTokens = Math.max(outputTokens, out);
           onEvent({ type: "notification", tokens: { input: inp, output: out, total: inp + out } });
         }
 
         const content = event.message.content ?? [];
+        const textBlocks: string[] = [];
         for (const block of content) {
           if (block.type === "text" && block.text?.trim()) {
+            textBlocks.push(block.text);
             onEvent({ type: "notification", message: block.text.slice(0, 300) });
           }
+        }
+        if (textBlocks.length > 0) {
+          completionSummary = textBlocks.join("\n\n").trim().slice(0, 4000);
         }
       }
 
@@ -377,12 +456,12 @@ async function spawnClaude(
       rl.close();
 
       if (abortController.signal.aborted) {
-        resolve({ success: false, error: "aborted", inputTokens, outputTokens, totalTokens: inputTokens + outputTokens, turnCount });
+        resolve({ success: false, error: "aborted", inputTokens, outputTokens, totalTokens: inputTokens + outputTokens, turnCount, completionSummary });
         return;
       }
 
       if (success) {
-        resolve({ success: true, inputTokens, outputTokens, totalTokens: inputTokens + outputTokens, turnCount });
+        resolve({ success: true, inputTokens, outputTokens, totalTokens: inputTokens + outputTokens, turnCount, completionSummary });
       } else {
         // Check stderr for rate-limit signals even if not detected via events.
         const stderrJoined = stderrBuf.join(" ");
@@ -391,12 +470,12 @@ async function spawnClaude(
         }
 
         if (isRateLimited) {
-          resolve({ success: false, error: ERR_RATE_LIMITED, inputTokens, outputTokens, totalTokens: inputTokens + outputTokens, turnCount });
+          resolve({ success: false, error: ERR_RATE_LIMITED, inputTokens, outputTokens, totalTokens: inputTokens + outputTokens, turnCount, completionSummary });
           return;
         }
 
         const errDetail = resultError ?? (stderrBuf.length ? stderrBuf.join("; ") : `exit code ${code}`);
-        resolve({ success: false, error: errDetail, inputTokens, outputTokens, totalTokens: inputTokens + outputTokens, turnCount });
+        resolve({ success: false, error: errDetail, inputTokens, outputTokens, totalTokens: inputTokens + outputTokens, turnCount, completionSummary });
       }
     });
 

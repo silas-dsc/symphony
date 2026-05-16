@@ -6,6 +6,44 @@ import type { AgentResult, AgentEventCallback } from "./types.js";
 export const CLAUDE_HAIKU_MODEL  = process.env.CLAUDE_HAIKU_MODEL  ?? "claude-haiku-4-5";
 export const CLAUDE_SONNET_MODEL = process.env.CLAUDE_SONNET_MODEL ?? "claude-sonnet-4-5";
 export const CLAUDE_OPUS_MODEL   = process.env.CLAUDE_OPUS_MODEL   ?? "claude-opus-4-5";
+export const OLLAMA_CLAUDE_MODEL = process.env.OLLAMA_CLAUDE_MODEL ?? "qwen3.5";
+
+const DEFAULT_OLLAMA_CLAUDE_TIMEOUT_MS = 480_000;
+const OLLAMA_CLAUDE_HEARTBEAT_MS = 30_000;
+
+let qwenActiveCount = 0;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function acquireQwenSlot(abortSignal: AbortSignal): Promise<boolean> {
+  while (qwenActiveCount >= 1) {
+    if (abortSignal.aborted) return false;
+    await sleep(1000);
+  }
+  if (abortSignal.aborted) return false;
+  qwenActiveCount += 1;
+  return true;
+}
+
+function releaseQwenSlot(): void {
+  if (qwenActiveCount > 0) {
+    qwenActiveCount -= 1;
+  }
+}
+
+export function getOllamaClaudeTimeoutMs(): number {
+  const raw = Number.parseInt(process.env.OLLAMA_CLAUDE_TIMEOUT_MS ?? "", 10);
+  return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_OLLAMA_CLAUDE_TIMEOUT_MS;
+}
+
+export function isQwenBackedProvider(providerLabel: string, modelLabel: string | null): boolean {
+  return (
+    providerLabel === "ollama/claude" ||
+    (providerLabel === "ollama" && typeof modelLabel === "string" && modelLabel.toLowerCase().includes("qwen"))
+  );
+}
 
 // Sentinel error strings used by spawnClaude to signal the caller to failover.
 export const ERR_RATE_LIMITED = "rate_limited";
@@ -15,13 +53,16 @@ export const ERR_UNAVAILABLE  = "provider_unavailable";
 
 let claudeBlockedUntilMs = 0;
 
-/** Mark Claude as rate-limited until `ms` (epoch ms). Ignored if already later. */
+/** Mark Claude as rate-limited until `ms` (epoch ms). Ignored if already earlier. */
 export function setClaudeBlockedUntil(ms: number): void {
   if (ms > claudeBlockedUntilMs) {
     claudeBlockedUntilMs = ms;
-    const until = new Date(ms).toISOString();
-    process.stderr.write(`[symphony] Claude rate-limited — skipping until ${until}\n`);
   }
+}
+
+/** Test-only: clear the block. */
+export function resetClaudeBlock(): void {
+  claudeBlockedUntilMs = 0;
 }
 
 /** Returns true if Claude is currently known to be rate-limited. */
@@ -155,9 +196,76 @@ export async function selectClaudeModel(
  * Assumes `codex` is on PATH and handles its own auth.
  * If `provider` is set (via LOCAL_LLM_PROVIDER env), passes
  * --oss --local-provider <provider> to use a local model (e.g. ollama).
- * Without it, codex runs normally against its own default backend.
+ * Without it, codex runs against the hosted Codex backend using its account-
+ * appropriate default model unless CODEX_MODEL explicitly overrides it.
  * Optionally reads CODEX_ENDPOINT to set OPENAI_BASE_URL for proxies.
  */
+export function buildCodexExecArgs(provider?: string): {
+  args: string[];
+  providerLabel: string;
+  modelLabel: string | null;
+} {
+  if (provider) {
+    const localModel = process.env.LOCAL_LLM_MODEL ?? "qwen3.5";
+    return {
+      args: ["exec", "--oss", "--local-provider", provider, "-m", localModel, "--dangerously-bypass-approvals-and-sandbox"],
+      providerLabel: provider,
+      modelLabel: localModel,
+    };
+  }
+
+  const hostedModel = process.env.CODEX_MODEL || null;
+
+  return {
+    args: ["exec", ...(hostedModel ? ["-m", hostedModel] : []), "--dangerously-bypass-approvals-and-sandbox"],
+    providerLabel: "codex",
+    modelLabel: hostedModel,
+  };
+}
+
+export function formatCodexError(stderrLines: string[], code: number | null): string {
+  const filtered = stderrLines
+    .map((line) => line.trim())
+    .filter((line) => {
+      if (!line) return false;
+      if (/^Reading (additional input|prompt) from stdin\.\.\.$/.test(line)) return false;
+      if (/^OpenAI Codex v[\d.]+/.test(line)) return false;
+      return true;
+    })
+    .map((line) => line.replace(/^ERROR:\s*/i, ""))
+    .filter((line) => line.length > 0);
+
+  const deduped: string[] = [];
+  for (const line of filtered) {
+    if (!deduped.includes(line)) deduped.push(line);
+  }
+
+  return deduped.join("; ") || `codex exit ${code}`;
+}
+
+export function isCodexRateLimitError(text: string): boolean {
+  const normalized = text.toLowerCase().replace(/[\u2018\u2019\u201a\u201b]/g, "'");
+  return (
+    normalized.includes("usage limit") ||
+    normalized.includes("hit your usage limit") ||
+    normalized.includes("hit your limit") ||
+    normalized.includes("rate limit") ||
+    normalized.includes("out of extra usage")
+  );
+}
+
+export function buildOllamaClaudeLaunchArgs(): {
+  args: string[];
+  providerLabel: string;
+  modelLabel: string;
+} {
+  return {
+    args: ["launch", "claude", "--model", OLLAMA_CLAUDE_MODEL],
+    providerLabel: "ollama/claude",
+    modelLabel: OLLAMA_CLAUDE_MODEL,
+  };
+}
+
 export async function spawnCodexAgent(
   prompt: string,
   cwd: string,
@@ -165,7 +273,19 @@ export async function spawnCodexAgent(
   onEvent: AgentEventCallback,
   provider?: string,
 ): Promise<AgentResult> {
-  return new Promise((resolve, reject) => {
+  const { args, providerLabel, modelLabel } = buildCodexExecArgs(provider);
+  const useQwenGuard = isQwenBackedProvider(providerLabel, modelLabel);
+  const heartbeat = useQwenGuard
+    ? setInterval(() => {
+      onEvent({ type: "provider_keepalive", provider: providerLabel });
+    }, OLLAMA_CLAUDE_HEARTBEAT_MS)
+    : null;
+
+  if (useQwenGuard) {
+    onEvent({ type: "provider_keepalive", provider: providerLabel });
+  }
+
+  return new Promise(async (resolve, reject) => {
     const childEnv: NodeJS.ProcessEnv = {};
     for (const [k, v] of Object.entries(process.env)) {
       if (v !== undefined && v !== "") childEnv[k] = v;
@@ -174,31 +294,45 @@ export async function spawnCodexAgent(
     const codexEndpoint = process.env.CODEX_ENDPOINT;
     if (codexEndpoint) childEnv.OPENAI_BASE_URL = codexEndpoint;
 
-    // Build args for `codex exec`.
-    // For local OSS providers (e.g. ollama): --oss --local-provider <provider> [-m <model>]
-    const localProviderArgs: string[] = [];
-    if (provider) {
-      localProviderArgs.push("--oss", "--local-provider", provider);
-      const localModel = process.env.LOCAL_LLM_MODEL ?? "qwen3.5";
-      localProviderArgs.push("-m", localModel);
+    if (useQwenGuard) {
+      const acquired = await acquireQwenSlot(abortController.signal);
+      if (!acquired) {
+        if (heartbeat) clearInterval(heartbeat);
+        resolve({ success: false, error: "aborted", inputTokens: 0, outputTokens: 0, totalTokens: 0, turnCount: 0 });
+        return;
+      }
     }
 
     // `--dangerously-bypass-approvals-and-sandbox` runs without confirmation prompts.
     const proc = spawn(
       "codex",
-      ["exec", ...localProviderArgs, "--dangerously-bypass-approvals-and-sandbox", prompt],
-      { cwd, env: childEnv, stdio: ["ignore", "pipe", "pipe"] },
+      [...args, "-"],
+      { cwd, env: childEnv, stdio: ["pipe", "pipe", "pipe"] },
     );
 
-    const providerLabel = provider ?? "codex";
     if (proc.pid) onEvent({ type: "process_spawned", pid: proc.pid, provider: providerLabel });
 
+    proc.stdin.write(prompt, "utf8");
+    proc.stdin.end();
+
     let hasOutput = false;
+    const stdoutBuf: string[] = [];
     const stderrBuf: string[] = [];
+    const timeoutMs = useQwenGuard ? getOllamaClaudeTimeoutMs() : 0;
+    let timedOut = false;
+
+    const timeoutTimer = useQwenGuard
+      ? setTimeout(() => {
+        timedOut = true;
+        proc.kill("SIGTERM");
+        setTimeout(() => proc.kill("SIGKILL"), 3000);
+      }, timeoutMs)
+      : null;
 
     proc.stdout.on("data", (chunk: Buffer) => {
       const text = chunk.toString();
       if (text.trim()) hasOutput = true;
+      if (text.trim()) stdoutBuf.push(text.trim());
       onEvent({ type: "notification", message: text.slice(0, 300), provider: providerLabel });
     });
     proc.stderr.on("data", (chunk: Buffer) => {
@@ -214,26 +348,190 @@ export async function spawnCodexAgent(
 
     proc.on("close", (code) => {
       abortController.signal.removeEventListener("abort", onAbort);
+      if (heartbeat) clearInterval(heartbeat);
+      if (timeoutTimer) clearTimeout(timeoutTimer);
+      if (useQwenGuard) releaseQwenSlot();
 
       if (abortController.signal.aborted) {
         resolve({ success: false, error: "aborted", inputTokens: 0, outputTokens: 0, totalTokens: 0, turnCount: 0 });
         return;
       }
 
+      if (timedOut) {
+        resolve({
+          success: false,
+          error: `${providerLabel} timed out after ${timeoutMs}ms`,
+          inputTokens: 0,
+          outputTokens: 0,
+          totalTokens: 0,
+          turnCount: 0,
+          completionSummary: stdoutBuf.join("\n").trim().slice(0, 4000) || undefined,
+        });
+        return;
+      }
+
       const success = code === 0 && hasOutput;
       if (success) {
         onEvent({ type: "turn_completed", provider: providerLabel });
-        resolve({ success: true, inputTokens: 0, outputTokens: 0, totalTokens: 0, turnCount: 1 });
+        resolve({
+          success: true,
+          inputTokens: 0,
+          outputTokens: 0,
+          totalTokens: 0,
+          turnCount: 1,
+          completionSummary: stdoutBuf.join("\n").trim().slice(0, 4000) || undefined,
+        });
       } else {
-        const err = stderrBuf.join("; ") || `codex exit ${code}`;
+        const err = formatCodexError(stderrBuf, code);
         onEvent({ type: "turn_failed", message: err, provider: providerLabel });
-        resolve({ success: false, error: err, inputTokens: 0, outputTokens: 0, totalTokens: 0, turnCount: 0 });
+        resolve({
+          success: false,
+          error: isCodexRateLimitError(err) ? ERR_RATE_LIMITED : err,
+          inputTokens: 0,
+          outputTokens: 0,
+          totalTokens: 0,
+          turnCount: 0,
+          completionSummary: stdoutBuf.join("\n").trim().slice(0, 4000) || undefined,
+        });
       }
     });
 
     proc.on("error", (e) => {
       abortController.signal.removeEventListener("abort", onAbort);
+      if (heartbeat) clearInterval(heartbeat);
+      if (timeoutTimer) clearTimeout(timeoutTimer);
+      if (useQwenGuard) releaseQwenSlot();
       reject(e);
+    });
+  });
+}
+
+export async function spawnOllamaClaudeAgent(
+  prompt: string,
+  cwd: string,
+  abortController: AbortController,
+  onEvent: AgentEventCallback,
+): Promise<AgentResult> {
+  const { args, providerLabel } = buildOllamaClaudeLaunchArgs();
+  const heartbeat = setInterval(() => {
+    onEvent({ type: "provider_keepalive", provider: providerLabel });
+  }, OLLAMA_CLAUDE_HEARTBEAT_MS);
+
+  onEvent({ type: "provider_keepalive", provider: providerLabel });
+
+  const acquired = await acquireQwenSlot(abortController.signal);
+  if (!acquired) {
+    clearInterval(heartbeat);
+    return { success: false, error: "aborted", inputTokens: 0, outputTokens: 0, totalTokens: 0, turnCount: 0 };
+  }
+
+  return new Promise((resolve, reject) => {
+    const childEnv: NodeJS.ProcessEnv = {};
+    for (const [k, v] of Object.entries(process.env)) {
+      if (v !== undefined && v !== "") childEnv[k] = v;
+    }
+
+    const proc = spawn(
+      "ollama",
+      args,
+      { cwd, env: childEnv, stdio: ["pipe", "pipe", "pipe"] },
+    );
+
+    if (proc.pid) onEvent({ type: "process_spawned", pid: proc.pid, provider: providerLabel });
+
+    proc.stdin.write(prompt, "utf8");
+    proc.stdin.end();
+
+    const timeoutMs = getOllamaClaudeTimeoutMs();
+    let timedOut = false;
+    let hasOutput = false;
+    const stdoutBuf: string[] = [];
+    const stderrBuf: string[] = [];
+
+    const timeoutTimer = setTimeout(() => {
+      timedOut = true;
+      proc.kill("SIGTERM");
+      setTimeout(() => proc.kill("SIGKILL"), 3000);
+    }, timeoutMs);
+
+    proc.stdout.on("data", (chunk: Buffer) => {
+      const text = chunk.toString();
+      if (text.trim()) hasOutput = true;
+      if (text.trim()) stdoutBuf.push(text.trim());
+      onEvent({ type: "notification", message: text.slice(0, 300), provider: providerLabel });
+    });
+    proc.stderr.on("data", (chunk: Buffer) => {
+      const s = chunk.toString().trim();
+      if (s) stderrBuf.push(s.slice(0, 300));
+    });
+
+    const onAbort = (): void => {
+      proc.kill("SIGTERM");
+      setTimeout(() => proc.kill("SIGKILL"), 3000);
+    };
+    abortController.signal.addEventListener("abort", onAbort, { once: true });
+
+    proc.on("close", (code) => {
+      abortController.signal.removeEventListener("abort", onAbort);
+      clearInterval(heartbeat);
+      clearTimeout(timeoutTimer);
+      releaseQwenSlot();
+
+      if (abortController.signal.aborted) {
+        resolve({ success: false, error: "aborted", inputTokens: 0, outputTokens: 0, totalTokens: 0, turnCount: 0 });
+        return;
+      }
+
+      if (timedOut) {
+        resolve({
+          success: false,
+          error: `ollama/claude timed out after ${timeoutMs}ms`,
+          inputTokens: 0,
+          outputTokens: 0,
+          totalTokens: 0,
+          turnCount: 0,
+          completionSummary: stdoutBuf.join("\n").trim().slice(0, 4000) || undefined,
+        });
+        return;
+      }
+
+      const success = code === 0 && hasOutput;
+      if (success) {
+        onEvent({ type: "turn_completed", provider: providerLabel });
+        resolve({
+          success: true,
+          inputTokens: 0,
+          outputTokens: 0,
+          totalTokens: 0,
+          turnCount: 1,
+          completionSummary: stdoutBuf.join("\n").trim().slice(0, 4000) || undefined,
+        });
+      } else {
+        const err = formatCodexError(stderrBuf, code);
+        onEvent({ type: "turn_failed", message: err, provider: providerLabel });
+        resolve({
+          success: false,
+          error: isCodexRateLimitError(err) ? ERR_RATE_LIMITED : err,
+          inputTokens: 0,
+          outputTokens: 0,
+          totalTokens: 0,
+          turnCount: 0,
+          completionSummary: stdoutBuf.join("\n").trim().slice(0, 4000) || undefined,
+        });
+      }
+    });
+
+    proc.on("error", (e) => {
+      abortController.signal.removeEventListener("abort", onAbort);
+      clearInterval(heartbeat);
+      clearTimeout(timeoutTimer);
+      releaseQwenSlot();
+      const isEnoent = (e as NodeJS.ErrnoException).code === "ENOENT";
+      if (isEnoent) {
+        resolve({ success: false, error: ERR_UNAVAILABLE, inputTokens: 0, outputTokens: 0, totalTokens: 0, turnCount: 0 });
+      } else {
+        reject(e);
+      }
     });
   });
 }

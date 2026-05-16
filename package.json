@@ -3,9 +3,13 @@
   "version": "1.0.0",
   "description": "Symphony orchestration service — polls Linear, runs Claude Code agents",
   "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
   "bin": {
     "symphony": "./dist/index.js",
     "symphony-status": "./dist/status.js",
+    "symphony-meta-improve": "./dist/meta-improve.js",
     "symphony-supervisor": "./bin/symphony-supervisor.sh"
   },
   "scripts": {
@@ -13,7 +17,10 @@
     "dev": "tsx src/index.ts",
     "start": "node dist/index.js",
     "start:watch": "./bin/symphony-supervisor.sh",
-    "status": "node dist/status.js"
+    "status": "node dist/status.js",
+    "meta-improve": "node dist/meta-improve.js",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "@anthropic-ai/claude-code": "^2.1.0",
@@ -25,6 +32,7 @@
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^20.0.0",
     "tsx": "^4.0.0",
-    "typescript": "^5.5.0"
+    "typescript": "^5.5.0",
+    "vitest": "^2.1.0"
   }
 }
