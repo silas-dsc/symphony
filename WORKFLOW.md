@@ -18,12 +18,15 @@ github_preview:
   repo_owner: team-dsc
   repo_name: team-dsc
   comment_pattern: 'deployed to .*? - Team DSC Production Preview \(Web\) PR #(?<pr>\d+)'
-  url_template: 'https://team-dsc-production-preview-web-pr-{{pr}}.onrender.com/'
+  url_template: 'https://team-dsc-production-preview-web-pr-{{pr}}.onrender.com/health-check'
   comment_poll_limit: 100
-  keepalive_interval_ms: 180000
+  keepalive_interval_ms: 780000
   request_timeout_ms: 30000
-  in_review_states:
-    - In Review
+keep_alive:
+  urls:
+    - https://team-dsc-production-preview-web.onrender.com/health-check
+  interval_ms: 780000
+  request_timeout_ms: 30000
 notifications:
   slack:
     webhook_url: $SLACK_COMPLETION_WEBHOOK_URL

@@ -13,7 +13,7 @@ import type {
   RetrySnapshot,
 } from "./types.js";
 import { loadWorkflow, validateConfig } from "./config.js";
-import { GitHubPreviewWarmer } from "./github-preview.js";
+import { GitHubPreviewWarmer, StaticUrlWarmer } from "./github-preview.js";
 import * as linear from "./linear.js";
 import { isCompletionState, sendBatchedSlackNotification } from "./notifications.js";
 import { getWorkspacePath, removeWorkspace } from "./workspace.js";
@@ -46,6 +46,7 @@ export class Orchestrator {
   private watcher: fs.FSWatcher | null = null;
   private reloadTimer: ReturnType<typeof setTimeout> | null = null;
   private previewWarmer: GitHubPreviewWarmer | null = null;
+  private staticWarmer: StaticUrlWarmer | null = null;
   private log: Logger;
 
   constructor(workflowPath: string, logger: Logger) {
@@ -58,6 +59,7 @@ export class Orchestrator {
     this.symphonyRoot = workflow.symphonyRoot;
     this.derived = computeDerived(this.config);
     this.previewWarmer = this.createPreviewWarmer();
+    this.staticWarmer = this.createStaticWarmer();
 
     this.state = {
       pollIntervalMs: this.config.polling.intervalMs,
@@ -275,6 +277,7 @@ export class Orchestrator {
     this.symphonyRoot = workflow.symphonyRoot;
     this.derived = computeDerived(this.config);
     this.previewWarmer = this.createPreviewWarmer();
+    this.staticWarmer = this.createStaticWarmer();
     this.state.pollIntervalMs = this.config.polling.intervalMs;
     this.state.maxConcurrentAgents = this.config.agent.maxConcurrentAgents;
     this.log.info("WORKFLOW.md reloaded");
@@ -291,6 +294,10 @@ export class Orchestrator {
 
     if (this.previewWarmer) {
       await this.previewWarmer.reconcile();
+    }
+
+    if (this.staticWarmer) {
+      await this.staticWarmer.reconcile();
     }
 
     const validationError = validateConfig(this.config);
@@ -892,9 +899,12 @@ export class Orchestrator {
     return new GitHubPreviewWarmer({
       config: this.config.githubPreview,
       logger: this.log,
-      linearApiKey: this.config.tracker.apiKey,
-      linearEndpoint: this.config.tracker.endpoint,
     });
+  }
+
+  private createStaticWarmer(): StaticUrlWarmer | null {
+    if (this.config.keepAlive.urls.length === 0) return null;
+    return new StaticUrlWarmer(this.config.keepAlive, this.log);
   }
 }
 

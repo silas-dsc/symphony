@@ -37,6 +37,7 @@ export interface WorkflowConfig {
   tracker: TrackerConfig;
   polling: PollingConfig;
   githubPreview: GitHubPreviewConfig;
+  keepAlive: KeepAliveConfig;
   workspace: WorkspaceConfig;
   hooks: HooksConfig;
   agent: AgentConfig;
@@ -57,6 +58,12 @@ export interface RetrospectiveConfig {
   maxTurns: number;
   /** Hard timeout for a single retrospective run, in ms. */
   timeoutMs: number;
+}
+
+export interface KeepAliveConfig {
+  urls: string[];
+  intervalMs: number;
+  requestTimeoutMs: number;
 }
 
 export interface NotificationsConfig {
@@ -93,8 +100,6 @@ export interface GitHubPreviewConfig {
   commentPollLimit: number;
   keepAliveIntervalMs: number;
   requestTimeoutMs: number;
-  /** Linear issue states that indicate a PR is under review. When non-empty, warming stops when no Linear issue with the PR's branch is in one of these states. */
-  inReviewStates: string[];
 }
 
 export interface WorkspaceConfig {

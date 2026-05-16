@@ -5,7 +5,6 @@ import {
   extractPreviewDeployment,
   type GitHubClient,
   type PreviewPinger,
-  type LinearClient,
 } from "../github-preview.js";
 import type { GitHubPreviewConfig, Logger } from "../types.js";
 
@@ -15,11 +14,10 @@ function createConfig(overrides?: Partial<GitHubPreviewConfig>): GitHubPreviewCo
     repoOwner: "team-dsc",
     repoName: "team-dsc",
     commentPattern: "deployed to .*? - Team DSC Production Preview \\(Web\\) PR #(?<pr>\\d+)",
-    urlTemplate: "https://team-dsc-production-preview-web-pr-{{pr}}.onrender.com/",
+    urlTemplate: "https://team-dsc-production-preview-web-pr-{{pr}}.onrender.com/health-check",
     commentPollLimit: 100,
-    keepAliveIntervalMs: 180000,
+    keepAliveIntervalMs: 780000,
     requestTimeoutMs: 30000,
-    inReviewStates: [],
     ...overrides,
   };
 }
@@ -42,7 +40,7 @@ describe("extractPreviewDeployment", () => {
 
     expect(deployment).toEqual({
       prNumber: 933,
-      url: "https://team-dsc-production-preview-web-pr-933.onrender.com/",
+      url: "https://team-dsc-production-preview-web-pr-933.onrender.com/health-check",
     });
   });
 
@@ -67,21 +65,12 @@ describe("extractPreviewDeployment", () => {
 
 describe("GitHubPreviewWarmer", () => {
   it("warms immediately, re-warms on interval, and stops after PR close", async () => {
-    const comments = [
-      {
-        id: "comment-1",
-        body: "silas-dsc deployed to feature/tea-4020-bulk-certificate-download - Team DSC Production Preview (Web) PR #933",
-        updatedAt: "2026-05-12T10:00:00Z",
-      },
-    ];
-    const pullRequestStates = new Map<number, boolean>([[933, true]]);
+    let openPRs: number[] = [933];
     const pinged: Array<{ atMs: number; url: string }> = [];
     let nowMs = 0;
 
     const githubClient: GitHubClient = {
-      listIssueComments: async () => comments,
-      isPullRequestOpen: async (_config, prNumber) => pullRequestStates.get(prNumber) ?? false,
-      getPullRequestHeadBranch: async () => null,
+      listOpenPullRequests: async () => openPRs,
     };
     const pinger: PreviewPinger = {
       ping: async (url) => {
@@ -98,144 +87,86 @@ describe("GitHubPreviewWarmer", () => {
       now: () => nowMs,
     });
 
+    // First cycle: PR discovered, force-pinged immediately.
     await warmer.reconcile();
     expect(pinged).toEqual([
-      { atMs: 0, url: "https://team-dsc-production-preview-web-pr-933.onrender.com/" },
+      { atMs: 0, url: "https://team-dsc-production-preview-web-pr-933.onrender.com/health-check" },
     ]);
     expect(warmer.getTrackedPreviewCount()).toBe(1);
 
+    // Interval not yet elapsed — no ping.
     nowMs = 60_000;
     await warmer.reconcile();
     expect(pinged).toHaveLength(1);
 
-    comments[0] = {
-      ...comments[0],
-      id: "comment-2",
-      updatedAt: "2026-05-12T10:01:00Z",
-    };
+    // Interval elapsed — ping.
+    nowMs = 840_000;
     await warmer.reconcile();
     expect(pinged).toEqual([
-      { atMs: 0, url: "https://team-dsc-production-preview-web-pr-933.onrender.com/" },
-      { atMs: 60_000, url: "https://team-dsc-production-preview-web-pr-933.onrender.com/" },
+      { atMs: 0, url: "https://team-dsc-production-preview-web-pr-933.onrender.com/health-check" },
+      { atMs: 840_000, url: "https://team-dsc-production-preview-web-pr-933.onrender.com/health-check" },
     ]);
 
-    nowMs = 240_000;
-    await warmer.reconcile();
-    expect(pinged).toEqual([
-      { atMs: 0, url: "https://team-dsc-production-preview-web-pr-933.onrender.com/" },
-      { atMs: 60_000, url: "https://team-dsc-production-preview-web-pr-933.onrender.com/" },
-      { atMs: 240_000, url: "https://team-dsc-production-preview-web-pr-933.onrender.com/" },
-    ]);
-
-    pullRequestStates.set(933, false);
-    nowMs = 420_000;
-    await warmer.reconcile();
-    expect(pinged).toHaveLength(3);
-    expect(warmer.getTrackedPreviewCount()).toBe(0);
-  });
-
-  it("stops warming when Linear ticket leaves In Review state", async () => {
-    const comments = [
-      {
-        id: "comment-1",
-        body: "silas-dsc deployed to feature/tea-4020-bulk-certificate-download - Team DSC Production Preview (Web) PR #933",
-        updatedAt: "2026-05-12T10:00:00Z",
-      },
-    ];
-    const pinged: Array<{ atMs: number; url: string }> = [];
-    let nowMs = 0;
-
-    // Linear reports branch is "In Review" initially
-    let reviewBranches = new Set(["feature/tea-4020-bulk-certificate-download"]);
-
-    const githubClient: GitHubClient = {
-      listIssueComments: async () => comments,
-      isPullRequestOpen: async () => true,
-      getPullRequestHeadBranch: async (_config, prNumber) =>
-        prNumber === 933 ? "feature/tea-4020-bulk-certificate-download" : null,
-    };
-    const linearClient: LinearClient = {
-      listBranchesInStates: async () => Array.from(reviewBranches),
-    };
-    const pinger: PreviewPinger = {
-      ping: async (url) => {
-        pinged.push({ atMs: nowMs, url });
-        return 200;
-      },
-    };
-
-    const warmer = new GitHubPreviewWarmer({
-      config: createConfig({ inReviewStates: ["In Review"] }),
-      logger: createLogger(),
-      githubClient,
-      pinger,
-      linearClient,
-      now: () => nowMs,
-    });
-
-    // Initial ping when deploy comment found and ticket is In Review
-    await warmer.reconcile();
-    expect(pinged).toHaveLength(1);
-    expect(warmer.getTrackedPreviewCount()).toBe(1);
-
-    // Still In Review — interval not yet elapsed, no ping
-    nowMs = 60_000;
-    await warmer.reconcile();
-    expect(pinged).toHaveLength(1);
-
-    // Still In Review — interval elapsed, ping again
-    nowMs = 240_000;
-    await warmer.reconcile();
-    expect(pinged).toHaveLength(2);
-
-    // Ticket moves out of In Review (e.g. merged → Done, or back to Dev in Progress)
-    reviewBranches = new Set();
-    nowMs = 420_000;
+    // PR closed: remove it from the open list.
+    openPRs = [];
+    nowMs = 1_680_000;
     await warmer.reconcile();
     expect(pinged).toHaveLength(2);
     expect(warmer.getTrackedPreviewCount()).toBe(0);
   });
 
-  it("falls back to GitHub PR open check when Linear check fails", async () => {
-    const comments = [
-      {
-        id: "comment-1",
-        body: "silas-dsc deployed to feature/tea-4020-bulk-certificate-download - Team DSC Production Preview (Web) PR #933",
-        updatedAt: "2026-05-12T10:00:00Z",
-      },
-    ];
-    const pinged: Array<string> = [];
-    const pullRequestStates = new Map<number, boolean>([[933, true]]);
+  it("tracks multiple open PRs independently", async () => {
+    const pinged: string[] = [];
 
     const githubClient: GitHubClient = {
-      listIssueComments: async () => comments,
-      isPullRequestOpen: async (_config, prNumber) => pullRequestStates.get(prNumber) ?? false,
-      getPullRequestHeadBranch: async () => null,
-    };
-    const linearClient: LinearClient = {
-      listBranchesInStates: async () => { throw new Error("Linear unavailable"); },
+      listOpenPullRequests: async () => [933, 940, 955],
     };
     const pinger: PreviewPinger = {
       ping: async (url) => { pinged.push(url); return 200; },
     };
 
     const warmer = new GitHubPreviewWarmer({
-      config: createConfig({ inReviewStates: ["In Review"] }),
+      config: createConfig(),
       logger: createLogger(),
       githubClient,
       pinger,
-      linearClient,
       now: () => 0,
     });
 
-    // Linear fails → falls back to GitHub PR open check → PR is open → warms
     await warmer.reconcile();
-    expect(pinged).toHaveLength(1);
-    expect(warmer.getTrackedPreviewCount()).toBe(1);
+    expect(pinged).toHaveLength(3);
+    expect(pinged).toContain("https://team-dsc-production-preview-web-pr-933.onrender.com/health-check");
+    expect(pinged).toContain("https://team-dsc-production-preview-web-pr-940.onrender.com/health-check");
+    expect(pinged).toContain("https://team-dsc-production-preview-web-pr-955.onrender.com/health-check");
+    expect(warmer.getTrackedPreviewCount()).toBe(3);
+  });
 
-    // PR closes → stops even in fallback mode
-    pullRequestStates.set(933, false);
+  it("does not warm outside 07:00–18:59 local time", async () => {
+    const pinged: string[] = [];
+
+    const githubClient: GitHubClient = {
+      listOpenPullRequests: async () => [933],
+    };
+    const pinger: PreviewPinger = {
+      ping: async (url) => { pinged.push(url); return 200; },
+    };
+
+    // Build a timestamp whose local hour is 0 (midnight) regardless of timezone,
+    // so the gate always fires consistently in CI and local dev.
+    const midnight = new Date();
+    midnight.setHours(0, 0, 0, 0);
+    const midnightUtcMs = midnight.getTime();
+
+    const warmer = new GitHubPreviewWarmer({
+      config: createConfig(),
+      logger: createLogger(),
+      githubClient,
+      pinger,
+      now: () => midnightUtcMs,
+    });
+
     await warmer.reconcile();
+    expect(pinged).toHaveLength(0);
     expect(warmer.getTrackedPreviewCount()).toBe(0);
   });
 });
