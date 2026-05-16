@@ -241,8 +241,8 @@ export class StaticUrlWarmer {
     const local = new Date(currentMs);
     const day = local.getDay();
     const hour = local.getHours();
-    // Weekends only (Sat/Sun), 09:00–16:59 local time.
-    if (day !== 0 && day !== 6) return;
+    // Weekdays only (Mon–Fri), 09:00–16:59 local time.
+    if (day === 0 || day === 6) return;
     if (hour < 9 || hour >= 17) return;
     for (const url of this.cfg.urls) {
       const last = this.lastPingAtMs.get(url) ?? null;
