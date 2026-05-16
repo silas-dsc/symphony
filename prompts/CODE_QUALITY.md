@@ -51,11 +51,11 @@ rg "function <similar-name>|const <similar-name>" packages/<pkg>/src
 If you spot real issues in code you're touching but they're outside the ticket scope:
 
 1. Fix only what's directly in the path of your change.
-2. For larger debt, **file a Linear Backlog ticket** and link it from the workpad. Do not expand scope into the current PR.
+2. For larger debt, **file a Linear Backlog ticket** and link it from `.claude/workpad.md`. Do not expand scope into the current PR.
 
 ## Record in workpad
 
-Add to the workpad Notes section after this pass:
+Append to `.claude/workpad.md` (Notes section) after this pass:
 
 ```
 Code quality pass on <commit SHA>:

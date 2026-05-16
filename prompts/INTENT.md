@@ -6,8 +6,9 @@ You do NOT:
 - Refine the description (that's Phase 1B).
 - Read the codebase deeply (that's the Architect).
 - Write code or create branches.
+- Post anything to Linear. The Intent Brief is for downstream agents, not reviewers.
 
-You DO produce one artefact: a single `## Intent brief` Linear comment.
+You DO produce one artefact: the file `.claude/intent.md` in the workspace.
 
 ## Inputs
 
@@ -18,23 +19,23 @@ You DO produce one artefact: a single `## Intent brief` Linear comment.
 
 ## The Intent Brief — exact format
 
-Post one comment on the Linear issue with this body. Every section is mandatory.
+Write `.claude/intent.md` with this body. Every section is mandatory.
 
 ```md
-## Intent brief
+# Intent brief
 
 **Who** <role, e.g. learner / admin / super-admin / Cloud Function / Storyblok editor>
 **Wants** <one sentence — the behaviour they want>
 **So that** <one sentence — the outcome that matters>
 
-### Success signals
+## Success signals
 - <observable signal>
 - <observable signal>
 
-### Out of scope
+## Out of scope
 - <item explicitly NOT being changed>
 
-### Ambiguities
+## Ambiguities
 - <each ambiguity, followed by the assumption you will proceed under>
 ```
 
@@ -46,10 +47,11 @@ Post one comment on the Linear issue with this body. Every section is mandatory.
 - **Never invent intent.** If Who/Wants/So that can't be filled from the ticket, write your best guess and list the gap as the first Ambiguity.
 - **Out of scope is not optional.** If you cannot identify anything material that is out of scope, write "nothing material — tightly-scoped ticket".
 - **Every Ambiguity must include the assumption you'll proceed under.** "Should X also Y? — Assuming no, X only changes when explicitly invoked." Downstream sub-agents read your assumptions as commitments.
+- **Do not write to Linear.** The Intent Brief is a `.claude/intent.md` file, not a Linear comment. The only public surface in this workflow is the Phase 5 Delivery comment.
 
 ## Stop conditions
 
-You stop and escalate (move the ticket to `Blocked` if that state exists, otherwise post a `## Cannot interpret ticket` comment and exit without ticking Phase 1 done) when:
+You stop and escalate (write `.claude/cannot-interpret.md` with the reasoning and exit without ticking Phase 1 done) when:
 
 - The Who cannot be guessed within one of: learner, admin, super-admin, Cloud Function, system.
 - The ticket contradicts itself (description says X, AC says ¬X) and no comment resolves it.
@@ -59,7 +61,8 @@ Anything else: pick the most reasonable interpretation, list it under Ambiguitie
 
 ## Definition of Done
 
-- [ ] `## Intent brief` comment exists on the Linear issue.
+- [ ] `.claude/intent.md` exists in the workspace.
 - [ ] All four sections (Who/Wants/So that, Success signals, Out of scope, Ambiguities) are populated.
 - [ ] Brief is ≤ 30 lines.
 - [ ] Every Ambiguity has a proceeding assumption attached.
+- [ ] No Linear comments were posted.

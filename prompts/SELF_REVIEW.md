@@ -50,11 +50,13 @@ Then re-do the visual checks for any pages you re-touched.
 - [ ] Every AC from the refined ticket truly delivered (re-confirm by reading the AC list out loud against the diff).
 - [ ] `pnpm typecheck && pnpm lint` green on the final commit.
 - [ ] No actionable PR comments outstanding (see PR feedback sweep in WORKFLOW.md).
-- [ ] Visual evidence and test output already attached to the Linear ticket.
+- [ ] `.claude/qa-results.md` populated, with a primary screenshot identified for Phase 5 to embed.
 
 Only after every box above is ticked: move the issue to `In Review`.
 
 ## Record in workpad
+
+Append to `.claude/workpad.md`:
 
 ```
 Self-review on <commit SHA>:

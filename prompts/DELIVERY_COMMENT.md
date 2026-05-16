@@ -1,70 +1,59 @@
 # Phase 5 — Delivery comment
 
-When the Tester reports all scenarios pass and the PR is open with `pnpm typecheck && pnpm lint` green, post **exactly one** summary comment on the Linear issue, then flip the ticket to `In Review`. No further comments after this.
+When the Tester reports all scenarios pass, the Code Reviewer's local report has verdict `approve`, and `pnpm typecheck && pnpm lint` are green, post **exactly one** comment on the Linear issue and use the **same body** as the PR body. Then flip the ticket to `In Review`. No further comments after this.
 
-Reviewers should be able to evaluate the ticket from this comment alone in under 60 seconds. Anything that requires them to scroll up, expand the workpad, or open another tab is a failure of this comment.
+A reviewer must be able to evaluate the change from this comment alone in under 30 seconds. Anything that requires them to scroll, expand, or open another tab is a failure of this comment.
 
-## Template (verbatim structure)
+## The only template
+
+Both the Linear delivery comment and the GitHub PR body use this body **verbatim** — same words, same shape, same length.
 
 ```md
 ## ✅ Ready for review
 
-**What changed**
-- <one-line bullet per material user-facing change>
-- <bullet>
+<one-sentence high-level summary of the user-visible change>
 
-**How to test**
-1. <user action — concrete, paste-into-head executable>
-2. <user action>
-3. <expected observable result>
+- <callout 1 — one short sentence>
+- <callout 2 — one short sentence>
+- <callout 3 — one short sentence>
 
-<embed the element-scoped screenshots from the Tester's QA results — one per scenario state. Caption each with the scenario name.>
+![<short caption>](<asset URL of the single primary screenshot>)
 
----
-PR: <PR URL>
-Staging: <staging preview URL>
+PR: <github PR URL>
+Preview: <render preview URL>
+Linear: <linear issue URL>
 ```
 
 ## Hard rules
 
-- **20 lines max**, excluding the image markdown blocks.
-- **No mentions of phases, sub-agents, workpad, or process scaffolding.** The reviewer doesn't care that the Architect ran first.
-- **"What changed" is user-facing only.** Not "refactored helper". Not "improved type safety". If the user can't see it, it doesn't belong here.
-- **"How to test" is 3–6 numbered steps.** A reviewer should be able to execute the test in under 60 seconds. If the test is longer than that, the ticket is too big — flag it in a workpad note rather than expanding the comment.
-- **Screenshots are element-scoped** (already enforced in Phase 4 — do not re-screenshot).
-- **Links live at the bottom.** Nothing below the links.
-- **No emoji** other than the single ✅ in the heading.
+- **One sentence summary, three callouts, one screenshot, three links. Nothing else.** No "What changed", "How to test", "Notes", "Risk", phase mentions, sub-agent mentions, workpad references, or process scaffolding. Reviewers do not care.
+- **Three callouts, three short sentences max.** Each bullet is one short sentence about something the reviewer needs to know — user-visible behaviour change, a follow-up flagged, a deliberate trade-off. Fewer than three is fine if there is genuinely less to say; never more than three.
+- **One screenshot.** Pick the single image that best represents the change — almost always the success state of the primary changed section. Multi-state scenarios (loading / empty / error) live in `.claude/qa-results.md` for whoever wants to look; not here.
+- **Three links at the bottom, in this order: PR, Preview, Linear.** Nothing below them. If the preview comment hasn't appeared after a 5-minute wait, write `Preview: building…` and proceed.
+- **No emoji** other than the `✅` in the heading.
+- **No back-and-forth.** Every agent-to-agent artefact (intent brief, plan, test matrix, QA results, code review findings, workpad notes) stays in `.claude/` in the workspace. The only public surfaces are this comment and the matching PR body.
 
-## How to find the staging URL
+## How to assemble the body
 
-The PR comment from the preview deployment service contains it. Look for a comment matching the pattern in `WORKFLOW.md` → `github_preview.comment_pattern`. If none yet, the preview is still building — wait up to 5 minutes, then proceed with the PR URL only and add a one-line `Staging: building…` placeholder. The orchestrator will keep the preview warm once it appears.
+1. Read `.claude/qa-results.md` — pick the primary scenario (the one that most directly demonstrates the change) and the single screenshot file that best represents its success state.
+2. Upload that screenshot to Linear via `{{ symphony.root }}/docs/LINEAR_UPLOAD.md` and capture the asset URL.
+3. Write the one-sentence summary from the user's perspective. Not "refactored helper", not "improved type safety". What does the user see that they couldn't before?
+4. Pick the top three callouts. Skip anything the reviewer can read off the diff. Prefer: a deliberate trade-off, a follow-up filed, an edge-case behaviour they should know about, a non-obvious cross-cutting change.
+5. Render the template once. Post it as the Linear comment **and** as the PR body (`gh pr edit <PR_URL> --body "$BODY"`). Do not re-word between them.
 
-## Collapse the workpad
+## Finding the preview URL
 
-Before flipping, edit the `## AI Workpad` comment so its body is wrapped in:
-
-```md
-<details>
-<summary>AI Workpad — internal notes</summary>
-
-(existing workpad body)
-
-</details>
-```
-
-This makes the Delivery comment the first visible artefact when a reviewer opens the ticket.
+The render preview deployment service posts a comment on the PR matching the pattern in `WORKFLOW.md` → `github_preview.comment_pattern`. If none exists yet, wait up to 5 minutes. Beyond that, use `Preview: building…` and ship — the orchestrator keeps the preview warm once it appears.
 
 ## Flip the ticket
 
-After the Delivery comment is posted and the workpad is collapsed:
+After posting the comment and updating the PR body:
 
 ```bash
-# Move issue to In Review using the Linear state ID for the team
 python3 - <<'PY'
 import json, os, subprocess
 api = os.environ["LINEAR_API_KEY"]
 issue_uuid = os.environ["ISSUE_UUID"]
-# Resolve In Review state id for the issue's team
 q = {"query":"query($id:String!){issue(id:$id){team{states{nodes{id name}}}}}","variables":{"id":issue_uuid}}
 r = subprocess.run(["curl","-s","-X","POST","https://api.linear.app/graphql",
                     "-H",f"Authorization: {api}","-H","Content-Type: application/json",
@@ -81,10 +70,9 @@ PY
 
 ## Definition of Done
 
-- [ ] Single `## ✅ Ready for review` comment posted.
-- [ ] Comment body ≤ 20 lines (excluding image markdown).
-- [ ] PR URL present.
-- [ ] Staging URL present (or `building…` placeholder, only if the preview comment hasn't appeared after a 5-minute wait).
-- [ ] Element-scoped screenshots embedded.
-- [ ] `## AI Workpad` comment wrapped in `<details>`.
+- [ ] Exactly one `## ✅ Ready for review` comment on Linear.
+- [ ] PR body matches that comment byte-for-byte.
+- [ ] Body contains: one summary sentence, three callouts, one screenshot, three links — and nothing else.
+- [ ] PR / Preview / Linear URLs all present (or `Preview: building…` if waited 5 minutes).
 - [ ] Linear issue state = `In Review`.
+- [ ] No other Linear comments or PR comments were posted by this phase.

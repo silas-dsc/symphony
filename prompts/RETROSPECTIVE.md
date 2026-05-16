@@ -18,24 +18,29 @@ Read everything that tells the story of how this ticket went. Pull lazily — st
 
 1. **Linear** (Linear MCP or `curl` with `$LINEAR_API_KEY`):
    - The current description (refined version).
-   - The `## Original ticket description (preserved)` comment (the raw ask).
-   - The `## Intent brief` comment (what the Intent Analyst extracted).
-   - The `## AI Workpad` comment, including any `### Tester findings for Developer` sections.
-   - The `## QA results` comment from the Tester.
-   - The `## ✅ Ready for review` Delivery comment.
+   - The `## ✅ Ready for review` Delivery comment (the only sub-agent comment on the ticket).
    - Every human comment on the ticket (those are the gold signal — they tell you what a human had to clarify, redirect, or reject).
    - The full state-change history if accessible (move-to-In-Review, move-back-to-Dev-in-Progress events).
 
-2. **Git** (in `{{ workspace }}`):
+2. **Local `.claude/` artefacts in `{{ workspace }}`** — agent-to-agent context that was never posted publicly:
+   - `.claude/original-description.md` — the raw ask before refinement.
+   - `.claude/intent.md` — what the Intent Analyst extracted.
+   - `.claude/workpad.md` — phase checkboxes + notes from every sub-agent.
+   - `.claude/plan.md`, `.claude/test-matrix.md` — Architect output.
+   - `.claude/qa-results.md` — Tester per-scenario pass/fail and the primary screenshot.
+   - `.claude/tester-findings.md` — rework brief, if any.
+   - `.claude/code-review.md` — verdict + blocking findings, if any.
+
+3. **Git** (in `{{ workspace }}`):
    - `git log --oneline origin/main..HEAD` — the commits this ticket produced.
    - `git diff --stat origin/main...HEAD` — the size and shape of the change.
 
-3. **GitHub PR** (`gh pr view`, `gh api repos/.../pulls/<n>/comments`):
+4. **GitHub PR** (`gh pr view`, `gh api repos/.../pulls/<n>/comments`):
    - PR title, body, merge state.
    - All review comments and inline review comments — those are reviewer-perspective signal.
    - CI status (passed / failed jobs).
 
-You do not need to read every file in the diff. Read the workpad, the PR comments, and the Linear human comments — that's where misses are recorded.
+You do not need to read every file in the diff. Read `.claude/workpad.md`, the PR comments, and the Linear human comments — that's where misses are recorded.
 
 ## What to emit
 
@@ -79,9 +84,9 @@ PY
   - `abandoned` — `Cancelled` / `Canceled` / `Duplicate` — the ticket shouldn't have existed. (You may still write a lesson if Symphony wasted real work on it.)
   - `escalated` — `Closed` or any other terminal state without a merged PR — Symphony hit a wall.
 
-- **rework_cycles** — number of times the Tester reported failures and the Developer re-ran. Read from the `### Test results` history in the workpad.
+- **rework_cycles** — number of times the Tester reported failures and the Developer re-ran. Read from `.claude/tester-findings.md` (if absent or empty: 0) and git history of `.claude/workpad.md`.
 
-- **tester_failures** — total scenarios that failed across all Tester runs. Read from `## QA results` comments.
+- **tester_failures** — total scenarios that failed across all Tester runs. Read from `.claude/qa-results.md` plus any prior versions visible in `.claude/tester-findings.md`.
 
 - **intent_alignment**
   - `high` — the Delivery matched the Intent Brief and no human said "that's not what I asked for".

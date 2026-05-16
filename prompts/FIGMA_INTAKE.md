@@ -29,7 +29,11 @@ grep -q '^.symphony-figma/$' .git/info/exclude 2>/dev/null \
 
 ### 3. Confirm Figma MCP is available
 
-The Figma MCP exposes `get_metadata`, `get_design_context`, `get_screenshot`, and Code Connect tools. If any of these calls fail, document the failure in the workpad and treat it as a blocker — Figma intake cannot proceed without MCP access.
+The Figma MCP exposes `get_metadata`, `get_design_context`, `get_screenshot`, and Code Connect tools. If any of these calls fail, document the failure in `.claude/workpad.md` and treat it as a blocker — Figma intake cannot proceed without MCP access.
+
+### Public-surface rule
+
+**Every Figma intake artefact stays in `.symphony-figma/`.** Do not post anything to Linear or the PR — no `## Figma intake — *` comments, no file attachments, nothing. The Refiner (Phase 1B) folds `tech-spec.md` into the refined Linear description; that is the only thing intake produces that ever reaches Linear, and it goes into the description, not a comment.
 
 ---
 
@@ -54,10 +58,7 @@ The Figma MCP exposes `get_metadata`, `get_design_context`, `get_screenshot`, an
 
 `get_metadata` returns a tree — flatten it so `frames` contains only the top-level frames on the page (not every node inside them). Save the raw response alongside as `manifest-raw.json` for debugging.
 
-**Attach to Linear** via `{{ symphony.root }}/docs/LINEAR_UPLOAD.md`:
-- Post a comment titled `## Figma intake — manifest` with the frame list as a markdown table (id, name, dimensions, position). Attach `manifest.json` as a file.
-
-**Definition of Done:** `manifest.json` exists, frame count > 0, attached to Linear.
+**Definition of Done:** `manifest.json` exists in `.symphony-figma/` with frame count > 0. Nothing posted to Linear.
 
 ---
 
@@ -93,11 +94,9 @@ Read `manifest.json`. Classify every frame using the heuristics below. **Do not 
 }
 ```
 
-If a frame doesn't fit cleanly, put it in `Unclassified` and surface the ambiguity in the workpad — don't force a category.
+If a frame doesn't fit cleanly, put it in `Unclassified` and surface the ambiguity in `.claude/workpad.md` — don't force a category.
 
-**Attach to Linear:** comment `## Figma intake — classification` with counts per type and the list of unclassified frames (if any).
-
-**Definition of Done:** every frame in the manifest appears in exactly one bucket of `classification.json` (variants nest under their parent).
+**Definition of Done:** every frame in the manifest appears in exactly one bucket of `classification.json` (variants nest under their parent). Nothing posted to Linear.
 
 ---
 
@@ -140,12 +139,9 @@ Goal: infer the directed graph of transitions between Desktop/Mobile/Modal frame
 }
 ```
 
-**Attach to Linear:** post `## Figma intake — inferred flow` with:
-- A text-rendered diagram (ASCII or mermaid) of the graph
-- The full assumptions list
-- A note: "Proceeding under these assumptions. Reply on this comment to correct any before sub-agent implementation begins."
+Record the assumptions list and a text-rendered diagram (ASCII or mermaid) of the graph in `.symphony-figma/flow.md` alongside `flow.json` — useful for the operator to spot-check by pulling the workspace. Do not post to Linear.
 
-**Definition of Done:** every Desktop/Mobile/Modal screen from classification is a node in flow.json. Every node except `entry` has at least one incoming edge. Assumptions list is non-empty and specific.
+**Definition of Done:** every Desktop/Mobile/Modal screen from classification is a node in flow.json. Every node except `entry` has at least one incoming edge. Assumptions list is non-empty and specific. Nothing posted to Linear.
 
 ---
 
@@ -217,9 +213,7 @@ For each screen, write `.symphony-figma/screens/<nodeId-sanitized>.md`:
 - [ ] Loading, empty, and error states all reachable in dev.
 ```
 
-**Attach each screen spec to Linear** as a separate comment titled `## Figma intake — screen: <label>`.
-
-**Definition of Done:** every screen node in `flow.json` has a corresponding `.symphony-figma/screens/<id>.md` file. Every spec contains all six sections (Layout, Components, States, Interactions, Copy, Responsive, AC).
+**Definition of Done:** every screen node in `flow.json` has a corresponding `.symphony-figma/screens/<id>.md` file. Every spec contains all six sections (Layout, Components, States, Interactions, Copy, Responsive, AC). Nothing posted to Linear.
 
 ---
 
@@ -263,9 +257,7 @@ Read all `screens/*.md` plus the relevant slice of the team-dsc codebase. Produc
 
 The **Implementation order** drives Phase 3's sub-agent dispatch. List screens in dependency order: shared components first, then dependent screens. Sub-agents will be spawned in this order, one at a time.
 
-**Attach to Linear:** comment `## Figma intake — tech spec` with the full markdown body.
-
-**Definition of Done:** `tech-spec.md` exists with all sections populated, attached to Linear, Implementation order is a complete topological sort of the screen dependencies.
+**Definition of Done:** `.symphony-figma/tech-spec.md` exists with all sections populated. Implementation order is a complete topological sort of the screen dependencies. Nothing posted to Linear — the Refiner (Phase 1B) folds this file's Technical Approach / Test Plan / Out of Scope into the refined Linear description.
 
 ---
 
@@ -285,5 +277,5 @@ The artifacts (`manifest.json`, `classification.json`, `flow.json`, `screens/*.m
 
 If `.symphony-figma/` already exists with some artifacts:
 - Check which phase's output is present and skip to the first missing phase.
-- Re-attach any artifact to Linear only if no prior comment for it exists.
 - Do not re-run earlier phases unless explicitly invalidated (e.g. Figma URL changed).
+- Nothing was ever posted to Linear, so there's nothing to deduplicate.

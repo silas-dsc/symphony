@@ -51,6 +51,8 @@ For Firestore query cost, log read counts in dev or check the Firebase emulator 
 
 ## Record in workpad
 
+Append to `.claude/workpad.md` (Notes section):
+
 ```
 Performance pass on <commit SHA>:
 - Hot-path files touched: <list>
@@ -60,4 +62,4 @@ Performance pass on <commit SHA>:
 - Measurements: <before/after where relevant, or "no perf changes claimed">
 ```
 
-If you suspect a perf issue but it's outside ticket scope, file a Linear Backlog ticket and note it. Don't silently expand scope.
+If you suspect a perf issue but it's outside ticket scope, file a Linear Backlog ticket and note it in `.claude/workpad.md`. Don't silently expand scope.

@@ -1,13 +1,14 @@
 # Meta-improvement pass
 
-You read the Symphony lessons log, identify recurring miss patterns, and propose concrete edits to `WORKFLOW.md` and `prompts/*.md`. For each pattern you act on, you open an individual pull request. You also build a combined `proposed` branch with every accepted pattern in one place and open a PR from `proposed` → `main`. After every PR is open, you dispatch the **Meta-reviewer** sub-agent to post a structured assessment on each PR so the operator can evaluate without re-reading the diff.
+You read the Symphony lessons log, identify recurring miss patterns, and propose concrete edits to `WORKFLOW.md` and `prompts/*.md`. For each pattern you act on, you open an individual pull request. You also build a combined `proposed` branch with every accepted pattern in one place and open a PR from `proposed` → `main`. After every PR is open, you dispatch the **Meta-reviewer** sub-agent. The Meta-reviewer writes a local file (`.claude/meta-review-<pr>.md`) per PR — it does not post on the PR.
 
 You may not:
 - Merge anything to `main`. The operator is the only one who merges.
 - Edit any `.ts` source file or `package.json`.
 - Add a new prompt file. Edit existing ones only.
+- Post anything to the PR beyond the initial minimal body. No follow-up PR comments from you or from the Meta-reviewer.
 
-The operator's contract is: open the PR list, read each PR's automated review, click merge on the ones they agree with, close the ones they don't.
+The operator's contract is: pull the branch, read `.claude/meta-review-<pr>.md`, merge the PRs they agree with, close the ones they don't.
 
 ## Inputs
 
@@ -91,7 +92,7 @@ gh pr create --base main --head "$BRANCH" \
 
 ## Operator action
 
-Independent meta-review follows in a PR comment. If you agree with the review, merge this PR; the auto-update loop will deploy on the next tick. To take this change plus all other patterns from this run together, use the combined `proposed → main` PR instead.
+Independent meta-review is written to `.claude/meta-review-<pr>.md` on this branch. Pull the branch to read it. If you agree, merge this PR; the auto-update loop will deploy on the next tick. To take this change plus all other patterns from this run together, use the combined `proposed → main` PR instead.
 BODY
 )"
 ```
@@ -150,7 +151,7 @@ This PR bundles every actionable pattern identified by the meta-pass run on $DAT
 - **Take everything in one go:** merge this PR. The individual PRs will close automatically once their commits land in main.
 - **Take some but not all:** close this PR and merge individual PRs from the list above.
 
-Independent meta-review follows in a PR comment.
+Independent meta-review is written to `.claude/meta-review-<pr>.md` on this branch. Pull the branch to read it.
 BODY
 )
 if [ -n "$EXISTING" ]; then
@@ -189,7 +190,7 @@ In the `proposed` branch root, write `META_IMPROVE_REPORT.md`:
 - <pattern>: <why — below threshold, no clear edit, etc.>
 
 ## Operator next steps
-1. Read the meta-review comment on each open PR.
+1. For each PR, check out the branch and read `.claude/meta-review-<pr>.md`.
 2. Merge or close individual PRs based on the reviews.
 3. Or merge the combined PR to take everything in one go.
 4. After merge, the auto-update loop deploys; the next batch of retrospectives is the regression test.
@@ -207,12 +208,24 @@ git push origin proposed --force-with-lease
 
 For each PR you opened (every individual PR **plus** the combined `proposed` PR), spawn the Meta-reviewer via the `Agent` tool with `subagent_type: "general-purpose"`. Pass it:
 
-- The PR URL.
+- The PR URL and number.
 - The path to the lessons window file: `{{ lessons_path }}`.
 - The full path to `{{ symphony.root }}/prompts/META_REVIEW.md` — the sub-agent loads its own role prompt from there.
 - For the combined PR: the path to `META_IMPROVE_REPORT.md` on the `proposed` branch (it can `gh pr diff` to see the full file contents).
+- An instruction: write `.claude/meta-review-<PR_NUMBER>.md` on the PR's branch. Do **not** post on the PR.
 
-Sub-agent dispatch is **sequential**, not parallel — they all post comments via `gh pr comment` and we want each comment posted before the next reviewer starts.
+After the reviewer returns, commit and push its file:
+
+```bash
+git fetch origin <branch>
+git checkout <branch>
+git add ".claude/meta-review-<PR_NUMBER>.md"
+git commit -m "Meta-review: <pattern label> verdict"
+git push origin <branch>
+git checkout proposed  # or wherever you were
+```
+
+Sub-agent dispatch is **sequential**, not parallel — they write files on different branches and we want each commit landed before the next reviewer starts.
 
 Wait for each reviewer to return before moving on. If a reviewer fails, log it and continue — don't block the rest.
 
@@ -223,11 +236,13 @@ Wait for each reviewer to return before moving on. If a reviewer fails, log it a
 - **No new prompts.** Edit existing files only.
 - **Each individual PR is one file, one edit, ≤ 20 lines.** Bigger edits mean you're rewriting; surface that in the report instead.
 - **Dispatch the reviewer for every PR you open.** No PR ships unreviewed.
+- **Reviewers don't post on the PR.** Every meta-review lives at `.claude/meta-review-<pr>.md` on its PR's branch. The operator pulls the branch to read it.
 - **Dry-run honour:** if `SYMPHONY_META_DRY_RUN=1` is set in env, do not create branches, do not push, do not call `gh pr`. Write `META_IMPROVE_REPORT.md` to `/tmp/meta-improve-report-<date>.md` and print the path. The Meta-reviewer is not dispatched in dry-run.
 
 ## Definition of Done
 
 - [ ] Lessons read and patterns counted.
-- [ ] Either: ≤ 3 individual PRs opened (each with a meta-review comment) + 1 combined `proposed → main` PR (with a meta-review comment), OR a clean exit with "no actionable patterns found".
+- [ ] Either: ≤ 3 individual PRs opened (each with its `.claude/meta-review-<pr>.md` committed) + 1 combined `proposed → main` PR (also with its review file committed), OR a clean exit with "no actionable patterns found".
 - [ ] `META_IMPROVE_REPORT.md` exists on the `proposed` branch listing every PR URL and the patterns dropped/observed.
+- [ ] No PR comments posted by you or by the Meta-reviewer.
 - [ ] No merges to `main`. No `.ts` files modified. No new prompts created.

@@ -60,9 +60,11 @@ If you do screenshot for your own diagnostic use (debugging a layout issue), cap
 
 ## When you find UX issues outside ticket scope
 
-File a Linear Backlog ticket and link it from the workpad. Fix only what is directly produced or worsened by your change.
+File a Linear Backlog ticket and link it from `.claude/workpad.md`. Fix only what is directly produced or worsened by your change.
 
 ## Record in workpad
+
+Append to `.claude/workpad.md` (Notes section):
 
 ```
 Mobile UX self-check on <commit SHA>:
@@ -71,4 +73,4 @@ Mobile UX self-check on <commit SHA>:
 - Backlog tickets filed for out-of-scope UX issues: <links or "none">
 ```
 
-Deliverable screenshots are produced and attached by the Tester in Phase 4.
+Deliverable screenshots are produced by the Tester in Phase 4 (saved to `.claude/screenshots/`) and the single primary one is embedded in the Phase 5 Delivery body.
