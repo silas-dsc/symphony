@@ -20,6 +20,7 @@ import { getWorkspacePath, removeWorkspace } from "./workspace.js";
 import { runAgentAttempt } from "./agent.js";
 import { claudeBlockedUntil } from "./llm.js";
 import { runRetrospective } from "./retrospective.js";
+import { cleanupReworkComments } from "./rework-cleanup.js";
 
 function fmtErr(e: unknown): string {
   if (e instanceof Error) return e.message;
@@ -338,9 +339,15 @@ export class Orchestrator {
     const sorted = this.sortForDispatch(candidates);
     for (const issue of sorted) {
       if (!this.hasSlots()) break;
-      if (this.shouldDispatch(issue)) {
-        this.dispatch(issue, null);
+      if (!this.shouldDispatch(issue)) continue;
+      try {
+        await cleanupReworkComments(issue, this.config.tracker, this.log);
+      } catch (e) {
+        this.log.warn(`Rework cleanup threw: ${fmtErr(e)}`, {
+          issue_identifier: issue.identifier,
+        });
       }
+      this.dispatch(issue, null);
     }
 
     this.scheduleTick(this.state.pollIntervalMs);

@@ -244,6 +244,18 @@ Every other agent artefact — intent brief, plan, test matrix, QA results, code
 
 The Refiner is the one exception: it still updates the Linear issue **description** (the spec — Context / AC / Technical Approach / Test Plan / Out of Scope). The description is the spec, not a comment.
 
+### Mandatory AI-comment marker
+
+If you ever post **any** Linear comment (the Phase 5 delivery comment, or anything else), the very first line of the comment body must be:
+
+```
+<!-- symphony-agent -->
+```
+
+This HTML comment is invisible in Linear's rendered view but lets Symphony detect agent-authored comments. When a ticket goes `In Review` → `Dev in Progress` (rework), Symphony deletes every comment carrying this marker and replaces the issue description's `## Rework notes` section with a fresh Done/To-do summary of the reviewer's human comments. If you forget the marker, your comment will survive rework cycles and add noise — the reviewer will see a wall of stale agent updates.
+
+Note: any `## Rework notes` section already present in the issue description was written by Symphony, not the user. Treat it as the reviewer's brief for this attempt — it summarises what the reviewer asked for when they kicked the ticket back.
+
 ### `.claude/` layout (per-ticket workspace)
 
 ```

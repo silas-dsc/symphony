@@ -6,9 +6,12 @@ A reviewer must be able to evaluate the change from this comment alone in under 
 
 ## The only template
 
-Both the Linear delivery comment and the GitHub PR body use this body **verbatim** — same words, same shape, same length.
+The Linear delivery comment is the GitHub PR body **plus one leading line** — the AI-comment marker. The PR body itself is the part below the marker, verbatim — same words, same shape, same length.
+
+The Linear comment body, exactly:
 
 ```md
+<!-- symphony-agent -->
 ## ✅ Ready for review
 
 <one-sentence high-level summary of the user-visible change>
@@ -24,8 +27,13 @@ Preview: <render preview URL>
 Linear: <linear issue URL>
 ```
 
+The GitHub PR body is identical **except** the first `<!-- symphony-agent -->` line is omitted (PRs don't need it).
+
+The `<!-- symphony-agent -->` marker is mandatory on every Linear comment any Symphony agent posts. It's an invisible HTML comment that lets Symphony detect and delete agent-authored comments when the ticket goes back from `In Review` to `Dev in Progress` for rework. Without the marker, your comment will pile up on the next review cycle.
+
 ## Hard rules
 
+- **Leading `<!-- symphony-agent -->` marker on the Linear comment is mandatory.** Without it Symphony cannot clean the comment up on rework cycles. Do not place it on the PR body — only on the Linear comment.
 - **One sentence summary, three callouts, one screenshot, three links. Nothing else.** No "What changed", "How to test", "Notes", "Risk", phase mentions, sub-agent mentions, workpad references, or process scaffolding. Reviewers do not care.
 - **Three callouts, three short sentences max.** Each bullet is one short sentence about something the reviewer needs to know — user-visible behaviour change, a follow-up flagged, a deliberate trade-off. Fewer than three is fine if there is genuinely less to say; never more than three.
 - **One screenshot.** Pick the single image that best represents the change — almost always the success state of the primary changed section. Multi-state scenarios (loading / empty / error) live in `.claude/qa-results.md` for whoever wants to look; not here.
@@ -39,7 +47,7 @@ Linear: <linear issue URL>
 2. Upload that screenshot to Linear via `{{ symphony.root }}/docs/LINEAR_UPLOAD.md` and capture the asset URL.
 3. Write the one-sentence summary from the user's perspective. Not "refactored helper", not "improved type safety". What does the user see that they couldn't before?
 4. Pick the top three callouts. Skip anything the reviewer can read off the diff. Prefer: a deliberate trade-off, a follow-up filed, an edge-case behaviour they should know about, a non-obvious cross-cutting change.
-5. Render the template once. Post it as the Linear comment **and** as the PR body (`gh pr edit <PR_URL> --body "$BODY"`). Do not re-word between them.
+5. Render the template once. Post the full body (marker line + `## ✅ Ready for review` + …) as the Linear comment. Strip the leading `<!-- symphony-agent -->` line for the PR body (`gh pr edit <PR_URL> --body "$BODY_WITHOUT_MARKER"`). The two bodies are otherwise identical — do not re-word between them.
 
 ## Finding the preview URL
 
@@ -70,8 +78,8 @@ PY
 
 ## Definition of Done
 
-- [ ] Exactly one `## ✅ Ready for review` comment on Linear.
-- [ ] PR body matches that comment byte-for-byte.
+- [ ] Exactly one `## ✅ Ready for review` comment on Linear, with `<!-- symphony-agent -->` as the very first line.
+- [ ] PR body matches that comment byte-for-byte **except** the `<!-- symphony-agent -->` marker line is omitted.
 - [ ] Body contains: one summary sentence, three callouts, one screenshot, three links — and nothing else.
 - [ ] PR / Preview / Linear URLs all present (or `Preview: building…` if waited 5 minutes).
 - [ ] Linear issue state = `In Review`.

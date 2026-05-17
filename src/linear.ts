@@ -388,7 +388,11 @@ interface OrgPayload {
   organization: { urlKey: string };
 }
 
-const SLACK_NOTIFICATION_COMMENT = "Slack notification sent";
+// Body of the bookkeeping comment Symphony posts to mark "Slack completion
+// notification sent" for an issue. Prefixed with the AI-comment marker so the
+// rework cleanup picks it up too if the ticket is later moved back into rework.
+const SLACK_NOTIFICATION_COMMENT = "<!-- symphony-agent -->\nSlack notification sent";
+const SLACK_NOTIFICATION_PAYLOAD = "Slack notification sent";
 
 const ISSUE_COMMENTS_QUERY = `
   query IssueComments($issueId: String!, $first: Int!, $after: String) {
@@ -458,7 +462,17 @@ export async function hasSlackNotificationComment(
 
     const comments: IssueCommentsConnection | undefined = data.issue?.comments;
     if (!comments) return false;
-    if (comments.nodes.some((comment: { body: string | null }) => comment.body?.trim() === SLACK_NOTIFICATION_COMMENT)) {
+    // Tolerate both the marker-prefixed body (current) and the legacy bare body
+    // ("Slack notification sent"), so existing tickets with the old comment
+    // don't get a duplicate notification posted after the marker was added.
+    const isSlackSentinel = (comment: { body: string | null }): boolean => {
+      const body = comment.body?.trim();
+      if (!body) return false;
+      if (body === SLACK_NOTIFICATION_COMMENT) return true;
+      if (body === SLACK_NOTIFICATION_PAYLOAD) return true;
+      return false;
+    };
+    if (comments.nodes.some(isSlackSentinel)) {
       return true;
     }
 
@@ -483,6 +497,138 @@ export async function addSlackNotificationComment(
 
   if (!data.commentCreate?.success) {
     throw new LinearError("linear_unknown_payload", "Linear commentCreate did not report success");
+  }
+}
+
+// ─── Comment detail / delete / description update (used by rework cleanup) ──
+
+const ISSUE_COMMENTS_DETAIL_QUERY = `
+  query IssueCommentsDetail($issueId: String!, $first: Int!, $after: String) {
+    issue(id: $issueId) {
+      comments(first: $first, after: $after) {
+        nodes {
+          id
+          body
+          createdAt
+          user { name email }
+        }
+        pageInfo { hasNextPage endCursor }
+      }
+    }
+  }
+`;
+
+interface IssueCommentsDetailNode {
+  id: string;
+  body: string | null;
+  createdAt: string;
+  user: { name: string | null; email: string | null } | null;
+}
+
+interface IssueCommentsDetailPayload {
+  issue: {
+    comments: {
+      nodes: IssueCommentsDetailNode[];
+      pageInfo: { hasNextPage: boolean; endCursor: string | null };
+    };
+  } | null;
+}
+
+export interface LinearComment {
+  id: string;
+  body: string;
+  createdAt: Date;
+  author: IssuePerson | null;
+}
+
+/** Fetches every comment on the issue with id, body, createdAt, and author. */
+export async function fetchIssueCommentsDetail(
+  config: TrackerConfig,
+  issueId: string,
+): Promise<LinearComment[]> {
+  const results: LinearComment[] = [];
+  let after: string | null = null;
+
+  while (true) {
+    const vars: Record<string, unknown> = { issueId, first: 50 };
+    if (after !== null) vars.after = after;
+    const data: IssueCommentsDetailPayload = await graphql<IssueCommentsDetailPayload>(
+      config.endpoint,
+      config.apiKey,
+      ISSUE_COMMENTS_DETAIL_QUERY,
+      vars,
+    );
+
+    const comments = data.issue?.comments;
+    if (!comments) return results;
+
+    for (const node of comments.nodes) {
+      results.push({
+        id: node.id,
+        body: node.body ?? "",
+        createdAt: new Date(node.createdAt),
+        author: normalizePerson(node.user),
+      });
+    }
+
+    if (!comments.pageInfo.hasNextPage) break;
+    if (!comments.pageInfo.endCursor) {
+      throw new LinearError("linear_missing_end_cursor", "Linear comment pagination returned hasNextPage with no cursor");
+    }
+    after = comments.pageInfo.endCursor;
+  }
+
+  return results;
+}
+
+const COMMENT_DELETE_MUTATION = `
+  mutation CommentDelete($id: String!) {
+    commentDelete(id: $id) { success }
+  }
+`;
+
+interface CommentDeletePayload {
+  commentDelete: { success: boolean } | null;
+}
+
+export async function deleteComment(
+  config: TrackerConfig,
+  commentId: string,
+): Promise<void> {
+  const data = await graphql<CommentDeletePayload>(
+    config.endpoint,
+    config.apiKey,
+    COMMENT_DELETE_MUTATION,
+    { id: commentId },
+  );
+  if (!data.commentDelete?.success) {
+    throw new LinearError("linear_unknown_payload", "Linear commentDelete did not report success");
+  }
+}
+
+const ISSUE_UPDATE_DESCRIPTION_MUTATION = `
+  mutation IssueUpdateDescription($id: String!, $description: String!) {
+    issueUpdate(id: $id, input: { description: $description }) { success }
+  }
+`;
+
+interface IssueUpdatePayload {
+  issueUpdate: { success: boolean } | null;
+}
+
+export async function updateIssueDescription(
+  config: TrackerConfig,
+  issueId: string,
+  description: string,
+): Promise<void> {
+  const data = await graphql<IssueUpdatePayload>(
+    config.endpoint,
+    config.apiKey,
+    ISSUE_UPDATE_DESCRIPTION_MUTATION,
+    { id: issueId, description },
+  );
+  if (!data.issueUpdate?.success) {
+    throw new LinearError("linear_unknown_payload", "Linear issueUpdate did not report success");
   }
 }
 
