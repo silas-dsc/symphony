@@ -1,6 +1,8 @@
-# Phase 5 — Self-review (final gate before `In Review`)
+# Phase 3 final gate — Self-review before push
 
-Before flipping the Linear issue to `In Review`, run a self-review pass against your own diff. The goal is to catch issues that look obvious in code review but you missed while writing.
+Run this immediately before `git push` for the first time on the feature branch, and again before pushing any rework commit. It's the developer-side counterpart to the Code Reviewer (Phase 4.5): the Code Reviewer reads the diff with fresh eyes, but you wrote it — you can catch a different class of misses by rereading your own work deliberately.
+
+The automated gate is `bash {{ symphony.root }}/scripts/verify-changes.sh` (see `VERIFY.md`). This file is the **human** pass that runs alongside it. Both must be green before push.
 
 ## Read your own diff
 
@@ -15,8 +17,9 @@ For each file in the diff, re-evaluate against the four quality checklists:
 2. **Performance** — `{{ symphony.root }}/prompts/PERFORMANCE.md` (hot-path files)
 3. **Mobile UX** — `{{ symphony.root }}/prompts/MOBILE_UX.md` (frontend pages)
 4. **Refined ticket AC** — every acceptance criterion truly delivered, not just attempted?
+5. **Project memory** — `{{ symphony.root }}/docs/AGENT_MEMORY.md` rules respected?
 
-Do not skim. Re-reading your own code with fresh eyes is the single most effective bug catcher available to you.
+Do not skim. Rereading your own code with fresh eyes is the single most effective bug catcher available to you.
 
 ## Red flags to look for
 
@@ -31,28 +34,31 @@ Do not skim. Re-reading your own code with fresh eyes is the single most effecti
 - [ ] A snapshot test updated without verifying the new snapshot is correct.
 - [ ] Hard-coded values where a config / env / constant exists.
 - [ ] Secrets or PII accidentally committed (`rg -i "password|secret|api_key|token" -- $(git diff --name-only origin/main...HEAD)`).
+- [ ] A test promised in the Plan's **Tests to add** section that isn't in the diff.
+- [ ] A behavioural change with no developer-side test, and no `TDD skip` note in `.claude/workpad.md`.
+
+Most of these are caught by `verify-changes.sh` too — but the script is a syntactic scan; you can spot semantic versions (a variable named `result` that should be `pendingInvoices`, a function whose name no longer matches its body) that no regex will.
 
 ## Re-run the gates after any fix
 
-If you find and fix anything during self-review:
+If you find and fix anything during self-review, re-run **both** the automated and the manual passes:
 
 ```bash
-pnpm typecheck && pnpm lint
-pnpm --filter <package> test   # if you touched testable code
+bash {{ symphony.root }}/scripts/verify-changes.sh
+pnpm --filter <pkg> test -- --run   # if you touched testable code
 ```
 
 Then re-do the visual checks for any pages you re-touched.
 
 ## Definition of Done
 
-- [ ] Every file in the diff re-read with the four checklists in mind.
+- [ ] Every file in the diff re-read with the five checklists in mind.
 - [ ] All red flags above checked and clean.
 - [ ] Every AC from the refined ticket truly delivered (re-confirm by reading the AC list out loud against the diff).
-- [ ] `pnpm typecheck && pnpm lint` green on the final commit.
-- [ ] No actionable PR comments outstanding (see PR feedback sweep in WORKFLOW.md).
-- [ ] `.claude/qa-results.md` populated, with a primary screenshot identified for Phase 5 to embed.
+- [ ] `verify-changes.sh` exits `VERIFY: pass` on the current HEAD.
+- [ ] Latest commit in workpad's notes section has a fresh `Self-review on <SHA>` line.
 
-Only after every box above is ticked: move the issue to `In Review`.
+Only after every box above is ticked: `git push`. Phase 4 (Tester) and Phase 4.5 (Code Reviewer) come next.
 
 ## Record in workpad
 
@@ -63,5 +69,5 @@ Self-review on <commit SHA>:
 - Files reviewed: <count>
 - Red flags found and fixed: <list or "none">
 - AC re-confirmed against diff: yes
-- Final lint/typecheck: green
+- VERIFY: pass
 ```

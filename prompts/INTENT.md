@@ -16,6 +16,7 @@ You DO produce one artefact: the file `.claude/intent.md` in the workspace.
 2. The issue's existing comments (in case prior context clarifies intent).
 3. The ticket title and label list.
 4. Linked Figma URLs — note their existence but do not deep-dive.
+5. **`{{ symphony.root }}/docs/AGENT_MEMORY.md`** — cross-ticket project knowledge. Read its "Roles" and "Domain vocabulary" sections so you interpret the ticket in the language of this codebase, not a generic one.
 
 ## The Intent Brief — exact format
 

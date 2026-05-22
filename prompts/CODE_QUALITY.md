@@ -4,19 +4,43 @@ This is not a separate cleanup step — apply it as you write. Every file you mo
 
 ## Hard gates (must pass before commit)
 
-- [ ] `pnpm typecheck` — zero errors
-- [ ] `pnpm lint` — zero errors
+- [ ] `pnpm typecheck` — zero errors (scoped to the touched package via `pnpm --filter`)
+- [ ] `pnpm lint` — zero errors (scoped to the touched package via `pnpm --filter`)
 - [ ] No new TypeScript `any` introduced. Use proper types, or `unknown` + narrowing.
 - [ ] No new unused imports, variables, parameters, or exports.
 - [ ] No commented-out code left behind.
 - [ ] No `console.log` / `console.debug` (use the project's logger if logging is required).
 
-Run from the workspace root:
+Scoped run (preferred — fast on a warm cache, and the only thing the diff can break):
+
 ```bash
-pnpm typecheck && pnpm lint
+# For each package the diff touches:
+pnpm --filter <pkg> typecheck && pnpm --filter <pkg> lint
+```
+
+Workspace-wide run (always before push, never skipped — see `VERIFY.md`):
+
+```bash
+bash {{ symphony.root }}/scripts/verify-changes.sh
 ```
 
 Fix every error before committing. Do not commit with `--no-verify`. Do not disable rules to make errors go away — fix the underlying issue.
+
+## Per-file walkthrough (mandatory)
+
+After your last code change in this commit, list every file the diff touches and re-open each one with this checklist in mind. Skimming the file is enough; reading the original lines plus your additions is required.
+
+```bash
+git diff --name-only origin/main...HEAD
+```
+
+For each file:
+
+- Re-read the diff hunks. Does each change still make sense out of the order you wrote them?
+- Is every added symbol referenced from somewhere? `rg -F "<symbol>" packages/<pkg>` should show ≥ 1 usage outside the definition.
+- Does the file still read top-to-bottom as one coherent story, or did your edits leave it as a patchwork of unrelated changes?
+
+The walkthrough catches the things lint can't: a function whose purpose drifted, a name that no longer describes what it does, a comment that was true before your change but isn't now.
 
 ## Clean code checklist
 
@@ -60,8 +84,11 @@ Append to `.claude/workpad.md` (Notes section) after this pass:
 ```
 Code quality pass on <commit SHA>:
 - Files touched: <list>
-- typecheck / lint: green
+- Per-file walkthrough: done
+- Scoped typecheck / lint: green for packages <list>
 - Helpers extracted: <list or "none">
 - Dead code removed: <list or "none">
 - Backlog tickets filed for adjacent debt: <links or "none">
 ```
+
+A workpad note without "Per-file walkthrough: done" is treated by the Code Reviewer as a missing gate — they will request you re-run the walkthrough.

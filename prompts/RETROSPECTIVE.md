@@ -110,6 +110,10 @@ PY
   - `flaky-test` — test instability caused false failures.
   - `environment` — workspace setup / dev server / proxy issue.
   - `pr-feedback` — human reviewer asked for changes a sub-agent should have caught.
+  - `tdd` — missing developer-side test caused a regression or made the rework loop longer; or a snapshot accepted without inspection.
+  - `verify` — VERIFY gate failed or was skipped; lint/typecheck/secret/forbidden-token check regression slipped through.
+  - `memory` — a rule that should live in `docs/AGENT_MEMORY.md` would have prevented this miss; the retrospective recommends adding or updating an entry.
+  - `debug` — issue could have been caught earlier by following the structured-debug protocol; agent guessed instead of reproducing.
 
 ## Rules
 
@@ -117,6 +121,7 @@ PY
 - **Don't post anything to Linear or GitHub.** This sub-agent is silent — its only output is the appended JSON line.
 - **Don't fabricate.** If you can't determine a field from the available signal, write your honest best estimate and lower-confidence wording in `notes`. Better to write `"primary_miss": "unknown — no review comments and no rework"` than to invent one.
 - **Keep `notes` short.** ≤ 400 characters. Anything longer means you're trying to hide nuance in prose instead of structuring it into fields.
+- **Memory candidate.** If the lesson points at a convention or gotcha the codebase repeatedly violates, suggest a concrete one-line edit to `docs/AGENT_MEMORY.md` inside `proposed_workflow_change` (e.g. `proposed_workflow_change: "Add to docs/AGENT_MEMORY.md → Common pitfalls → Firestore: 'subcollection reads inside loaders must use limit(N) or risk full-collection scans'."`). The meta-improve pass acts on these.
 - **Time-box yourself.** ≤ 15 turns. If you can't find the data, write a sparse lesson with `"notes": "low-signal ticket: <why>"` and exit.
 
 ## Definition of Done
