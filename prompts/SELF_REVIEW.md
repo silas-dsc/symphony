@@ -36,6 +36,9 @@ Do not skim. Rereading your own code with fresh eyes is the single most effectiv
 - [ ] Secrets or PII accidentally committed (`rg -i "password|secret|api_key|token" -- $(git diff --name-only origin/main...HEAD)`).
 - [ ] A test promised in the Plan's **Tests to add** section that isn't in the diff.
 - [ ] A behavioural change with no developer-side test, and no `TDD skip` note in `.claude/workpad.md`.
+- [ ] A hunk in the diff that doesn't trace back to a Plan task or AC (scope creep — see `prompts/CODE_QUALITY.md` → Surgical changes).
+- [ ] An abstraction, parameter, or "flexibility" added for a single call-site (premature — inline it; see Simplicity first).
+- [ ] Adjacent formatting / comment / style edits that aren't load-bearing for the change (Surgical changes — revert the cosmetic hunks).
 
 Most of these are caught by `verify-changes.sh` too — but the script is a syntactic scan; you can spot semantic versions (a variable named `result` that should be `pendingInvoices`, a function whose name no longer matches its body) that no regex will.
 
