@@ -38,6 +38,7 @@ The script runs ten checks in total. Seven of them run in parallel (capped at `V
 10. **Forbidden-token scan** on the diff: `TODO`, `FIXME`, `XXX`, `console.log`, `console.debug`, `debugger`, `as any`, `as unknown as`, `.only(`, `.skip(`, `xit(`, `xdescribe(`. Excludes `.md`, `.lock`, `.snap`, and `scripts/verify-changes.sh` itself.
 11. **Secret scan** on the diff: `-----BEGIN ... PRIVATE KEY-----`, `sk-...`, `AKIA[0-9A-Z]{16}`, `(password|secret|api_key|token) = "..."`. Allows matches in `.env.example` since it documents placeholder shapes.
 12. **Untracked-leftover scan**: `*.tmp`, `*.bak`, `*.log`, `*.swp`, `*.orig`, `*.rej`, `*~` inside the working tree.
+13. **Tracked-artefact scan on the diff**: flags new additions in build/coverage/test-report directories (`dist/`, `build/`, `coverage/`, `playwright-report/`, `test-results/`, `out/`, `.next/`, `.nuxt/`), OS junk (`.DS_Store`, `Thumbs.db`, `desktop.ini`), `node_modules/`, and image files >100kb outside designated asset directories (`public/`, `assets/`, `images/`, `static/`, `fonts/`, `media/`, `icons/`, `__image_snapshots__/`, `__screenshots__/`). Complements `.gitignore` rather than duplicating it: only ungignored additions can trigger this check.
 
 ### Graceful skips
 

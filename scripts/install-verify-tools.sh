@@ -3,15 +3,23 @@
 # checks `scripts/verify-changes.sh` consults.
 #
 # Modes:
-#   --check       (default) Report what's missing. No writes.
-#   --install     Install npm-installable tools as workspace devDependencies.
-#                 Updates package.json + lockfile but does NOT commit.
-#   --scaffold    Create starter config files where appropriate. Refuses to
-#                 overwrite existing files.
-#   --all         --install + --scaffold.
-#   --dry-run     With --install / --scaffold, print what would happen but
-#                 don't write.
-#   --help        This message.
+#   --check          (default) Report what's missing. No writes.
+#   --install        Install npm-installable tools as workspace devDependencies.
+#                    Updates package.json + lockfile but does NOT commit.
+#   --scaffold       Create starter config files where appropriate. Refuses to
+#                    overwrite existing files. Also merges agent-artefact lines
+#                    into .gitignore (idempotent, marker-delimited block).
+#   --all            --install + --scaffold.
+#   --audit-tracked  Read-only scan of `git ls-files` for things that look
+#                    accidentally tracked: build/coverage/test-report outputs,
+#                    image files >100kb outside asset directories, OS junk
+#                    (.DS_Store, Thumbs.db), large binaries. Prints each as a
+#                    candidate plus the `git rm --cached <path>` command for
+#                    the operator to triage. Does NOT remove anything.
+#   --dry-run        With --install / --scaffold, print what would happen but
+#                    don't write. Has no effect on --audit-tracked (it's
+#                    already read-only).
+#   --help           This message.
 #
 # Run from the workspace root (the target repo, not Symphony itself).
 #
@@ -36,12 +44,13 @@ print_help() {
 parse_args() {
   while [ $# -gt 0 ]; do
     case "$1" in
-      --check)    MODE="check" ;;
-      --install)  MODE="install" ;;
-      --scaffold) MODE="scaffold" ;;
-      --all)      MODE="all" ;;
-      --dry-run)  DRY_RUN=1 ;;
-      --help|-h)  print_help; exit 0 ;;
+      --check)          MODE="check" ;;
+      --install)        MODE="install" ;;
+      --scaffold)       MODE="scaffold" ;;
+      --all)            MODE="all" ;;
+      --audit-tracked)  MODE="audit-tracked" ;;
+      --dry-run)        DRY_RUN=1 ;;
+      --help|-h)        print_help; exit 0 ;;
       *) echo "Unknown flag: $1" >&2; print_help; exit 2 ;;
     esac
     shift
@@ -99,6 +108,80 @@ say_check "firestore.rules present: $HAS_FIRESTORE"
 HAS_REMIX_APP=0
 [ -f packages/app/package.json ] && grep -q '"@remix-run/' packages/app/package.json 2>/dev/null && HAS_REMIX_APP=1
 say_check "Remix app at packages/app: $HAS_REMIX_APP"
+
+# ── Audit-tracked mode (read-only, early exit) ─────────────────────────────
+# Scans `git ls-files` for things that look accidentally tracked. The
+# operator triages — the script never deletes.
+if [ "$MODE" = "audit-tracked" ]; then
+  CANDIDATES=()
+  add_candidate() { CANDIDATES+=("$1|$2"); }   # "path|reason"
+
+  # 1. Files inside known build/coverage/test-output directories.
+  while IFS= read -r f; do
+    [ -n "$f" ] && add_candidate "$f" "tracked output directory"
+  done < <(git ls-files | grep -E '^(dist|build|coverage|playwright-report|test-results|out|\.next|\.nuxt)/' || true)
+  while IFS= read -r f; do
+    [ -n "$f" ] && add_candidate "$f" "tracked output directory"
+  done < <(git ls-files | grep -E '/(dist|build|coverage|playwright-report|test-results|out|\.next|\.nuxt)/' || true)
+
+  # 2. OS / editor junk.
+  while IFS= read -r f; do
+    [ -n "$f" ] && add_candidate "$f" "OS/editor junk"
+  done < <(git ls-files | grep -E '(^|/)(\.DS_Store|Thumbs\.db|desktop\.ini)$|\.swp$|\.swo$|~$' || true)
+
+  # 3. node_modules accidentally tracked.
+  while IFS= read -r f; do
+    [ -n "$f" ] && add_candidate "$f" "node_modules tracked"
+  done < <(git ls-files | grep -E '(^|/)node_modules/' || true)
+
+  # 4. Image / binary files >100kb outside designated asset directories.
+  ASSET_OK_RE='(^|/)(public|assets|images|static|fonts|media|icons|__image_snapshots__|__screenshots__)/'
+  while IFS= read -r f; do
+    [ -z "$f" ] && continue
+    if echo "$f" | grep -qE "$ASSET_OK_RE"; then continue; fi
+    # Only flag if file is actually large — small inline images are fine.
+    size=$(wc -c < "$f" 2>/dev/null || echo 0)
+    if [ "$size" -gt 102400 ]; then
+      add_candidate "$f" "image >100kb outside asset dir (${size}B)"
+    fi
+  done < <(git ls-files | grep -iE '\.(png|jpg|jpeg|gif|webp|tiff|bmp|psd|sketch|fig)$' || true)
+
+  # 5. Other large binaries (>1MB) outside known asset dirs.
+  while IFS= read -r f; do
+    [ -z "$f" ] && continue
+    if echo "$f" | grep -qE "$ASSET_OK_RE|\.(map|min\.js|min\.css)$"; then continue; fi
+    if [ ! -f "$f" ]; then continue; fi
+    case "$f" in *.png|*.jpg|*.jpeg|*.gif|*.webp|*.tiff|*.bmp) continue ;; esac
+    size=$(wc -c < "$f" 2>/dev/null || echo 0)
+    if [ "$size" -gt 1048576 ]; then
+      add_candidate "$f" "binary >1MB outside asset dir (${size}B)"
+    fi
+  done < <(git ls-files | grep -E '\.(zip|tar|gz|bz2|7z|exe|dmg|pkg|deb|rpm|jar|war|so|dll|dylib|pdf|sqlite|db)$' || true)
+
+  if [ "${#CANDIDATES[@]}" -eq 0 ]; then
+    echo "INSTALL-VERIFY-TOOLS: audit-tracked (candidates=0) — repo looks clean"
+    exit 0
+  fi
+
+  echo "" >&2
+  echo "Found ${#CANDIDATES[@]} tracked-artefact candidate(s). Operator triage:" >&2
+  echo "" >&2
+  declare -A SEEN=()
+  for entry in "${CANDIDATES[@]}"; do
+    [ -n "${SEEN[$entry]:-}" ] && continue
+    SEEN[$entry]=1
+    path="${entry%%|*}"
+    reason="${entry##*|}"
+    printf '  %-70s  # %s\n' "$path" "$reason" >&2
+  done
+  echo "" >&2
+  echo "If any of these are genuinely accidental, remove from the index without deleting locally:" >&2
+  echo "  git rm --cached <path>" >&2
+  echo "and add the matching pattern to .gitignore." >&2
+  echo "" >&2
+  echo "INSTALL-VERIFY-TOOLS: audit-tracked (candidates=${#CANDIDATES[@]})"
+  exit 0
+fi
 
 # ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -368,6 +451,57 @@ else
     fi
     if write_if_absent ".bundle-budget.json" "$budget"; then
       record_scaffolded ".bundle-budget.json"
+    fi
+  fi
+fi
+
+# ── 4b. .gitignore — Symphony agent artefacts block (scaffold-only) ───────
+# Agents write to .claude/, .symphony-figma/, .symphony-ports etc. inside the
+# workspace. These must NEVER be committed — they're per-ticket and contain
+# inter-agent state, not deliverables. We merge a marker-delimited block so
+# subsequent runs are idempotent.
+GITIGNORE_PATTERNS=(".claude/" ".symphony-figma/" ".symphony-ports" ".symphony-app.pid" ".symphony-proxy.pid")
+GITIGNORE_MARKER_START="# >>> Symphony agent artefacts (managed by install-verify-tools.sh)"
+GITIGNORE_MARKER_END="# <<< Symphony agent artefacts"
+
+# Whether every pattern already appears (anywhere, exact line match) — the
+# operator may have ignored these under a different comment. We don't insist
+# on our marker; we insist on the patterns.
+gitignore_covered=1
+missing_patterns=()
+if [ ! -f .gitignore ]; then
+  gitignore_covered=0
+  missing_patterns=("${GITIGNORE_PATTERNS[@]}")
+else
+  for p in "${GITIGNORE_PATTERNS[@]}"; do
+    if ! grep -Fxq "$p" .gitignore; then
+      gitignore_covered=0
+      missing_patterns+=("$p")
+    fi
+  done
+fi
+
+if [ "$gitignore_covered" = "1" ]; then
+  record_present ".gitignore (all agent-artefact patterns ignored)"
+else
+  record_missing ".gitignore (missing: ${missing_patterns[*]})"
+  if want_scaffold; then
+    if [ "$DRY_RUN" = "1" ]; then
+      say_act "DRY-RUN: would append the missing patterns to .gitignore as a marker-delimited block"
+      record_scaffolded ".gitignore (agent-artefact block)"
+    else
+      block="$GITIGNORE_MARKER_START"
+      for p in "${missing_patterns[@]}"; do
+        block+=$'\n'"$p"
+      done
+      block+=$'\n'"$GITIGNORE_MARKER_END"
+      [ ! -f .gitignore ] && : > .gitignore
+      if [ -s .gitignore ]; then
+        printf '\n%s\n' "$block" >> .gitignore
+      else
+        printf '%s\n' "$block" >> .gitignore
+      fi
+      record_scaffolded ".gitignore (agent-artefact block, ${#missing_patterns[@]} new line(s))"
     fi
   fi
 fi

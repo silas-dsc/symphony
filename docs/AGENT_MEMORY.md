@@ -184,6 +184,38 @@ pnpm exec jscpd packages/             # duplicate-code finder
 
 Triage the output and file Linear Backlog tickets for the worth-fixing entries. Don't push wholesale cleanup PRs — they're hard to review. Slice into per-package or per-area tickets.
 
+## Agent artefacts in `.gitignore`
+
+Every workspace the agent operates in must have these patterns ignored — they're per-ticket state, not deliverables, and committing them by accident pollutes both the diff and the eventual PR review:
+
+| Pattern | What it is |
+|---|---|
+| `.claude/` | Inter-agent artefacts (intent, plan, matrix, workpad, qa-results, code-review, debug, screenshots). |
+| `.symphony-figma/` | Figma intake outputs (manifest, classifications, per-screen specs). |
+| `.symphony-ports` | Per-workspace port allocations (`APP_PORT`, `PROXY_PORT`). |
+| `.symphony-app.pid` | PID of the workspace's dev server process. |
+| `.symphony-proxy.pid` | PID of the workspace's SSL proxy process. |
+
+To add the missing patterns idempotently:
+
+```bash
+bash {{ symphony.root }}/scripts/install-verify-tools.sh --scaffold
+```
+
+It checks each pattern individually (not the wrapping comment) so it doesn't duplicate entries you've already added under a different heading. When run for the first time, it inserts a marker-delimited block (`# >>> Symphony agent artefacts ... # <<<`) so future runs can identify and skip the section.
+
+## Cleaning up historically-committed artefacts
+
+If the codebase has accumulated stray files over previous tickets — build outputs, `.DS_Store`, coverage reports, oversized binaries outside asset directories — surface them with:
+
+```bash
+bash {{ symphony.root }}/scripts/install-verify-tools.sh --audit-tracked
+```
+
+Read-only. Prints each candidate path with the reason (output directory, OS junk, image >100kb in non-asset path, large binary, etc.) and the `git rm --cached <path>` command to remove it from the index without deleting locally. The operator coordinates the cleanup — these removals affect everyone who pulls, so they need to be batched into a deliberate PR rather than slipped into a feature ticket.
+
+The per-PR gate complementing this is in `scripts/verify-changes.sh` → `tracked_artefacts` check, which fails the build when a ticket diff *adds* new files matching the same heuristics. So new accumulation is blocked at the door, and existing accumulation is surfaced for deliberate triage.
+
 ## When this file is missing the thing you need
 
 Don't assume the absence of a rule means "no rule". Read the closest existing pattern in the codebase. If you make a judgement call that a future ticket would benefit from, capture it as a retrospective `proposed_workflow_change` so the meta-improve pass can add it here.

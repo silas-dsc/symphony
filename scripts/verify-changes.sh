@@ -11,10 +11,15 @@
 #   7. Bundle-size budget (against `.bundle-budget.json` if present).
 #   8. Forbidden-token scan on the diff (debug noise, casts, skipped tests).
 #   9. Secret scan on the diff.
-#  10. Untracked-leftover scan inside source trees.
+#  10. Untracked-leftover scan inside source trees (*.tmp, *.bak, ...).
+#  11. Tracked-artefact scan on the diff — flags accidental additions to
+#      build/coverage/test-output dirs, OS junk (.DS_Store), node_modules,
+#      and images >100kb outside designated asset directories. For a one-time
+#      audit of files already tracked, use
+#      `scripts/install-verify-tools.sh --audit-tracked`.
 #
 # Checks 1–7 run in parallel (capped by VERIFY_PARALLELISM, default nproc).
-# Checks 8–10 run synchronously after — they're cheap and the agent benefits
+# Checks 8–11 run synchronously after — they're cheap and the agent benefits
 # from them appearing last in the output.
 #
 # Each parallel check is **graceful**: if the tool or its config isn't
@@ -423,8 +428,52 @@ else
   pass "untracked_leftovers"
 fi
 
-# ── 6. Verdict ──────────────────────────────────────────────────────────────
-TOTAL_RUN=$(( ${#JOB_NAMES[@]} + 11 ))   # parallel jobs + synchronous checks
+# ── 6. Tracked-artefact scan on the diff ────────────────────────────────────
+# Catches things the agent or a tool accidentally added to the repo that look
+# like build/test outputs or stray binaries. The historical-cleanup pass for
+# files already tracked lives in `install-verify-tools.sh --audit-tracked`;
+# this scan is the per-PR gate that stops new ones from landing.
+ADDED_PATHS="$(git diff --name-only --diff-filter=A "$BASE_REF...HEAD" 2>/dev/null || true)"
+ADDED_PATHS+=$'\n'"$(git diff --name-only --diff-filter=A 2>/dev/null || true)"
+ADDED_PATHS+=$'\n'"$(git ls-files --others --exclude-standard 2>/dev/null || true)"
+ADDED_PATHS="$(printf '%s\n' "$ADDED_PATHS" | sort -u | grep -v '^$' || true)"
+
+artefact_hits=""
+if [ -n "$ADDED_PATHS" ]; then
+  # Build/test/coverage output directories — these should never be tracked.
+  artefact_hits+="$(printf '%s\n' "$ADDED_PATHS" | grep -E '(^|/)(dist|build|coverage|playwright-report|test-results|out|\.next|\.nuxt)/' || true)"
+  # OS / editor junk.
+  artefact_hits+=$'\n'"$(printf '%s\n' "$ADDED_PATHS" | grep -E '(^|/)(\.DS_Store|Thumbs\.db|desktop\.ini)$' || true)"
+  # node_modules accidentally added.
+  artefact_hits+=$'\n'"$(printf '%s\n' "$ADDED_PATHS" | grep -E '(^|/)node_modules/' || true)"
+  # Images >100kb added outside asset/snapshot dirs. The asset_ok regex matches
+  # the path patterns the team treats as canonical homes for binary assets.
+  ASSET_OK_RE='(^|/)(public|assets|images|static|fonts|media|icons|__image_snapshots__|__screenshots__)/'
+  while IFS= read -r f; do
+    [ -z "$f" ] && continue
+    case "$f" in *.png|*.jpg|*.jpeg|*.gif|*.webp|*.tiff|*.bmp) ;; *) continue ;; esac
+    if echo "$f" | grep -qE "$ASSET_OK_RE"; then continue; fi
+    [ ! -f "$f" ] && continue
+    sz=$(wc -c < "$f" 2>/dev/null || echo 0)
+    if [ "$sz" -gt 102400 ]; then
+      artefact_hits+=$'\n'"$f  (image >100kb outside asset dir, ${sz}B)"
+    fi
+  done <<< "$ADDED_PATHS"
+fi
+
+artefact_hits="$(printf '%s\n' "$artefact_hits" | grep -v '^$' || true)"
+if [ -n "$artefact_hits" ]; then
+  fail "tracked_artefacts"
+  printf '%s\n' "$artefact_hits" | sed 's/^/    /'
+  log "    → If any of these are intentional, justify in workpad and rerun. Otherwise:"
+  log "    →   git rm --cached <path>"
+  log "    → and add the pattern to .gitignore."
+else
+  pass "tracked_artefacts"
+fi
+
+# ── 7. Verdict ──────────────────────────────────────────────────────────────
+TOTAL_RUN=$(( ${#JOB_NAMES[@]} + 12 ))   # parallel jobs + synchronous checks
 SKIP_COUNT="${#SKIPS[@]}"
 if [ "${#FAILURES[@]}" -eq 0 ]; then
   echo "VERIFY: pass (sha=$HEAD_SHA, packages=${#TOUCHED_PACKAGES[@]}, files=${#CHANGED[@]}, ran=$((TOTAL_RUN - SKIP_COUNT)), skipped=$SKIP_COUNT)"
