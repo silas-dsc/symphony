@@ -133,9 +133,42 @@ Symphony's `scripts/verify-changes.sh` lights up extra checks **automatically** 
 | Diff-aware unused-symbol delete | `knip --reporter json` filtered to changed files | not yet | requires knip | Orphan symbols THIS diff created. |
 | Accessibility (a11y) | `axe-core` loaded by Tester via `browser_evaluate` | yes (no install needed — loaded from CDN at test time) | — | Missing labels, ARIA misuse, contrast, focus-trap regressions. Serious/critical violations fail the scenario. |
 
-Adoption tickets, when filed, should follow this shape:
+### Adopting a missing tool — the supported path
+
+Symphony ships an installer at `{{ symphony.root }}/scripts/install-verify-tools.sh` that detects, installs, and scaffolds these tools in the workspace. Run modes:
+
+```bash
+# 1) Just see what's missing — no writes, safe to run anytime.
+bash {{ symphony.root }}/scripts/install-verify-tools.sh
+
+# 2) Install the npm-installable tools (dependency-cruiser, knip,
+#    @firebase/rules-unit-testing when firestore.rules is present).
+#    Updates package.json + lockfile but doesn't commit.
+bash {{ symphony.root }}/scripts/install-verify-tools.sh --install
+
+# 3) Scaffold starter config files (.dependency-cruiser.cjs, knip.json,
+#    firestore-tests/example.test.ts, .bundle-budget.json). Refuses to
+#    overwrite existing files.
+bash {{ symphony.root }}/scripts/install-verify-tools.sh --scaffold
+
+# 4) Both, plus print the suggested commit message.
+bash {{ symphony.root }}/scripts/install-verify-tools.sh --all
+
+# 5) Preview without writes.
+bash {{ symphony.root }}/scripts/install-verify-tools.sh --all --dry-run
+```
+
+`semgrep` is a Python tool and isn't auto-installed — the script prints the install command for macOS / Linux / Docker. Run the appropriate one yourself.
+
+After running `--install` or `--scaffold`:
+1. Review the diff (`git diff` + `git status`).
+2. Tune the scaffolded configs — the starters are minimal, not finished.
+3. Run `bash {{ symphony.root }}/scripts/verify-changes.sh` to confirm the new checks light up.
+4. Commit. The script prints a suggested message that lists what it actioned.
+
+Adoption tickets, when filed by the agent for tools the operator hasn't yet adopted, should follow this shape:
 - Title: "Adopt <tool> for agent VERIFY gate"
-- Description: one paragraph on what the tool catches, the install command, the config file to commit, a sample run output, a budget for the cleanup of any pre-existing violations the tool surfaces on first run.
+- Description: one paragraph on what the tool catches, the install command (`bash {{ symphony.root }}/scripts/install-verify-tools.sh --install` for npm-installable tools), the config file to commit, a sample run output, a budget for cleaning up any pre-existing violations the tool surfaces on first run.
 
 When adopting `dependency-cruiser`, `semgrep`, or `knip`, the first commit should include `// rules: <list of intentional exceptions>` for any pre-existing violations the team consciously accepts. Don't disable rules wholesale — annotate the exceptions so future violations stand out.
 

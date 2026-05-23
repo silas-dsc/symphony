@@ -51,6 +51,16 @@ VERIFY: pass (sha=abc1234, packages=2, files=8, ran=9, skipped=3)
 
 If `skipped` is non-zero on a PR that touches `packages/app/**`, the agent should note which tools are missing in `.claude/workpad.md` under `## Tooling gaps` and (optionally) file a Linear Backlog ticket to adopt them. Doing this once per missing tool, not once per ticket.
 
+### Adopting a missing tool
+
+For each `SKIP` line, the agent can run the detection script to confirm which tool is missing and print the install path:
+
+```bash
+bash {{ symphony.root }}/scripts/install-verify-tools.sh --check
+```
+
+Output is a list of `PRESENT:` / `MISSING:` lines plus a verdict count. To actually adopt — install npm packages, scaffold configs — the **operator** runs `--install --scaffold` (or `--all`). The agent does **not** run install mode itself: adoption is an operator decision that touches `package.json` and adds new gates the team has to live with. The agent surfaces the gap; the operator adopts.
+
 ### Per-check logs
 
 Each parallel check writes its full output to `/tmp/symphony-verify-<sha>/<check>.log`. The script prints the last 30 lines of each failing log inline so the agent doesn't need to grep, but the full logs persist for deeper investigation.
