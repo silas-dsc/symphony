@@ -53,7 +53,9 @@ Rules:
 - One task per commit.
 - **Every task ends with `→ verify: <observable check>`.** The check must be something the Developer or Tester can run and read: a specific test passing, `pnpm --filter <pkg> typecheck && pnpm --filter <pkg> lint` exit 0, a matrix row's Expected column matched in the browser, a named log line, `VERIFY: pass`. "Looks correct" / "code reviewer agrees" / "type-checks in my head" are not checks. If you cannot state a check for a task, the task is too coarse or too vague — split it, or rewrite it until you can. See `{{ symphony.root }}/WORKFLOW.md` → Goal-driven execution.
 - If you cannot resolve an Intent Brief ambiguity by reading the codebase, list it under Assumptions and tell the Tester which scenario covers it.
-- No speculative tasks. If the Intent Brief doesn't require it, don't plan it.
+- **Push back when warranted; stop when confused.** If the brief asks for more complexity than the problem needs, write the simpler alternative under Assumptions and proceed only if the AC or Intent Brief explicitly require the complex version. If you genuinely cannot interpret a piece of the ticket from `.claude/intent.md`, the refined description, and the codebase, write a workpad note naming the unclear thing and exit rather than guessing. See `{{ symphony.root }}/WORKFLOW.md` → Think before coding.
+- **No speculative tasks.** If the Intent Brief and AC don't require it, don't plan it. Same for abstractions, parameters, and configurability — defer until a second caller exists. See `{{ symphony.root }}/WORKFLOW.md` → Simplicity first.
+- **Surgical scope.** Plan tasks only on files the AC requires touching. Adjacent refactor or formatting tasks belong in a Backlog ticket, not this Plan. See `{{ symphony.root }}/WORKFLOW.md` → Surgical changes.
 - Every behavioural task in the implementation list pairs with at least one row in **Tests to add**, unless the entry justifies the skip per `{{ symphony.root }}/prompts/TDD.md`.
 
 ## Functional Test Matrix

@@ -349,6 +349,61 @@ If a step can't be paired with a verifiable check, the step isn't defined — sp
 
 ---
 
+## Think before coding
+
+Don't assume. Don't hide confusion. Surface tradeoffs.
+
+The most common LLM failure mode is to silently pick one interpretation of an ambiguous request and produce plausible-looking code from it — the user sees the output but not the silent decision behind it. Every sub-agent in this workflow combats that with explicit, auditable reasoning artefacts:
+
+- **State assumptions explicitly.** Every ambiguity you proceed under gets a written assumption. Intent's *Ambiguities* and Architect's *Assumptions* sections exist for this; the Tester verifies them. A silent guess is worse than a written assumption that turns out wrong — the assumption is auditable, the guess is invisible.
+- **Surface multiple interpretations.** When two reasonable readings of a request would lead to different code, list both before picking. Don't choose silently.
+- **Push back when warranted.** If the asked-for approach is more complex than the problem needs, or a simpler path exists, say so — in `.claude/workpad.md` Notes or in the Architect Plan's Assumptions — before writing the code. The Refiner can also tighten the AC instead of letting downstream phases inherit a misshapen brief.
+- **Stop when genuinely confused.** Naming what's unclear is faster than producing wrong code that has to be unwound. Use the Intent escalation path (`.claude/cannot-interpret.md`) or a workpad note and leave the ticket in `Dev in Progress`. Don't paper over confusion with plausible-looking work.
+
+The next phase inherits both written assumptions and silent guesses — but only the assumption can be tested against. Make the reasoning visible.
+
+---
+
+## Simplicity first
+
+Minimum code that solves the problem. Nothing speculative.
+
+The default LLM failure mode pulls toward overengineering — flexibility nobody asked for, configurability for a single caller, defensive validation for impossible states, abstractions for one-line helpers. Resist it:
+
+- **No features beyond what was asked.** Intent's Success signals and the refined AC define the surface area. Anything outside is scope creep.
+- **No abstractions for single-use code.** A helper with one caller is not a helper; inline it. Premature abstraction is dead weight future tickets have to maintain.
+- **No "flexibility" or "configurability" the ticket didn't request.** Hard-code what this ticket needs; add a parameter only when a second caller exists that needs a different value.
+- **No error handling for impossible scenarios.** Validate at system boundaries (user input, external API responses, untrusted reads) only. Internal callers governed by the type system don't need runtime null-checks.
+- **If 200 lines could be 50, rewrite it.** Length is not value. Shorter code is easier to read, review, and change.
+
+**The test:** would a senior engineer reviewing this diff say it's overcomplicated? If yes, simplify before pushing. Phase 4.5's Code Reviewer applies this bar; you should beat them to it in self-review.
+
+This principle is enforced commit-by-commit by the Architect's "no speculative tasks" rule and `prompts/CODE_QUALITY.md` → Simplicity first / DRY check.
+
+---
+
+## Surgical changes
+
+Touch only what you must. Clean up only your own mess.
+
+Diffs that wander beyond the request are harder to review, harder to revert, and hide the real change underneath cosmetic edits. When editing existing code:
+
+- **Don't "improve" adjacent code, comments, or formatting** outside the path of your change. A reviewer reading the diff should see the ticket's change and nothing else.
+- **Don't refactor things that aren't broken.** If an existing pattern works and isn't load-bearing for your change, leave it.
+- **Match the existing style** of the file you're editing, even if you'd write it differently in a new file. Style consistency *inside one file* beats consistency with the rest of the codebase.
+- **If you spot unrelated dead code or debt, mention it — don't delete it.** File a Linear Backlog ticket and record the link in `.claude/workpad.md`. This PR is not the place.
+
+When your changes create orphans:
+
+- **Remove imports, variables, and functions that your changes made unused.** Leaving them is a lint failure and a maintenance trap.
+- **Do not remove pre-existing dead code unless the ticket asks.** Pre-existing orphans are a separate ticket; removing them broadens the blast radius for no benefit and obscures the real change.
+
+**The test:** every changed line should trace back to a Plan task and the AC it serves. If a hunk in the diff doesn't, it's scope creep — revert it.
+
+The Self-review pass (`prompts/SELF_REVIEW.md`) and Phase 4.5 Code Reviewer both check this; the cheapest place to catch it is during the per-file walkthrough in `prompts/CODE_QUALITY.md`.
+
+---
+
 ## Phases
 
 ```

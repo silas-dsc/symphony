@@ -64,18 +64,35 @@ rg "function <similar-name>|const <similar-name>" packages/<pkg>/src
 - [ ] If the codebase already has a utility (date formatting, currency, validation, Firestore converters, role checks), use it — don't reinvent.
 - [ ] If two components diverged via copy-paste and you're touching one, consider whether to converge them. Only do so if it's directly in your path; otherwise file a backlog ticket.
 
-## Trim scope
+## Simplicity first
 
-- [ ] No speculative abstractions for features that don't exist yet.
-- [ ] No defensive validation for states that internal callers cannot produce. Validate at system boundaries (user input, external API responses) only.
-- [ ] No "while I'm here" refactors outside the ticket's path. Refactors that aren't load-bearing for this change bloat the PR and slow review.
+Minimum code that solves the problem. The senior-engineer test: would a reviewer say this diff is overcomplicated? If yes, simplify before committing. See `{{ symphony.root }}/WORKFLOW.md` → Simplicity first.
 
-## When you find unrelated tech debt
+- [ ] **No features beyond Intent / AC.** Scope creep doesn't slip in via "while I'm here".
+- [ ] **No abstractions for single-use code.** A helper with one caller is not a helper — inline it.
+- [ ] **No "flexibility" or "configurability" the ticket didn't ask for.** Hard-code values until a second caller demonstrates the need.
+- [ ] **No defensive validation for impossible states.** Validate at system boundaries (user input, external API responses, untrusted reads) only. Internal callers the type system already guarantees don't need runtime null-checks.
+- [ ] **No "while I'm here" refactors outside the ticket's path.** Refactors that aren't load-bearing for this change bloat the PR and slow review.
+- [ ] **If 200 lines could be 50, rewrite it.** Length is not value.
 
-If you spot real issues in code you're touching but they're outside the ticket scope:
+## Surgical changes
+
+Touch only what you must. Every changed line should trace back to a Plan task; if a hunk doesn't, it's scope creep — revert it. See `{{ symphony.root }}/WORKFLOW.md` → Surgical changes.
+
+- [ ] **Don't "improve" adjacent code, comments, or formatting** that isn't in the path of your change.
+- [ ] **Match the existing style** of the file you're editing — consistency *inside one file* beats consistency with the rest of the codebase.
+- [ ] **Don't refactor what isn't broken.** If an existing pattern works and isn't load-bearing for your change, leave it.
+- [ ] **Remove the orphans your edit created** (imports / vars / functions made unused by your change). Do **not** remove pre-existing dead code unless the ticket asks — that's a separate Backlog ticket.
+
+When you spot unrelated tech debt in code you're touching:
 
 1. Fix only what's directly in the path of your change.
-2. For larger debt, **file a Linear Backlog ticket** and link it from `.claude/workpad.md`. Do not expand scope into the current PR.
+2. For anything larger, **file a Linear Backlog ticket** and record it in `.claude/workpad.md`. Do not expand scope into the current PR:
+
+```
+Adjacent tech debt noticed (not addressed this PR):
+- <file>:<line> — <one-line description> → Linear: <BACKLOG-### or "filing not warranted">
+```
 
 ## Record in workpad
 
