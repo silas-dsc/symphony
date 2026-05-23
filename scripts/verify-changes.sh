@@ -142,8 +142,13 @@ if [ "$NON_PACKAGE_CHANGE" -eq 1 ]; then
 fi
 
 # ── 3. Forbidden-token scan on the diff ─────────────────────────────────────
-DIFF_OUT="$(git diff "$BASE_REF...HEAD" -- ':!*.md' ':!*.lock' ':!*.snap' 2>/dev/null || true)"
-DIFF_OUT+=$'\n'"$(git diff -- ':!*.md' ':!*.lock' ':!*.snap' 2>/dev/null || true)"
+# Excludes:
+#   - docs / lockfiles / snapshots — false positives, not source.
+#   - scripts/verify-changes.sh — this file is the scanner itself; it must
+#     contain the literal tokens it searches for. Audit it in code review.
+DIFF_PATHSPEC=(':!*.md' ':!*.lock' ':!*.snap' ':!scripts/verify-changes.sh')
+DIFF_OUT="$(git diff "$BASE_REF...HEAD" -- "${DIFF_PATHSPEC[@]}" 2>/dev/null || true)"
+DIFF_OUT+=$'\n'"$(git diff -- "${DIFF_PATHSPEC[@]}" 2>/dev/null || true)"
 
 scan_added_lines() {
   # Print only lines added in the diff (excluding +++ headers).
