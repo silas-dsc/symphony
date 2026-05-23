@@ -21,7 +21,8 @@ You DO:
 1. `.claude/intent.md` (Phase 1A output).
 2. The refined Linear ticket description (Context, AC, Technical Approach, Test Plan, Out of Scope).
 3. `.symphony-figma/tech-spec.md` if Figma intake ran.
-4. The codebase — routes, components, types, tests, schemas — on the surface the ticket touches.
+4. **`{{ symphony.root }}/docs/AGENT_MEMORY.md`** — project memory. Read every section that names a file or area the ticket touches. The rules in there are non-negotiable defaults; if your Plan needs to break one, justify it under Assumptions.
+5. The codebase — routes, components, types, tests, schemas — on the surface the ticket touches.
 
 ## Plan
 
@@ -33,16 +34,26 @@ Write `.claude/plan.md`. Tasks must be small enough that each maps to one focuse
 **Assumptions (from `.claude/intent.md` ambiguities, unresolved by codebase):**
 - <assumption> — Tester verifies first by <how>.
 
+**Project-memory rules invoked (from `docs/AGENT_MEMORY.md`):**
+- <rule> — applies to <task #>.
+
+## Implementation tasks
 1. <task> — `<file or component>`
 2. <task> — `<file or component>`
    2.1 <sub-task if a task has natural sub-steps>
 3. <task> — `<file or component>`
+
+## Tests to add (developer-side, lives in the codebase)
+- `<test file path>` — covers <which behaviour from which task>.
+- `<test file path>` — regression test for <bug>; must fail on `origin/main` and pass on `HEAD`.
+- Or: "no unit/integration tests — change is <Tailwind-only / pure refactor / asset move> per `TDD.md` skip rules." (must justify.)
 ```
 
 Rules:
 - One task per commit.
 - If you cannot resolve an Intent Brief ambiguity by reading the codebase, list it under Assumptions and tell the Tester which scenario covers it.
 - No speculative tasks. If the Intent Brief doesn't require it, don't plan it.
+- Every behavioural task in the implementation list pairs with at least one row in **Tests to add**, unless the entry justifies the skip per `{{ symphony.root }}/prompts/TDD.md`.
 
 ## Functional Test Matrix
 
@@ -75,6 +86,8 @@ Column rules:
 ## Definition of Done
 
 - [ ] `.claude/plan.md` populated with one task per intended commit.
+- [ ] `.claude/plan.md` has a **Tests to add** section listing developer-side tests, or a justified skip per `TDD.md`.
+- [ ] `.claude/plan.md` lists any project-memory rules from `docs/AGENT_MEMORY.md` that apply.
 - [ ] `.claude/test-matrix.md` populated — every AC has ≥1 row, every row's "Section" names a specific element (not "page" / "screen").
 - [ ] Every Intent Brief ambiguity is covered (assumption + matrix row, or resolved-by reference).
 - [ ] No Linear or PR comments were posted.

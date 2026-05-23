@@ -228,8 +228,11 @@ Past tickets failed when:
 - "Intent" was derived implicitly while drafting acceptance criteria — the AC drifted from what the requester actually wanted.
 - Screenshots showed the top of the page or the whole viewport, hiding the changed section.
 - Ticket comments stacked up workpads, phase artefacts, and Figma intake noise — reviewers couldn't find the deliverable.
+- The agent declared "lint and typecheck green" from memory after later commits had regressed it.
+- A bug fix went out with no developer-side test, so the same bug came back two sprints later under a different ticket.
+- The agent re-discovered a codebase convention every ticket because nothing remembered it across sessions.
 
-This workflow addresses each with a hard structural fix: separate sub-agents per role, an Intent gate before refinement, element-scoped screenshots from an independent Tester, and a single succinct Delivery comment as the only thing reviewers need to read.
+This workflow addresses each with a hard structural fix: separate sub-agents per role, an Intent gate before refinement, element-scoped screenshots from an independent Tester, a single succinct Delivery comment as the only thing reviewers need to read, a scripted **VERIFY** gate that runs before push, **TDD** discipline on every behavioural change, **structured-debug** protocol when tests fail, and a persistent **AGENT_MEMORY** file that every sub-agent reads before investigating.
 
 ## The only things that get posted publicly
 
@@ -262,12 +265,13 @@ Note: any `## Rework notes` section already present in the issue description was
 .claude/
   original-description.md     # raw ticket body before refinement
   intent.md                   # Intent Analyst output (Phase 1A)
-  plan.md                     # Architect Plan (Phase 2)
+  plan.md                     # Architect Plan + Tests-to-add (Phase 2)
   test-matrix.md              # Architect Functional Test Matrix (Phase 2)
-  workpad.md                  # Phase checkboxes + notes (parent agent maintains)
+  workpad.md                  # Phase checkboxes + notes + VERIFY pass lines
   qa-results.md               # Tester results + screenshot paths (Phase 4)
   tester-findings.md          # Tester → Developer rework brief, if any
   code-review.md              # Code Reviewer verdict + findings (Phase 4.5)
+  debug-<scenario>.md         # Structured-debug artefacts (created on demand)
   screenshots/                # Tester element-scoped captures
 ```
 
@@ -284,6 +288,8 @@ Note: any `## Rework notes` section already present in the issue description was
 | Missing `localhost.pem` / `localhost-key.pem` | Copy from `~/Websites/team-dsc/`. |
 | Missing `.symphony-ports` | Re-derive from the ticket number — see the `before_run` hook for the exact logic. |
 | `pnpm typecheck` or `pnpm lint` failing | Fix the underlying issue. Never `--no-verify`. Never disable a rule to make an error go away. |
+| `scripts/verify-changes.sh` reports `VERIFY: fail` | Read the failure reasons in the script's output. Fix each one. Re-run. Never edit the script to make a check pass; never push on a failing gate. |
+| A test that previously passed is now red and the cause isn't obvious | Apply `{{ symphony.root }}/prompts/DEBUG.md` — reproduce, isolate, hypothesise, change one thing, verify. Record the trail in `.claude/debug-<scenario>.md`. |
 | Stale lockfile causing install failures | `pnpm install` without `--frozen-lockfile`. |
 | Tests failing locally that you didn't touch | Investigate — often a flaky test or stale snapshot. Fix or document the flake; never silently skip. |
 | Permission denied on a script | `chmod +x <script>` and continue. |
@@ -305,20 +311,60 @@ Anything else: **fix it and continue.**
 
 ```
 Phase 0  State check        (quick gate, no sub-agent)
-Phase 1  Intent & Refine    Sub-agent A — prompts/INTENT.md            (Intent Analyst)
+Phase 1  Intent & Refine    Sub-agent A — prompts/INTENT.md            (Intent Analyst, reads docs/AGENT_MEMORY.md)
                             Sub-agent B — prompts/REFINE_TICKET.md     (Refiner)
                             Sub-agent C — prompts/FIGMA_INTAKE.md      ← if Figma URL present
-Phase 2  Architect          Sub-agent  — prompts/ARCHITECT.md          (Plan + Test Matrix)
-Phase 3  Develop            You (parent)  — prompts/CODE_QUALITY.md, prompts/PERFORMANCE.md, prompts/MOBILE_UX.md
+Phase 2  Architect          Sub-agent  — prompts/ARCHITECT.md          (Plan + Tests-to-add + Test Matrix, reads docs/AGENT_MEMORY.md)
+Phase 3  Develop            You (parent)  — prompts/CODE_QUALITY.md, prompts/TDD.md, prompts/PERFORMANCE.md, prompts/MOBILE_UX.md
+                            Skill on demand — prompts/DEBUG.md         (when stuck or Tester fails)
                             Sub-agents per screen if Figma intake produced .symphony-figma/screens/
-Phase 4   Test              Sub-agent  — prompts/TESTER.md             (independent verifier)
-                            If any scenario fails → re-dispatch Developer (max 3 round-trips)
+                            Pre-push gate — prompts/VERIFY.md          (scripts/verify-changes.sh must exit 0)
+                            Final manual gate — prompts/SELF_REVIEW.md (developer-side diff re-read)
+Phase 4   Test              Sub-agent  — prompts/TESTER.md             (independent verifier, also re-checks VERIFY)
+                            If any scenario fails → re-dispatch Developer (max 3 round-trips, use DEBUG.md)
 Phase 4.5 Code review       Sub-agent  — prompts/CODE_REVIEW.md        (independent senior-engineer review)
                             If Blocking findings → re-dispatch Developer + targeted Tester re-run (max 2 round-trips)
 Phase 5   Deliver           You (parent)  — prompts/DELIVERY_COMMENT.md (single succinct comment + flip)
+                            Re-run VERIFY before flipping to In Review (Phase 5 may have edited the README or addressed PR comments).
 ```
 
-Reference docs (read on demand, not eagerly):
+### Skill reference
+
+These are the reusable skills agents apply during the phases above. Sub-agents and the parent agent load them inline rather than eagerly reading them at session start.
+
+| Skill | When | Source |
+|---|---|---|
+| Intent gating | Phase 1A | `prompts/INTENT.md` |
+| Refinement | Phase 1B | `prompts/REFINE_TICKET.md` |
+| Architect (plan + tests-to-add + matrix) | Phase 2 | `prompts/ARCHITECT.md` |
+| Code quality (per-file walkthrough + scoped lint/typecheck) | Phase 3 — every file | `prompts/CODE_QUALITY.md` |
+| Test-driven development | Phase 3 — every behavioural change | `prompts/TDD.md` |
+| Performance | Phase 3 — hot-path files | `prompts/PERFORMANCE.md` |
+| Mobile UX | Phase 3 — every page modified | `prompts/MOBILE_UX.md` |
+| Structured debugging | Phase 3 — on failure or stuck | `prompts/DEBUG.md` |
+| Verify (pre-push gate) | Phase 3 → before push; Phase 5 → before flip | `prompts/VERIFY.md` + `scripts/verify-changes.sh` |
+| Self-review (manual diff re-read) | Phase 3 — before push | `prompts/SELF_REVIEW.md` |
+| Independent E2E verification | Phase 4 | `prompts/TESTER.md` |
+| Independent code review | Phase 4.5 | `prompts/CODE_REVIEW.md` |
+| Delivery comment | Phase 5 | `prompts/DELIVERY_COMMENT.md` |
+
+### Project memory
+
+`{{ symphony.root }}/docs/AGENT_MEMORY.md` is the persistent, cross-ticket knowledge base. It records:
+- Domain vocabulary (cohort, module, activity, submission, invite).
+- Roles and their route prefixes.
+- Architectural decisions that aren't obvious from the source (Firestore source-of-truth, role checks in loaders, transactions for read-then-write).
+- File and naming conventions.
+- Common pitfalls (Firestore unbounded queries, Storyblok rate limits, Auth hydration timing).
+- Things that look like bugs but aren't.
+
+Every sub-agent that interprets the ticket or modifies code reads the sections relevant to its scope. The Code Reviewer treats it as the standard the diff is measured against — a rule contradicted with no Assumption-justification in the Plan is a Blocking finding.
+
+The file is maintained by the meta-improve pass: when a retrospective lesson's root cause is "agent didn't know about <rule>", the meta-pass proposes a one-line addition. Operators can also edit directly.
+
+### Reference docs (read on demand, not eagerly)
+
+- `{{ symphony.root }}/docs/AGENT_MEMORY.md` — project memory (read by Intent, Architect, Developer, Code Reviewer)
 - `{{ symphony.root }}/docs/TEAM_DSC_LOGIN.md` — route → role map, test credentials
 - `{{ symphony.root }}/docs/STORYBLOK.md` — Storyblok Management API
 - `{{ symphony.root }}/docs/LINEAR_UPLOAD.md` — attaching files to Linear comments
@@ -405,12 +451,12 @@ Set up the workpad as a local file `.claude/workpad.md` (do **not** post this to
 
 ## Phase status
 - [ ] Phase 0: State checked
-- [ ] Phase 1: Intent + refine done
-- [ ] Phase 2: Architect plan + test matrix ready
-- [ ] Phase 3: Developer implementation complete (lint + typecheck green)
+- [ ] Phase 1: Intent + refine done (AGENT_MEMORY consulted)
+- [ ] Phase 2: Architect plan + tests-to-add + test matrix ready
+- [ ] Phase 3: Developer implementation complete (VERIFY pass + self-review done)
 - [ ] Phase 4: Tester verified (all matrix rows pass)
 - [ ] Phase 4.5: Code review approved (no blocking findings)
-- [ ] Phase 5: Delivered (PR + Delivery comment + In Review)
+- [ ] Phase 5: Delivered (PR + Delivery comment + In Review, final VERIFY pass on HEAD)
 
 ## Notes
 - <progress note with timestamp>
@@ -439,12 +485,16 @@ git checkout -b feature/{{ issue.identifier | downcase }}-<short-slug>
 
 ## Phase 3 — Develop
 
-You (the parent) implement. The Architect's Plan and Test Matrix are your specification — implement what makes every matrix row pass.
+You (the parent) implement. The Architect's Plan and Test Matrix are your specification — implement what makes every matrix row pass. The Plan's **Tests to add** section is part of the spec — every promised test ships in this branch.
 
 **Load and apply inline:**
-- `{{ symphony.root }}/prompts/CODE_QUALITY.md` — gates and clean-code checks on every file you touch.
+- `{{ symphony.root }}/prompts/CODE_QUALITY.md` — gates and clean-code checks on every file you touch, with a mandatory per-file walkthrough.
+- `{{ symphony.root }}/prompts/TDD.md` — write failing tests first for bug fixes; add unit/integration tests alongside new logic.
 - `{{ symphony.root }}/prompts/PERFORMANCE.md` — on every hot-path file you touch.
 - `{{ symphony.root }}/prompts/MOBILE_UX.md` — UX checks on every page you modify; do not capture deliverable screenshots here (Tester does that).
+
+**On demand:**
+- `{{ symphony.root }}/prompts/DEBUG.md` — when a test fails twice in a row, when typecheck/lint errors don't immediately yield, when the dev server behaviour disagrees with your mental model. Reproduce → isolate → hypothesise → minimum change → verify. No guessing.
 
 ### Multi-screen tickets (Figma intake produced `.symphony-figma/screens/`)
 
@@ -466,17 +516,31 @@ Work the Plan task by task, ticking workpad checkboxes as you go.
 - `pnpm --filter functional-tests ...` — functional tests
 
 ### Commit discipline
-- Before every commit: `pnpm typecheck && pnpm lint`. Fix all errors. Never `--no-verify`.
+- Before every commit: scoped `pnpm --filter <touched-pkg> typecheck && pnpm --filter <touched-pkg> lint`. Fix all errors. Never `--no-verify`.
 - Commit messages follow the existing style in `git log`. Small, focused commits.
 - Never push to `main` directly.
+
+### Pre-push gate (mandatory — no exceptions)
+
+Before `git push` for the first time on the feature branch — and again before every subsequent push (rework commits, PR-feedback fixes, README updates) — both gates must run clean on the **current** HEAD:
+
+1. **Automated:** `bash {{ symphony.root }}/scripts/verify-changes.sh`. See `prompts/VERIFY.md` for what it checks. It must print `VERIFY: pass`. Paste the exact line into `.claude/workpad.md` under the relevant commit SHA.
+2. **Manual:** apply `prompts/SELF_REVIEW.md` — read your own diff with the five checklists in mind.
+
+If the script fails, fix the underlying issue and re-run. Do not push on a failing gate. Do not edit the script.
+
+The Tester (Phase 4) re-checks for a fresh `VERIFY pass on <HEAD_SHA>` note in `.claude/workpad.md` and will refuse to start the matrix without one. The Code Reviewer (Phase 4.5) treats a stale or missing VERIFY note as a Blocking finding.
 
 ### Tech-debt-on-touch
 Every file you modify gets CODE_QUALITY.md applied. If you find unrelated debt in code you're touching, fix only what's directly in the path of your change — file a Linear Backlog ticket for the rest.
 
 ### Definition of Done — Phase 3
 - [ ] Every Plan task ticked in `.claude/workpad.md`.
-- [ ] `pnpm typecheck && pnpm lint` green on the latest commit.
-- [ ] No commented-out code, `TODO`s, `console.log`s, or `as any` casts in the diff.
+- [ ] Every entry in the Plan's **Tests to add** section is present in the diff, or has a `TDD skip — <file>: <justification>` note in `.claude/workpad.md`.
+- [ ] Scoped `pnpm --filter <pkg> typecheck && pnpm --filter <pkg> lint` green for every touched package.
+- [ ] `bash {{ symphony.root }}/scripts/verify-changes.sh` exits `VERIFY: pass` on the current HEAD; the literal output line is pasted into `.claude/workpad.md`.
+- [ ] Self-review (`prompts/SELF_REVIEW.md`) completed; workpad has a `Self-review on <SHA>` entry.
+- [ ] No commented-out code, `TODO`s, `console.log`s, `debugger`, or `as any` casts in the diff (the script enforces this; the developer's diff is clean even before running it).
 - [ ] PR opened with the label `symphony`. **Initial PR body is a one-line placeholder** (`Body will be filled by Phase 5 — see [Linear ticket]({{ issue.url }}).`). Phase 5 will overwrite it with the Delivery body — do not pad the PR body with AC, plan, or rationale; that lives in `.claude/`.
 
 ---
@@ -494,7 +558,7 @@ Dispatch the Tester sub-agent with `{{ symphony.root }}/prompts/TESTER.md`. The 
 ### When the Tester returns
 
 - **All pass** → tick Phase 4 in `.claude/workpad.md` → advance to Phase 4.5.
-- **Any fail** → `.claude/tester-findings.md` enumerates failures. Re-enter Phase 3 with that file as the brief. Fix the failures, re-run lint/typecheck, push to the same branch. Re-dispatch the Tester.
+- **Any fail** → `.claude/tester-findings.md` enumerates failures. Re-enter Phase 3 with that file as the brief. **From the second attempt on a given scenario onwards, apply `{{ symphony.root }}/prompts/DEBUG.md`** — reproduce, hypothesise, change one thing, verify; record the trail in `.claude/debug-<scenario>.md`. Fix the failures, re-run the pre-push gate (`scripts/verify-changes.sh`), push to the same branch. Re-dispatch the Tester.
 - **Three round-trips on the same scenario** → stop. The Tester will have written "needs human triage" into `.claude/tester-findings.md`. Leave the ticket in `Dev in Progress`. Do not flip to In Review.
 
 ### Definition of Done — Phase 4
@@ -540,18 +604,21 @@ Triggered only when Phase 4.5 reports approve.
 1. **PR feedback sweep** — any human comments since you opened the PR:
    - `gh pr view --comments`
    - `gh api repos/team-dsc/team-dsc/pulls/<pr>/comments` (inline review comments)
-   - Address every actionable comment. After fixes, re-run `pnpm typecheck && pnpm lint`, push, and re-dispatch the Tester for the affected scenarios.
+   - Address every actionable comment. After fixes, re-run `bash {{ symphony.root }}/scripts/verify-changes.sh`, push, and re-dispatch the Tester for the affected scenarios.
 
 2. **README sweep** — update `README.md` to reflect any new behaviour/config/concepts; apply `{{ symphony.root }}/UNSLOP.md` to anything you edit.
 
-3. **Post the Delivery body** per `{{ symphony.root }}/prompts/DELIVERY_COMMENT.md`. One body, two places: a Linear comment and the PR body, byte-for-byte identical. One-sentence summary, three callouts, one screenshot, three links (PR / Preview / Linear). Nothing else.
+3. **Re-run VERIFY on the final HEAD.** Any commit made after the original Phase 3 gate (PR feedback, README sweep) invalidates the prior `VERIFY pass` note. Run `bash {{ symphony.root }}/scripts/verify-changes.sh` again; paste the new `VERIFY: pass` line into `.claude/workpad.md`. If it fails, fix and repeat — do not proceed to step 4 without a fresh pass.
 
-4. **Flip the Linear issue to `In Review`.**
+4. **Post the Delivery body** per `{{ symphony.root }}/prompts/DELIVERY_COMMENT.md`. One body, two places: a Linear comment and the PR body, byte-for-byte identical. One-sentence summary, three callouts, one screenshot, three links (PR / Preview / Linear). Nothing else.
+
+5. **Flip the Linear issue to `In Review`.**
 
 ### Definition of Done — Phase 5
 - [ ] Exactly one `## ✅ Ready for review` comment on Linear; body matches the minimal template.
 - [ ] PR body overwritten with the same body byte-for-byte.
 - [ ] PR / Preview / Linear URLs present.
+- [ ] Fresh `VERIFY pass on <final HEAD SHA>` line in `.claude/workpad.md` (re-run after any PR-feedback or README sweep commit).
 - [ ] Linear issue state = `In Review`.
 - [ ] No other Linear comments or PR comments posted by this phase.
 
@@ -563,9 +630,9 @@ If a prior PR was rejected and the issue is back in `Dev in Progress`:
 
 1. Read all Linear issue comments since the prior `## ✅ Ready for review`. The reviewer's complaint is the brief.
 2. Close the existing PR.
-3. Keep `.claude/` — it has the prior plan, matrix, and notes. Append a `## Rework brief` section to `.claude/workpad.md` quoting the reviewer's complaint and what changes.
+3. Keep `.claude/` — it has the prior plan, matrix, notes, and any `debug-<scenario>.md` artefacts. Append a `## Rework brief` section to `.claude/workpad.md` quoting the reviewer's complaint and what changes. Truncate prior `VERIFY pass` lines from the workpad notes so they don't mislead Phase 4 — they applied to the rejected diff.
 4. Keep `.claude/original-description.md` and `.claude/intent.md` — do not re-create.
-5. Re-dispatch the Architect to overwrite `.claude/plan.md` and `.claude/test-matrix.md` in light of the rework brief.
+5. Re-dispatch the Architect to overwrite `.claude/plan.md` and `.claude/test-matrix.md` in light of the rework brief. The new Plan's **Tests to add** section must address the reviewer's complaint (a test that would have caught what they spotted).
 6. Create a fresh branch from `origin/main` and re-enter Phase 3.
 
 ---
@@ -589,7 +656,11 @@ Do not flip to `In Review` for blockers — `In Review` means a reviewer can rev
 
 - Never push to `main` directly.
 - Always use pnpm, never npm or yarn.
-- Run `pnpm typecheck && pnpm lint` before every commit. Never `--no-verify`.
+- Run scoped `pnpm --filter <pkg> typecheck && pnpm --filter <pkg> lint` before every commit. Never `--no-verify`.
+- Run `bash {{ symphony.root }}/scripts/verify-changes.sh` before every `git push` and again before flipping to `In Review`. The literal `VERIFY: pass` line goes into `.claude/workpad.md`.
+- Every behavioural change has a developer-side test in the diff (or a justified `TDD skip` note). The Tester's E2E matrix does not substitute.
+- After the second consecutive failure on the same scenario, invoke `prompts/DEBUG.md` — no more guessing.
+- Read `docs/AGENT_MEMORY.md` before investigating the codebase. The rules there are the bar.
 - **Public surfaces are limited to two: the Phase 5 Linear comment, and the PR body. They share one body.** No agent posts intermediate comments to Linear or to the PR. All inter-agent artefacts live in `.claude/` (see the layout above).
 - The Refiner still updates the Linear issue **description** with Context / AC / Technical Approach / Test Plan / Out of Scope — the description is the spec, not a comment.
 - One `## ✅ Ready for review` comment per ticket — only posted once when Phase 5 runs to completion.

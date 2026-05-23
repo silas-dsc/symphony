@@ -29,6 +29,24 @@ mkdir -p .claude/screenshots
 
 Confirm the dev server is up. If it isn't, follow the recovery steps in `WORKFLOW.md` → "What is and is not a blocker". Restart it yourself. Do not return "blocked: server down" — that's a fail, not a blocker.
 
+### Confirm the automated gate ran clean
+
+Before touching the browser, confirm the Developer passed the automated verification gate on the current `HEAD`:
+
+```bash
+HEAD_SHA=$(git rev-parse --short HEAD)
+grep "VERIFY: pass" .claude/workpad.md | tail -1
+grep -E "VERIFY pass on $HEAD_SHA" .claude/workpad.md || echo "[tester] WARN: no VERIFY pass for $HEAD_SHA"
+```
+
+If the workpad has no fresh `VERIFY pass on <HEAD_SHA>` note, run it yourself:
+
+```bash
+bash {{ symphony.root }}/scripts/verify-changes.sh
+```
+
+If it fails, write to `.claude/tester-findings.md` immediately as a top-priority fail (the Developer pushed broken code) and skip the matrix. The Developer must fix and re-push before you spend the rest of your budget on E2E.
+
 ## Per-scenario procedure
 
 For each row in `.claude/test-matrix.md`:

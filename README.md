@@ -369,6 +369,29 @@ src/
 
 ---
 
+## Agent skills
+
+The prompt template in `WORKFLOW.md` instructs the parent agent to coordinate four specialised sub-agents (Intent → Architect → Developer → Tester → Code Reviewer). Each sub-agent loads role-specific skills from `prompts/`:
+
+| Skill | Purpose | File |
+|---|---|---|
+| Intent gate | Disambiguate the ticket before refinement. | `prompts/INTENT.md` |
+| Ticket refinement | Produce Context / AC / Technical Approach / Test Plan / Out of Scope. | `prompts/REFINE_TICKET.md` |
+| Architect plan | One commit per task, plus a **Tests to add** section so developer-side tests aren't an afterthought. | `prompts/ARCHITECT.md` |
+| Code quality | Per-file walkthrough + scoped `pnpm --filter` lint/typecheck. | `prompts/CODE_QUALITY.md` |
+| TDD | Failing test first for every bug fix; tests alongside new logic. | `prompts/TDD.md` |
+| Performance, Mobile UX | Inline checks on hot-path code and frontend pages. | `prompts/PERFORMANCE.md`, `prompts/MOBILE_UX.md` |
+| Structured debugging | Reproduce → isolate → hypothesise → minimum change → verify. Used when a test fails twice or behaviour disagrees with mental model. | `prompts/DEBUG.md` |
+| Verify (pre-push gate) | One scripted command (`scripts/verify-changes.sh`) runs scoped lint/typecheck, package unit tests, forbidden-token scan, secret scan, and untracked-leftover scan. The agent must paste `VERIFY: pass` into its workpad before pushing; missing/stale VERIFY notes are Blocking findings during code review. | `prompts/VERIFY.md`, `scripts/verify-changes.sh` |
+| Self-review | Developer-side diff re-read against the five checklists immediately before push. | `prompts/SELF_REVIEW.md` |
+| Tester | Independent E2E verification against the Architect's Functional Test Matrix; element-scoped screenshots only; also re-checks VERIFY. | `prompts/TESTER.md` |
+| Code review | Independent senior-engineer review of the diff, with explicit gates on test coverage, VERIFY freshness, and `docs/AGENT_MEMORY.md` rule compliance. | `prompts/CODE_REVIEW.md` |
+| Delivery | One Linear comment + matching PR body. | `prompts/DELIVERY_COMMENT.md` |
+
+### Project memory — `docs/AGENT_MEMORY.md`
+
+A persistent, gitable knowledge base every relevant sub-agent reads before investigating the codebase. Records domain vocabulary, roles, architectural decisions, file and naming conventions, common pitfalls, and "things that look like bugs but aren't". The meta-improve pass can append to this file when a retrospective's root cause is "agent didn't know about <rule>" — so the next ticket starts with the rule already known.
+
 ## Continuous self-improvement
 
 Symphony has a two-stage feedback loop that lets the workflow learn from its own misses without unsupervised prompt drift.

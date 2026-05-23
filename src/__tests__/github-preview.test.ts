@@ -64,10 +64,22 @@ describe("extractPreviewDeployment", () => {
 });
 
 describe("GitHubPreviewWarmer", () => {
+  // The warmer's reconcile() gates on local-hour ∈ [7, 19). Tests that want to
+  // exercise warming behaviour (not the gate itself) must clock from a
+  // timestamp whose local hour is inside that window. Epoch 0 doesn't work —
+  // its local hour depends on TZ, so the same test passes in Sydney and fails
+  // in a UTC CI container. Noon-today is in-window everywhere.
+  function noonTodayMs(): number {
+    const d = new Date();
+    d.setHours(12, 0, 0, 0);
+    return d.getTime();
+  }
+
   it("warms immediately, re-warms on interval, and stops after PR close", async () => {
     let openPRs: number[] = [933];
     const pinged: Array<{ atMs: number; url: string }> = [];
-    let nowMs = 0;
+    const baseMs = noonTodayMs();
+    let nowMs = baseMs;
 
     const githubClient: GitHubClient = {
       listOpenPullRequests: async () => openPRs,
@@ -90,26 +102,26 @@ describe("GitHubPreviewWarmer", () => {
     // First cycle: PR discovered, force-pinged immediately.
     await warmer.reconcile();
     expect(pinged).toEqual([
-      { atMs: 0, url: "https://team-dsc-production-preview-web-pr-933.onrender.com/health-check" },
+      { atMs: baseMs, url: "https://team-dsc-production-preview-web-pr-933.onrender.com/health-check" },
     ]);
     expect(warmer.getTrackedPreviewCount()).toBe(1);
 
     // Interval not yet elapsed — no ping.
-    nowMs = 60_000;
+    nowMs = baseMs + 60_000;
     await warmer.reconcile();
     expect(pinged).toHaveLength(1);
 
     // Interval elapsed — ping.
-    nowMs = 840_000;
+    nowMs = baseMs + 840_000;
     await warmer.reconcile();
     expect(pinged).toEqual([
-      { atMs: 0, url: "https://team-dsc-production-preview-web-pr-933.onrender.com/health-check" },
-      { atMs: 840_000, url: "https://team-dsc-production-preview-web-pr-933.onrender.com/health-check" },
+      { atMs: baseMs, url: "https://team-dsc-production-preview-web-pr-933.onrender.com/health-check" },
+      { atMs: baseMs + 840_000, url: "https://team-dsc-production-preview-web-pr-933.onrender.com/health-check" },
     ]);
 
     // PR closed: remove it from the open list.
     openPRs = [];
-    nowMs = 1_680_000;
+    nowMs = baseMs + 1_680_000;
     await warmer.reconcile();
     expect(pinged).toHaveLength(2);
     expect(warmer.getTrackedPreviewCount()).toBe(0);
@@ -130,7 +142,7 @@ describe("GitHubPreviewWarmer", () => {
       logger: createLogger(),
       githubClient,
       pinger,
-      now: () => 0,
+      now: () => noonTodayMs(),
     });
 
     await warmer.reconcile();
