@@ -307,6 +307,48 @@ Anything else: **fix it and continue.**
 
 ---
 
+## Goal-driven execution
+
+Every phase, sub-agent, and task in this workflow runs **goal-first**: define a success criterion the agent can check, then loop until that criterion verifies. An imperative without a verification check isn't a task — reshape it before executing.
+
+Transform imperative phrasing into verifiable goals:
+
+| Instead of | Transform to |
+|---|---|
+| "Add validation" | "Write tests for invalid inputs, then make them pass" |
+| "Fix the bug" | "Write a test that reproduces it, then make it pass" |
+| "Refactor X" | "Ensure the test suite passes before and after; behaviour unchanged" |
+| "Make it work on mobile" | "At 375px the changed section matches Expected, no horizontal scroll, no console error" |
+
+For multi-step work, state the plan with the check inline:
+
+```
+1. <step> → verify: <observable check>
+2. <step> → verify: <observable check>
+3. <step> → verify: <observable check>
+```
+
+The check must be **observable from outside the system or from the test runner** — not "it looks right". Examples of acceptable checks:
+
+- A test that fails on `origin/main` and passes on `HEAD`.
+- `pnpm --filter <pkg> typecheck && pnpm --filter <pkg> lint` exit 0.
+- `bash scripts/verify-changes.sh` prints `VERIFY: pass`.
+- A matrix row's Expected column matches the browser snapshot.
+- A specific log line appears (or stops appearing) under a named reproduction.
+
+This pattern is the spine of the rest of the workflow — each phase's artefact carries the criterion forward:
+
+- **Intent's Success signals** are the ticket-level criterion (`prompts/INTENT.md`).
+- **The Architect's Plan** has a `→ verify:` clause on every implementation task (`prompts/ARCHITECT.md`).
+- **The Test Matrix's Expected column** is the per-AC behavioural criterion.
+- **TDD** writes the failing test first so the criterion exists before the code does (`prompts/TDD.md`).
+- **DEBUG** turns a failure into a falsifiable hypothesis with a named check before any code changes (`prompts/DEBUG.md`).
+- **VERIFY** is the mechanical pre-push gate; the **Tester** is the behavioural gate; the **Code Reviewer** is the senior-engineer gate.
+
+If a step can't be paired with a verifiable check, the step isn't defined — split it or rewrite it before doing the work. Strong, observable success criteria are what let each sub-agent run and loop independently; a vague brief means the next phase inherits the ambiguity.
+
+---
+
 ## Phases
 
 ```

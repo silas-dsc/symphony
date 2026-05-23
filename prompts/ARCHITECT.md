@@ -38,10 +38,10 @@ Write `.claude/plan.md`. Tasks must be small enough that each maps to one focuse
 - <rule> — applies to <task #>.
 
 ## Implementation tasks
-1. <task> — `<file or component>`
-2. <task> — `<file or component>`
-   2.1 <sub-task if a task has natural sub-steps>
-3. <task> — `<file or component>`
+1. <task> — `<file or component>` → verify: <observable check>
+2. <task> — `<file or component>` → verify: <observable check>
+   2.1 <sub-task if a task has natural sub-steps> → verify: <observable check>
+3. <task> — `<file or component>` → verify: <observable check>
 
 ## Tests to add (developer-side, lives in the codebase)
 - `<test file path>` — covers <which behaviour from which task>.
@@ -51,6 +51,7 @@ Write `.claude/plan.md`. Tasks must be small enough that each maps to one focuse
 
 Rules:
 - One task per commit.
+- **Every task ends with `→ verify: <observable check>`.** The check must be something the Developer or Tester can run and read: a specific test passing, `pnpm --filter <pkg> typecheck && pnpm --filter <pkg> lint` exit 0, a matrix row's Expected column matched in the browser, a named log line, `VERIFY: pass`. "Looks correct" / "code reviewer agrees" / "type-checks in my head" are not checks. If you cannot state a check for a task, the task is too coarse or too vague — split it, or rewrite it until you can. See `{{ symphony.root }}/WORKFLOW.md` → Goal-driven execution.
 - If you cannot resolve an Intent Brief ambiguity by reading the codebase, list it under Assumptions and tell the Tester which scenario covers it.
 - No speculative tasks. If the Intent Brief doesn't require it, don't plan it.
 - Every behavioural task in the implementation list pairs with at least one row in **Tests to add**, unless the entry justifies the skip per `{{ symphony.root }}/prompts/TDD.md`.
@@ -86,6 +87,7 @@ Column rules:
 ## Definition of Done
 
 - [ ] `.claude/plan.md` populated with one task per intended commit.
+- [ ] Every implementation task has a `→ verify: <observable check>` clause.
 - [ ] `.claude/plan.md` has a **Tests to add** section listing developer-side tests, or a justified skip per `TDD.md`.
 - [ ] `.claude/plan.md` lists any project-memory rules from `docs/AGENT_MEMORY.md` that apply.
 - [ ] `.claude/test-matrix.md` populated — every AC has ≥1 row, every row's "Section" names a specific element (not "page" / "screen").
