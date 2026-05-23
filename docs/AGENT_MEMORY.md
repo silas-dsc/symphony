@@ -117,6 +117,40 @@ Don't invent synonyms. If the ticket says "students", confirm whether it means "
 - **`.symphony-ports` survives across runs** — intentional. Restarting Symphony reuses the same ports for the same ticket.
 - **Slack webhook in `.env` triggers double-posts in dev** — known. Set `NOTIFICATIONS_DISABLED=1` locally when developing notification code.
 
+## Codebase-health tooling — adoption status
+
+Symphony's `scripts/verify-changes.sh` lights up extra checks **automatically** when the corresponding tool is present in this workspace. Each entry below shows the current adoption state. When `VERIFY` reports `skipped` for any of these, the agent should flag it in `.claude/workpad.md` under `## Tooling gaps` and (once per missing tool) file a Linear Backlog ticket to wire it up. Don't file the same gap ticket twice.
+
+| Check | Tool | Adopted? | Config file | What it catches |
+|---|---|---|---|---|
+| Dependency audit | `pnpm audit --prod --audit-level high` | yes (built into pnpm) | — | Known-vulnerable transitive npm deps. |
+| SAST | `semgrep --config auto` | not yet | — | XSS via `dangerouslySetInnerHTML`, eval, NoSQL/SQL injection, prototype pollution. Adopt via `pnpm add -D -W semgrep` + ensure `semgrep` is on PATH in workspace setup. |
+| Architectural boundaries | `dependency-cruiser` | not yet | `.dependency-cruiser.cjs` | "packages/app shouldn't import packages/functions/src internals" — declared as forbidden rules. Adopt via `pnpm add -D -W dependency-cruiser` + commit a config. |
+| Unused exports / files | `knip` | not yet | `knip.json` or `knip.config.ts` | Files and exports nothing references. Catches orphans the diff creates. |
+| Firestore rules tests | `@firebase/rules-unit-testing` + a `firestore:test` script | not yet | `firestore-tests/` directory | Rules regressions: a learner reading another learner's submissions, an admin writing super-admin-only fields. High-value because rule bugs are silent until exploited. |
+| Bundle-size budget | Custom JSON budget file | not yet | `.bundle-budget.json` (map of `built-file-path → byte-limit`) | Accidental 200kb library imports that bloat a route chunk. Requires a build artefact already on disk; designed for CI rather than agent's pre-push gate. |
+| Test changed-only | `vitest --changed` or `jest --changedSince` | partial | — | Skipped where neither runner is in the package's deps. team-dsc uses Jest; the script auto-uses `--changedSince`. |
+| Diff-aware unused-symbol delete | `knip --reporter json` filtered to changed files | not yet | requires knip | Orphan symbols THIS diff created. |
+| Accessibility (a11y) | `axe-core` loaded by Tester via `browser_evaluate` | yes (no install needed — loaded from CDN at test time) | — | Missing labels, ARIA misuse, contrast, focus-trap regressions. Serious/critical violations fail the scenario. |
+
+Adoption tickets, when filed, should follow this shape:
+- Title: "Adopt <tool> for agent VERIFY gate"
+- Description: one paragraph on what the tool catches, the install command, the config file to commit, a sample run output, a budget for the cleanup of any pre-existing violations the tool surfaces on first run.
+
+When adopting `dependency-cruiser`, `semgrep`, or `knip`, the first commit should include `// rules: <list of intentional exceptions>` for any pre-existing violations the team consciously accepts. Don't disable rules wholesale — annotate the exceptions so future violations stand out.
+
+## Periodic codebase-health audit
+
+For monthly or quarterly full-repo audits (not per-ticket), the operator can run heavy tools that would be too noisy in `VERIFY`:
+
+```bash
+pnpm exec knip --reporter compact    # unused files, exports, types, deps
+pnpm exec depcheck                    # unused npm deps (subset of knip but faster)
+pnpm exec jscpd packages/             # duplicate-code finder
+```
+
+Triage the output and file Linear Backlog tickets for the worth-fixing entries. Don't push wholesale cleanup PRs — they're hard to review. Slice into per-package or per-area tickets.
+
 ## When this file is missing the thing you need
 
 Don't assume the absence of a rule means "no rule". Read the closest existing pattern in the codebase. If you make a judgement call that a future ticket would benefit from, capture it as a retrospective `proposed_workflow_change` so the meta-improve pass can add it here.

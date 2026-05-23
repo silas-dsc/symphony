@@ -70,6 +70,17 @@ rg "function <similar-name>|const <similar-name>" packages/<pkg>/src
 - [ ] No defensive validation for states that internal callers cannot produce. Validate at system boundaries (user input, external API responses) only.
 - [ ] No "while I'm here" refactors outside the ticket's path. Refactors that aren't load-bearing for this change bloat the PR and slow review.
 
+## Shrink-on-touch
+
+After making your changes, run the shrink checks from `{{ symphony.root }}/prompts/SHRINK.md`:
+
+1. Did your change orphan a function, component, or constant? Delete it.
+2. Did your change make a dependency unused? Remove it from `package.json`.
+3. Did you write a 3+ line block that duplicates an existing helper? Extract or justify in workpad.
+4. Did your change reduce a function to a single caller? Consider inlining.
+
+These are mandatory on every commit that touches code. The detailed procedure is in `SHRINK.md`.
+
 ## When you find unrelated tech debt
 
 If you spot real issues in code you're touching but they're outside the ticket scope:

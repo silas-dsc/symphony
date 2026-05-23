@@ -338,6 +338,7 @@ These are the reusable skills agents apply during the phases above. Sub-agents a
 | Refinement | Phase 1B | `prompts/REFINE_TICKET.md` |
 | Architect (plan + tests-to-add + matrix) | Phase 2 | `prompts/ARCHITECT.md` |
 | Code quality (per-file walkthrough + scoped lint/typecheck) | Phase 3 — every file | `prompts/CODE_QUALITY.md` |
+| Codebase shrink (orphan/dep/dup checks per touch) | Phase 3 — every commit | `prompts/SHRINK.md` |
 | Test-driven development | Phase 3 — every behavioural change | `prompts/TDD.md` |
 | Performance | Phase 3 — hot-path files | `prompts/PERFORMANCE.md` |
 | Mobile UX | Phase 3 — every page modified | `prompts/MOBILE_UX.md` |
@@ -453,8 +454,8 @@ Set up the workpad as a local file `.claude/workpad.md` (do **not** post this to
 - [ ] Phase 0: State checked
 - [ ] Phase 1: Intent + refine done (AGENT_MEMORY consulted)
 - [ ] Phase 2: Architect plan + tests-to-add + test matrix ready
-- [ ] Phase 3: Developer implementation complete (VERIFY pass + self-review done)
-- [ ] Phase 4: Tester verified (all matrix rows pass)
+- [ ] Phase 3: Developer implementation complete (VERIFY pass + shrink + self-review done)
+- [ ] Phase 4: Tester verified (all matrix rows pass; a11y serious/critical clean)
 - [ ] Phase 4.5: Code review approved (no blocking findings)
 - [ ] Phase 5: Delivered (PR + Delivery comment + In Review, final VERIFY pass on HEAD)
 
@@ -489,6 +490,7 @@ You (the parent) implement. The Architect's Plan and Test Matrix are your specif
 
 **Load and apply inline:**
 - `{{ symphony.root }}/prompts/CODE_QUALITY.md` — gates and clean-code checks on every file you touch, with a mandatory per-file walkthrough.
+- `{{ symphony.root }}/prompts/SHRINK.md` — codebase-shrink-on-touch: orphaned symbols deleted, unused deps removed, duplication extracted or refusal justified.
 - `{{ symphony.root }}/prompts/TDD.md` — write failing tests first for bug fixes; add unit/integration tests alongside new logic.
 - `{{ symphony.root }}/prompts/PERFORMANCE.md` — on every hot-path file you touch.
 - `{{ symphony.root }}/prompts/MOBILE_UX.md` — UX checks on every page you modify; do not capture deliverable screenshots here (Tester does that).
@@ -538,7 +540,8 @@ Every file you modify gets CODE_QUALITY.md applied. If you find unrelated debt i
 - [ ] Every Plan task ticked in `.claude/workpad.md`.
 - [ ] Every entry in the Plan's **Tests to add** section is present in the diff, or has a `TDD skip — <file>: <justification>` note in `.claude/workpad.md`.
 - [ ] Scoped `pnpm --filter <pkg> typecheck && pnpm --filter <pkg> lint` green for every touched package.
-- [ ] `bash {{ symphony.root }}/scripts/verify-changes.sh` exits `VERIFY: pass` on the current HEAD; the literal output line is pasted into `.claude/workpad.md`.
+- [ ] `bash {{ symphony.root }}/scripts/verify-changes.sh` exits `VERIFY: pass` on the current HEAD; the literal output line is pasted into `.claude/workpad.md`. Any `skipped` checks for tools that should be adopted are noted under `## Tooling gaps`.
+- [ ] Shrink pass completed (`prompts/SHRINK.md`); workpad has a `Shrink pass on <SHA>` entry.
 - [ ] Self-review (`prompts/SELF_REVIEW.md`) completed; workpad has a `Self-review on <SHA>` entry.
 - [ ] No commented-out code, `TODO`s, `console.log`s, `debugger`, or `as any` casts in the diff (the script enforces this; the developer's diff is clean even before running it).
 - [ ] PR opened with the label `symphony`. **Initial PR body is a one-line placeholder** (`Body will be filled by Phase 5 — see [Linear ticket]({{ issue.url }}).`). Phase 5 will overwrite it with the Delivery body — do not pad the PR body with AC, plan, or rationale; that lives in `.claude/`.

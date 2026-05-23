@@ -379,12 +379,13 @@ The prompt template in `WORKFLOW.md` instructs the parent agent to coordinate fo
 | Ticket refinement | Produce Context / AC / Technical Approach / Test Plan / Out of Scope. | `prompts/REFINE_TICKET.md` |
 | Architect plan | One commit per task, plus a **Tests to add** section so developer-side tests aren't an afterthought. | `prompts/ARCHITECT.md` |
 | Code quality | Per-file walkthrough + scoped `pnpm --filter` lint/typecheck. | `prompts/CODE_QUALITY.md` |
+| Codebase shrink | Per-touch checks: delete orphans the diff creates, remove unused deps, extract duplication. Adjacent waste filed as Backlog tickets, not widened into the PR. Periodic full-repo audits use `knip` / `depcheck` / `jscpd`. | `prompts/SHRINK.md` |
 | TDD | Failing test first for every bug fix; tests alongside new logic. | `prompts/TDD.md` |
 | Performance, Mobile UX | Inline checks on hot-path code and frontend pages. | `prompts/PERFORMANCE.md`, `prompts/MOBILE_UX.md` |
 | Structured debugging | Reproduce → isolate → hypothesise → minimum change → verify. Used when a test fails twice or behaviour disagrees with mental model. | `prompts/DEBUG.md` |
-| Verify (pre-push gate) | One scripted command (`scripts/verify-changes.sh`) runs scoped lint/typecheck, package unit tests, forbidden-token scan, secret scan, and untracked-leftover scan. The agent must paste `VERIFY: pass` into its workpad before pushing; missing/stale VERIFY notes are Blocking findings during code review. | `prompts/VERIFY.md`, `scripts/verify-changes.sh` |
+| Verify (pre-push gate) | One scripted command (`scripts/verify-changes.sh`) runs in parallel: scoped lint/typecheck, diff-aware unit tests (`vitest --changed` / `jest --changedSince`), `pnpm audit`, SAST via `semgrep`, architectural boundaries via `dependency-cruiser`, orphan/dead-code detection via `knip`, Firestore rules tests when `firestore.rules` was modified, bundle-size budget against `.bundle-budget.json`. Plus synchronous forbidden-token, secret, and untracked-leftover scans. Each parallel check skips gracefully when its tool/config isn't present, so the gate works against repos at any stage of tooling adoption. The agent pastes `VERIFY: pass` into its workpad before pushing. | `prompts/VERIFY.md`, `scripts/verify-changes.sh` |
 | Self-review | Developer-side diff re-read against the five checklists immediately before push. | `prompts/SELF_REVIEW.md` |
-| Tester | Independent E2E verification against the Architect's Functional Test Matrix; element-scoped screenshots only; also re-checks VERIFY. | `prompts/TESTER.md` |
+| Tester | Independent E2E verification against the Architect's Functional Test Matrix; element-scoped screenshots only; per-scenario accessibility check via `axe-core` (loaded from CDN, run through Playwright MCP); also re-checks VERIFY. | `prompts/TESTER.md` |
 | Code review | Independent senior-engineer review of the diff, with explicit gates on test coverage, VERIFY freshness, and `docs/AGENT_MEMORY.md` rule compliance. | `prompts/CODE_REVIEW.md` |
 | Delivery | One Linear comment + matching PR body. | `prompts/DELIVERY_COMMENT.md` |
 
