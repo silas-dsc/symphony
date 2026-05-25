@@ -403,6 +403,7 @@ The prompt template in `WORKFLOW.md` instructs the parent agent to coordinate fo
 | Tester | Independent E2E verification against the Architect's Functional Test Matrix; element-scoped screenshots only; also re-checks VERIFY. | `prompts/TESTER.md` |
 | Code review | Independent senior-engineer review of the diff, with explicit gates on test coverage, VERIFY freshness, and `docs/AGENT_MEMORY.md` rule compliance. | `prompts/CODE_REVIEW.md` |
 | Delivery | One Linear comment + matching PR body. | `prompts/DELIVERY_COMMENT.md` |
+| Clear writing | Sentence- and word-level style applied to every prose artefact an agent produces — briefs, plans, ticket descriptions, comments, retros. | `prompts/CLEAR_WRITING.md` |
 
 ### Project memory — `docs/AGENT_MEMORY.md`
 

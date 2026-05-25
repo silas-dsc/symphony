@@ -237,6 +237,7 @@ Wait for each reviewer to return before moving on. If a reviewer fails, log it a
 - **No code changes.** If a lesson implies a TypeScript-level fix (e.g. an orchestrator hook bug), record it in the report under "Operator next steps — engineering work" and do not edit `.ts` files.
 - **No new prompts.** Edit existing files only.
 - **Each individual PR is one file, one edit, ≤ 20 lines.** Bigger edits mean you're rewriting; surface that in the report instead.
+- **Apply `{{ symphony.root }}/prompts/CLEAR_WRITING.md`** to every prompt-edit, PR body, and the `META_IMPROVE_REPORT.md`. The edits you ship become text every future agent reads — sloppy prose compounds across tickets.
 - **Dispatch the reviewer for every PR you open.** No PR ships unreviewed.
 - **Reviewers don't post on the PR.** Every meta-review lives at `.claude/meta-review-<pr>.md` on its PR's branch. The operator pulls the branch to read it.
 - **Dry-run honour:** if `SYMPHONY_META_DRY_RUN=1` is set in env, do not create branches, do not push, do not call `gh pr`. Write `META_IMPROVE_REPORT.md` to `/tmp/meta-improve-report-<date>.md` and print the path. The Meta-reviewer is not dispatched in dry-run.

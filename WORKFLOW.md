@@ -465,7 +465,8 @@ The file is maintained by the meta-improve pass: when a retrospective lesson's r
 - `{{ symphony.root }}/docs/TEAM_DSC_LOGIN.md` — route → role map, test credentials
 - `{{ symphony.root }}/docs/STORYBLOK.md` — Storyblok Management API
 - `{{ symphony.root }}/docs/LINEAR_UPLOAD.md` — attaching files to Linear comments
-- `{{ symphony.root }}/UNSLOP.md` — editing principles for any document you rewrite
+- `{{ symphony.root }}/UNSLOP.md` — structural editing principles (MECE, DRY, simple-but-not-shorthand) for any document you rewrite
+- `{{ symphony.root }}/prompts/CLEAR_WRITING.md` — sentence- and word-level style for any prose an agent writes (Intent briefs, plans, ticket descriptions, PR/Linear comments, retrospectives, meta-edits). Pair with UNSLOP — UNSLOP cuts sections, CLEAR_WRITING cuts sentences.
 
 ---
 

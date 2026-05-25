@@ -50,6 +50,7 @@ Write `.claude/intent.md` with this body. Every section is mandatory.
 - **Every Ambiguity must include the assumption you'll proceed under.** "Should X also Y? — Assuming no, X only changes when explicitly invoked." Downstream sub-agents read your assumptions as commitments.
 - **Surface multiple interpretations rather than choose silently.** When a piece of the ticket has two reasonable readings that would produce different behaviour, name both in Ambiguities before naming the assumption — e.g. "*Could mean X (admin-only) or Y (any role). Assuming X.*" Picking one silently means downstream phases never see the alternative. See `{{ symphony.root }}/WORKFLOW.md` → Think before coding.
 - **Do not write to Linear.** The Intent Brief is a `.claude/intent.md` file, not a Linear comment. The only public surface in this workflow is the Phase 5 Delivery comment.
+- **Apply `{{ symphony.root }}/prompts/CLEAR_WRITING.md`.** Plain words, active voice, ≤ 15-word sentences. Every bullet should read in one pass.
 
 ## Stop conditions
 

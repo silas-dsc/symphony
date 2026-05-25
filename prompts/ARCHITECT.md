@@ -85,6 +85,7 @@ Column rules:
 - The matrix is the **only** source of truth for the Tester. If it isn't in the matrix, it won't be tested.
 - Keep the matrix tight. 3–8 rows is typical. More than 12 rows means scope is wrong — append a `Scope concern` note to `.claude/workpad.md`.
 - Do not write to Linear or the PR.
+- Apply `{{ symphony.root }}/prompts/CLEAR_WRITING.md` to the Plan and Test Matrix: active voice, plain words, ≤ 25-word sentences. The Developer and Tester reread these files many times — long sentences cost time on every read.
 
 ## Definition of Done
 
