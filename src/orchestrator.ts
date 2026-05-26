@@ -15,6 +15,7 @@ import type {
 import { loadWorkflow, validateConfig } from "./config.js";
 import { GitHubPreviewWarmer, StaticUrlWarmer } from "./github-preview.js";
 import { MergeConflictResolver } from "./merge-conflict.js";
+import { DependabotWatcher } from "./dependabot.js";
 import * as linear from "./linear.js";
 import { isCompletionState, sendBatchedSlackNotification } from "./notifications.js";
 import { getWorkspacePath, removeWorkspace } from "./workspace.js";
@@ -50,6 +51,7 @@ export class Orchestrator {
   private previewWarmer: GitHubPreviewWarmer | null = null;
   private staticWarmer: StaticUrlWarmer | null = null;
   private mergeConflictResolver: MergeConflictResolver | null = null;
+  private dependabotWatcher: DependabotWatcher | null = null;
   private log: Logger;
 
   constructor(workflowPath: string, logger: Logger) {
@@ -64,6 +66,7 @@ export class Orchestrator {
     this.previewWarmer = this.createPreviewWarmer();
     this.staticWarmer = this.createStaticWarmer();
     this.mergeConflictResolver = this.createMergeConflictResolver();
+    this.dependabotWatcher = this.createDependabotWatcher();
 
     this.state = {
       pollIntervalMs: this.config.polling.intervalMs,
@@ -283,6 +286,7 @@ export class Orchestrator {
     this.previewWarmer = this.createPreviewWarmer();
     this.staticWarmer = this.createStaticWarmer();
     this.mergeConflictResolver = this.createMergeConflictResolver();
+    this.dependabotWatcher = this.createDependabotWatcher();
     this.state.pollIntervalMs = this.config.polling.intervalMs;
     this.state.maxConcurrentAgents = this.config.agent.maxConcurrentAgents;
     this.log.info("WORKFLOW.md reloaded");
@@ -307,6 +311,10 @@ export class Orchestrator {
 
     if (this.mergeConflictResolver) {
       await this.mergeConflictResolver.reconcile();
+    }
+
+    if (this.dependabotWatcher) {
+      await this.dependabotWatcher.reconcile();
     }
 
     const validationError = validateConfig(this.config);
@@ -930,6 +938,15 @@ export class Orchestrator {
       hooks: this.config.hooks,
       symphonyRoot: this.symphonyRoot,
       mcpConfigPath: resolveAgentMcpConfigPath(this.symphonyRoot),
+      logger: this.log,
+    });
+  }
+
+  private createDependabotWatcher(): DependabotWatcher | null {
+    if (!this.config.dependabot.enabled) return null;
+    return new DependabotWatcher({
+      config: this.config.dependabot,
+      tracker: this.config.tracker,
       logger: this.log,
     });
   }

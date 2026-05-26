@@ -46,6 +46,30 @@ export interface WorkflowConfig {
   autoUpdate: AutoUpdateConfig;
   retrospective: RetrospectiveConfig;
   mergeConflicts: MergeConflictConfig;
+  dependabot: DependabotConfig;
+}
+
+export interface DependabotConfig {
+  /** When true, Symphony scans GitHub Dependabot alerts each tick and files a Linear ticket for each new one. */
+  enabled: boolean;
+  /** GitHub repo owner whose Dependabot alerts are scanned (defaults to github_preview.repo_owner). */
+  repoOwner: string;
+  /** GitHub repo name whose Dependabot alerts are scanned (defaults to github_preview.repo_name). */
+  repoName: string;
+  /** Linear team key the tickets are created under (defaults to tracker.team_key). */
+  teamKey: string;
+  /** Workflow state name the ticket is created in — must be one of tracker.active_states so the agent picks it up. */
+  targetState: string;
+  /** Email (or name) of the Linear user to assign the ticket to. Empty = unassigned. */
+  assigneeEmail: string;
+  /** Linear label applied to every ticket; also used to dedupe so the same alert isn't filed twice. */
+  label: string;
+  /** Only file tickets for alerts at or above this severity: low | medium | high | critical. */
+  minSeverity: string;
+  /** Cap on how many new tickets a single tick may create (guards against a flood when first enabled). */
+  maxNewTicketsPerTick: number;
+  /** Timeout for the `gh api` call that lists Dependabot alerts, in ms. */
+  requestTimeoutMs: number;
 }
 
 export interface MergeConflictConfig {

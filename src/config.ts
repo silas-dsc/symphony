@@ -98,6 +98,7 @@ function buildConfig(raw: Record<string, unknown>, baseDir: string): WorkflowCon
   const autoUpdate = ((raw.auto_update ?? {}) as Record<string, unknown>);
   const retrospective = ((raw.retrospective ?? {}) as Record<string, unknown>);
   const mergeConflicts = ((raw.merge_conflicts ?? {}) as Record<string, unknown>);
+  const dependabot = ((raw.dependabot ?? {}) as Record<string, unknown>);
 
   const apiKeyRaw = (tracker.api_key as string | undefined) ?? "$LINEAR_API_KEY";
   const apiKey = resolveEnvVar(apiKeyRaw);
@@ -126,14 +127,17 @@ function buildConfig(raw: Record<string, unknown>, baseDir: string): WorkflowCon
   const hasSlackConfig = typeof slackWebhookUrlRaw === "string";
   const slackWebhookUrl = slackWebhookUrlRaw ? resolveEnvVar(slackWebhookUrlRaw).trim() : "";
 
+  const activeStates = (tracker.active_states as string[] | undefined) ?? ["Todo", "In Progress"];
+  const trackerTeamKey = tracker.team_key as string | undefined;
+
   return {
     tracker: {
       kind: "linear",
       endpoint: (tracker.endpoint as string | undefined) ?? "https://api.linear.app/graphql",
       apiKey,
       projectSlug: (tracker.project_slug as string | undefined) ?? "",
-      teamKey: (tracker.team_key as string | undefined),
-      activeStates: (tracker.active_states as string[] | undefined) ?? ["Todo", "In Progress"],
+      teamKey: trackerTeamKey,
+      activeStates,
       terminalStates: (tracker.terminal_states as string[] | undefined) ?? [
         "Closed", "Cancelled", "Canceled", "Duplicate", "Done",
       ],
@@ -217,8 +221,26 @@ function buildConfig(raw: Record<string, unknown>, baseDir: string): WorkflowCon
       retryIntervalMs: (mergeConflicts.retry_interval_ms as number | undefined) ?? 600000,
       requestTimeoutMs: (mergeConflicts.request_timeout_ms as number | undefined) ?? 30000,
     },
+    dependabot: {
+      enabled: (dependabot.enabled as boolean | undefined) ?? false,
+      // Default to the github_preview repo so a single repo only needs to be declared once.
+      repoOwner: (dependabot.repo_owner as string | undefined)
+        ?? (githubPreview.repo_owner as string | undefined) ?? "",
+      repoName: (dependabot.repo_name as string | undefined)
+        ?? (githubPreview.repo_name as string | undefined) ?? "",
+      teamKey: (dependabot.team_key as string | undefined) ?? trackerTeamKey ?? "",
+      // Default to the first active state so the created ticket is dispatchable by the poll loop.
+      targetState: (dependabot.target_state as string | undefined) ?? activeStates[0] ?? "",
+      assigneeEmail: (dependabot.assignee_email as string | undefined) ?? "",
+      label: (dependabot.label as string | undefined) ?? "dependabot",
+      minSeverity: ((dependabot.min_severity as string | undefined) ?? "low").toLowerCase(),
+      maxNewTicketsPerTick: (dependabot.max_new_tickets_per_tick as number | undefined) ?? 3,
+      requestTimeoutMs: (dependabot.request_timeout_ms as number | undefined) ?? 30000,
+    },
   };
 }
+
+const VALID_SEVERITIES = new Set(["low", "medium", "moderate", "high", "critical"]);
 
 export function validateConfig(config: WorkflowConfig): string | null {
   if (!config.tracker.kind) return "tracker.kind is required";
@@ -253,6 +275,20 @@ export function validateConfig(config: WorkflowConfig): string | null {
     if (config.mergeConflicts.maxConcurrent <= 0) return "merge_conflicts.max_concurrent must be > 0";
     if (config.mergeConflicts.retryIntervalMs <= 0) return "merge_conflicts.retry_interval_ms must be > 0";
     if (config.mergeConflicts.requestTimeoutMs <= 0) return "merge_conflicts.request_timeout_ms must be > 0";
+  }
+  if (config.dependabot.enabled) {
+    const d = config.dependabot;
+    if (!d.repoOwner) return "dependabot.repo_owner is required when dependabot.enabled is true (or set github_preview.repo_owner)";
+    if (!d.repoName) return "dependabot.repo_name is required when dependabot.enabled is true (or set github_preview.repo_name)";
+    if (!d.teamKey) return "dependabot.team_key is required when dependabot.enabled is true (or set tracker.team_key)";
+    if (!d.targetState) return "dependabot.target_state is required when dependabot.enabled is true";
+    const activeLower = config.tracker.activeStates.map(s => s.toLowerCase());
+    if (!activeLower.includes(d.targetState.toLowerCase())) {
+      return `dependabot.target_state (${d.targetState}) must be one of tracker.active_states, otherwise the created ticket will never be dispatched`;
+    }
+    if (!VALID_SEVERITIES.has(d.minSeverity)) return "dependabot.min_severity must be one of: low, medium, high, critical";
+    if (!Number.isInteger(d.maxNewTicketsPerTick) || d.maxNewTicketsPerTick <= 0) return "dependabot.max_new_tickets_per_tick must be a positive integer";
+    if (d.requestTimeoutMs <= 0) return "dependabot.request_timeout_ms must be > 0";
   }
   if (!config.workspace.root) return "workspace.root could not be resolved";
   if (config.agent.maxTurns <= 0) return "agent.max_turns must be > 0";

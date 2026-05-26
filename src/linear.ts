@@ -639,3 +639,218 @@ export async function executeGraphQL(
 ): Promise<unknown> {
   return graphql<unknown>(config.endpoint, config.apiKey, query, variables);
 }
+
+// ─── Issue creation (used by the Dependabot watcher) ────────────────────────
+
+const TEAM_BY_KEY_QUERY = `
+  query TeamByKey($key: String!) {
+    teams(filter: { key: { eq: $key } }, first: 1) {
+      nodes { id key name }
+    }
+  }
+`;
+
+interface TeamByKeyPayload {
+  teams: { nodes: Array<{ id: string; key: string; name: string }> };
+}
+
+export async function fetchTeamByKey(
+  config: TrackerConfig,
+  key: string,
+): Promise<{ id: string; key: string; name: string } | null> {
+  const data = await graphql<TeamByKeyPayload>(config.endpoint, config.apiKey, TEAM_BY_KEY_QUERY, { key });
+  return data.teams.nodes[0] ?? null;
+}
+
+const WORKFLOW_STATES_QUERY = `
+  query WorkflowStates($teamId: ID!) {
+    workflowStates(filter: { team: { id: { eq: $teamId } } }, first: 100) {
+      nodes { id name type }
+    }
+  }
+`;
+
+interface WorkflowStatesPayload {
+  workflowStates: { nodes: Array<{ id: string; name: string; type: string }> };
+}
+
+export async function fetchWorkflowStates(
+  config: TrackerConfig,
+  teamId: string,
+): Promise<Array<{ id: string; name: string; type: string }>> {
+  const data = await graphql<WorkflowStatesPayload>(config.endpoint, config.apiKey, WORKFLOW_STATES_QUERY, { teamId });
+  return data.workflowStates.nodes;
+}
+
+const USER_BY_EMAIL_QUERY = `
+  query UserByEmail($email: String!) {
+    users(filter: { email: { eq: $email } }, first: 1) {
+      nodes { id name email }
+    }
+  }
+`;
+
+const USER_BY_NAME_QUERY = `
+  query UserByName($name: String!) {
+    users(filter: { name: { containsIgnoreCase: $name } }, first: 5) {
+      nodes { id name email }
+    }
+  }
+`;
+
+interface UsersPayload {
+  users: { nodes: Array<{ id: string; name: string; email: string | null }> };
+}
+
+/** Resolves a Linear user by email (preferred) or by a case-insensitive name match. */
+export async function fetchUserByEmailOrName(
+  config: TrackerConfig,
+  query: string,
+): Promise<{ id: string; name: string; email: string | null } | null> {
+  if (query.includes("@")) {
+    const byEmail = await graphql<UsersPayload>(config.endpoint, config.apiKey, USER_BY_EMAIL_QUERY, { email: query });
+    if (byEmail.users.nodes[0]) return byEmail.users.nodes[0];
+    return null;
+  }
+  const byName = await graphql<UsersPayload>(config.endpoint, config.apiKey, USER_BY_NAME_QUERY, { name: query });
+  return byName.users.nodes[0] ?? null;
+}
+
+const LABEL_BY_NAME_QUERY = `
+  query LabelByName($name: String!) {
+    issueLabels(filter: { name: { eq: $name } }, first: 20) {
+      nodes { id name team { id } }
+    }
+  }
+`;
+
+interface LabelByNamePayload {
+  issueLabels: { nodes: Array<{ id: string; name: string; team: { id: string } | null }> };
+}
+
+const LABEL_CREATE_MUTATION = `
+  mutation LabelCreate($input: IssueLabelCreateInput!) {
+    issueLabelCreate(input: $input) {
+      success
+      issueLabel { id name }
+    }
+  }
+`;
+
+interface LabelCreatePayload {
+  issueLabelCreate: { success: boolean; issueLabel: { id: string; name: string } | null } | null;
+}
+
+/** Finds the team-scoped (or workspace-level) label by name, creating a team label if none exists. */
+export async function resolveOrCreateLabelId(
+  config: TrackerConfig,
+  teamId: string,
+  name: string,
+): Promise<string> {
+  const found = await graphql<LabelByNamePayload>(config.endpoint, config.apiKey, LABEL_BY_NAME_QUERY, { name });
+  const match =
+    found.issueLabels.nodes.find(l => l.team?.id === teamId) ??
+    found.issueLabels.nodes.find(l => l.team == null) ??
+    found.issueLabels.nodes[0];
+  if (match) return match.id;
+
+  const created = await graphql<LabelCreatePayload>(
+    config.endpoint,
+    config.apiKey,
+    LABEL_CREATE_MUTATION,
+    { input: { name, teamId } },
+  );
+  if (!created.issueLabelCreate?.success || !created.issueLabelCreate.issueLabel) {
+    throw new LinearError("linear_unknown_payload", "Linear issueLabelCreate did not report success");
+  }
+  return created.issueLabelCreate.issueLabel.id;
+}
+
+const ISSUES_BY_LABEL_QUERY = `
+  query IssuesByLabel($teamKey: String!, $label: String!, $first: Int!, $after: String) {
+    issues(
+      filter: {
+        team: { key: { eq: $teamKey } }
+        labels: { name: { eq: $label } }
+      }
+      first: $first
+      after: $after
+    ) {
+      nodes { id identifier description }
+      pageInfo { hasNextPage endCursor }
+    }
+  }
+`;
+
+interface IssuesByLabelPayload {
+  issues: {
+    nodes: Array<{ description: string | null }>;
+    pageInfo: { hasNextPage: boolean; endCursor: string | null };
+  };
+}
+
+/**
+ * Returns the descriptions of every issue in the team carrying the given label,
+ * across all states. The Dependabot watcher scans these for its dedupe marker so
+ * the same alert isn't filed twice (survives restarts, unlike an in-memory set).
+ */
+export async function fetchIssueDescriptionsByLabel(
+  config: TrackerConfig,
+  teamKey: string,
+  label: string,
+): Promise<string[]> {
+  const descriptions: string[] = [];
+  let after: string | null = null;
+
+  while (true) {
+    const vars: Record<string, unknown> = { teamKey, label, first: 50 };
+    if (after !== null) vars.after = after;
+    const data = await graphql<IssuesByLabelPayload>(config.endpoint, config.apiKey, ISSUES_BY_LABEL_QUERY, vars);
+
+    for (const node of data.issues.nodes) {
+      if (node.description) descriptions.push(node.description);
+    }
+
+    if (!data.issues.pageInfo.hasNextPage) break;
+    if (!data.issues.pageInfo.endCursor) break;
+    after = data.issues.pageInfo.endCursor;
+  }
+
+  return descriptions;
+}
+
+const ISSUE_CREATE_MUTATION = `
+  mutation IssueCreate($input: IssueCreateInput!) {
+    issueCreate(input: $input) {
+      success
+      issue { id identifier url }
+    }
+  }
+`;
+
+interface IssueCreatePayload {
+  issueCreate: {
+    success: boolean;
+    issue: { id: string; identifier: string; url: string | null } | null;
+  } | null;
+}
+
+export interface CreateIssueInput {
+  teamId: string;
+  title: string;
+  description: string;
+  stateId?: string;
+  assigneeId?: string;
+  labelIds?: string[];
+}
+
+export async function createIssue(
+  config: TrackerConfig,
+  input: CreateIssueInput,
+): Promise<{ id: string; identifier: string; url: string | null }> {
+  const data = await graphql<IssueCreatePayload>(config.endpoint, config.apiKey, ISSUE_CREATE_MUTATION, { input });
+  if (!data.issueCreate?.success || !data.issueCreate.issue) {
+    throw new LinearError("linear_unknown_payload", "Linear issueCreate did not report success");
+  }
+  return data.issueCreate.issue;
+}

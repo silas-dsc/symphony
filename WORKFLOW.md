@@ -202,6 +202,15 @@ merge_conflicts:
   max_concurrent: 2
   retry_interval_ms: 600000
   request_timeout_ms: 30000
+dependabot:
+  enabled: true
+  # repo_owner / repo_name inherit from github_preview (team-dsc/team-dsc) when omitted.
+  # team_key inherits from tracker.team_key (TEA); target_state defaults to the
+  # first active state (Dev in Progress) so filed tickets are picked up by the poll loop.
+  assignee_email: silas@teamdsc.com.au
+  min_severity: low
+  max_new_tickets_per_tick: 3
+  request_timeout_ms: 30000
 ---
 
 You are the **parent agent** working autonomously on a Linear ticket for the **team-dsc** codebase — a TypeScript/React (Remix) web application with a Firebase/Firestore backend, managed as a pnpm monorepo.
@@ -465,6 +474,8 @@ These are the reusable skills agents apply during the phases above. Sub-agents a
 | Resolve merge conflicts | Orchestrator-triggered (not a phase) — runs on any open PR GitHub reports as conflicting | `prompts/RESOLVE_CONFLICTS.md` |
 
 `prompts/RESOLVE_CONFLICTS.md` is not part of the per-ticket phases above. Symphony spawns it directly (like the retrospective) for each open PR that has merge conflicts: it merges the base branch into the PR branch, resolves the conflicts so both sides' intent survives, and pushes to the PR branch. It never merges the PR. See `merge_conflicts` in the front matter to configure it.
+
+Dependabot triage is also orchestrator-driven, not a phase. When `dependabot` is enabled, each tick reads the repo's open GitHub Dependabot alerts and files a Linear ticket (assigned, in the active `Dev in Progress` state, tagged `dependabot`) for each new one — including a pnpm-/monorepo-aware checklist to bump the dependency, run `pnpm install`, test the affected code, and open a PR. The ticket then flows through the same phases as any other. A hidden `<!-- symphony-dependabot:owner/repo#N -->` marker dedupes so an alert is never filed twice. See `dependabot` in the front matter to configure it.
 
 ### Project memory
 
