@@ -423,16 +423,18 @@ A persistent, gitable knowledge base every relevant sub-agent reads before inves
 
 ## Automatic merge-conflict resolution
 
-When `merge_conflicts.enabled` is `true`, every orchestrator tick scans the configured repo's open pull requests (`gh pr list`) and, for each one GitHub reports as `CONFLICTING`, spawns a one-shot Claude session (`prompts/RESOLVE_CONFLICTS.md`) in a fresh per-PR workspace to resolve the conflicts. It runs on **all** open PRs with conflicts — not just the ticket currently in flight.
+When `merge_conflicts.enabled` is `true`, every orchestrator tick scans the configured repo's open pull requests (`gh pr list`) and resolves the conflicts on each one GitHub reports as `CONFLICTING`. It runs on **all** open PRs with conflicts — not just the ticket currently in flight.
 
-The resolver:
+For each conflicting PR the resolver clones the repo into a `conflict-pr-<n>` workspace (reusing the `hooks.after_create` clone) and merges the **base** branch into the **PR (head)** branch — re-creating the conflict locally without merging the PR itself. It then classifies the conflict and routes it:
 
-1. Clones the repo into a `conflict-pr-<n>` workspace (reusing the `hooks.after_create` clone) and merges the **base** branch into the **PR (head)** branch — re-creating the conflict locally without merging the PR itself.
-2. For each conflicted file, reads all three versions (ancestor / PR side / base side), names the intent of each side, and **merges both intents** so neither change is lost.
-3. Only when two intents genuinely contradict does it pick a winner — the side that delivers the better overall outcome, **usually the latest update**, judged from commit recency, the PR's stated goal, and whether the resolution keeps tests passing. Every winner-takes-all call is justified in one sentence and noted in a single PR comment.
-4. Commits and pushes to the **PR branch only** (never force-push, never the base branch).
+- **Lockfile-only conflicts take a deterministic fast-path — no LLM.** When every conflicted file is a lockfile Symphony knows how to regenerate (`pnpm-lock.yaml` → `pnpm install --lockfile-only`, `package-lock.json` → `npm install --package-lock-only`), it resolves the source manifests (which merged cleanly), regenerates the lockfile, commits, and pushes — saving a full Claude session on the most common, lowest-judgement conflicts.
+- **Everything else spawns a one-shot Claude session** (`prompts/RESOLVE_CONFLICTS.md`) that, for each conflicted file, reads all three versions (ancestor / PR side / base side), names the intent of each side, and **merges both intents** so neither change is lost. Only when two intents genuinely contradict does it pick a winner — the side with the better overall outcome, **usually the latest update**, judged from commit recency, the PR's stated goal, and whether the resolution keeps tests passing. Every winner-takes-all call is justified in one sentence and noted in a single PR comment.
 
-It **never merges, approves, closes, or otherwise state-changes the PR** — a human still reviews and merges. Resolutions run in the background (up to `merge_conflicts.max_concurrent` at once) so a long session never blocks the orchestrator tick; a PR that stays conflicting after a run isn't re-attempted until `merge_conflicts.retry_interval_ms` has elapsed, and tracking (plus the workspace) is dropped once the PR is no longer conflicting. Requires the `gh` CLI to be authenticated, same as the GitHub preview warmer.
+Either way it commits and pushes to the **PR branch only** (never force-push, never the base branch) and **never merges, approves, closes, or otherwise state-changes the PR** — a human still reviews and merges.
+
+**It never races the dispatch loop.** Before resolving, it drops any conflicting PR whose branch maps to a Linear ticket currently in an active state (the identifier embedded in the branch name is matched against the active ticket set). Those PRs belong to a running or about-to-run agent that resolves its own conflicts; the resolver only touches PRs whose ticket is past active work (e.g. `In Review`) or has no matching ticket. If the active-ticket lookup fails, it skips dispatch for that cycle rather than risk a duelling push.
+
+Resolutions run in the background (up to `merge_conflicts.max_concurrent` at once) so a long session never blocks the orchestrator tick; a PR that stays conflicting after a run isn't re-attempted until `merge_conflicts.retry_interval_ms` has elapsed, and tracking (plus the workspace) is dropped once the PR is no longer conflicting. Requires the `gh` CLI to be authenticated, same as the GitHub preview warmer.
 
 ## Continuous self-improvement
 

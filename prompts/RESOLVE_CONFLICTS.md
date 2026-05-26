@@ -68,6 +68,8 @@ Resolve `delete/modify` conflicts the same way: keep the file if either side sti
 
 ## Generated lockfiles: regenerate, don't hand-merge
 
+(If a lockfile is the *only* conflicted file, Symphony resolves it deterministically before spawning you — so if you're reading this, a lockfile conflicted *alongside* source files. Resolve the source by intent, then regenerate the lockfile as below.)
+
 `pnpm-lock.yaml` (and other generated lockfiles) are machine-written. Their conflicts are noise — never resolve them line-by-line, and never reason about the intent of individual hunks. The lockfile's only job is to match `package.json`, so regenerate it instead:
 
 1. Resolve the conflicts in `package.json` (and any other source files) first, by intent, exactly as above — that's the real decision.
