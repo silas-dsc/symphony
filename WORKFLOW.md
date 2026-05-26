@@ -156,7 +156,7 @@ hooks:
     if ! lsof -iTCP:"$APP_PORT" -sTCP:LISTEN &>/dev/null; then
       echo "[symphony] starting dev server on $APP_PORT"
       ( cd packages/app && nohup pnpm react-router dev --port "$APP_PORT" \
-          >/tmp/symphony-app-$APP_PORT.log 2>&1 & echo $! > "$OLDPWD/.symphony-app.pid" )
+          >/tmp/symphony-app-$APP_PORT.log 2>&1 & echo $! > /tmp/symphony-app-$APP_PORT.pid ) || true
       # Wait up to 60s for the server to listen — dev compile can be slow
       for i in $(seq 1 60); do
         lsof -iTCP:"$APP_PORT" -sTCP:LISTEN &>/dev/null && break
@@ -170,15 +170,19 @@ hooks:
       nohup local-ssl-proxy --source "$PROXY_PORT" --target "$APP_PORT" \
         --cert localhost.pem --key localhost-key.pem \
         >/tmp/symphony-proxy-$PROXY_PORT.log 2>&1 &
-      echo $! > .symphony-proxy.pid
+      echo $! > /tmp/symphony-proxy-$PROXY_PORT.pid || true
     fi
 
     echo "[symphony] setup converged: APP_PORT=$APP_PORT PROXY_PORT=$PROXY_PORT"
 
   before_remove: |
     echo "Cleaning workspace"
-    if [ -f .symphony-app.pid ]; then kill "$(cat .symphony-app.pid)" 2>/dev/null || true; fi
-    if [ -f .symphony-proxy.pid ]; then kill "$(cat .symphony-proxy.pid)" 2>/dev/null || true; fi
+    if [ -f .symphony-ports ]; then
+      _app_port=$(grep APP_PORT .symphony-ports | cut -d= -f2)
+      _proxy_port=$(grep PROXY_PORT .symphony-ports | cut -d= -f2)
+      [ -n "$_app_port" ] && [ -f /tmp/symphony-app-$_app_port.pid ] && kill "$(cat /tmp/symphony-app-$_app_port.pid)" 2>/dev/null || true
+      [ -n "$_proxy_port" ] && [ -f /tmp/symphony-proxy-$_proxy_port.pid ] && kill "$(cat /tmp/symphony-proxy-$_proxy_port.pid)" 2>/dev/null || true
+    fi
 agent:
   max_concurrent_agents: 3
   max_turns: 40
