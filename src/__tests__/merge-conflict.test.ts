@@ -5,6 +5,8 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { loadWorkflow } from "../config.js";
 import {
   MergeConflictResolver,
+  branchMatchesActiveKey,
+  isLockfileOnly,
   renderResolveConflictsPrompt,
   type ConflictPrClient,
   type ConflictingPR,
@@ -44,10 +46,9 @@ function makePR(number: number, overrides?: Partial<ConflictingPR>): Conflicting
 }
 
 async function flush(): Promise<void> {
-  // Let the fire-and-forget startResolution chains settle (ensureWorkspace +
-  // the injected runResolution + the inFlight-clearing finally).
-  for (let i = 0; i < 10; i++) await Promise.resolve();
-  await new Promise(resolve => setTimeout(resolve, 0));
+  // Let the fire-and-forget startResolution chains settle. All I/O boundaries
+  // are injected in these tests, so a handful of microtask turns is enough.
+  for (let i = 0; i < 20; i++) await Promise.resolve();
 }
 
 describe("merge_conflicts config parsing", () => {
@@ -130,6 +131,32 @@ describe("renderResolveConflictsPrompt", () => {
   });
 });
 
+describe("branchMatchesActiveKey", () => {
+  it("matches a ticket key embedded as a whole token", () => {
+    const keys = new Set(["tea-4020"]);
+    expect(branchMatchesActiveKey("feature/tea-4020-bulk-download", keys)).toBe(true);
+    expect(branchMatchesActiveKey("silas/TEA-4020", keys)).toBe(true);
+    expect(branchMatchesActiveKey("tea-4020", keys)).toBe(true);
+  });
+
+  it("does not match a different number or a key glued to other text", () => {
+    expect(branchMatchesActiveKey("feature/tea-402-foo", new Set(["tea-4020"]))).toBe(false);
+    expect(branchMatchesActiveKey("feature/tea-40200", new Set(["tea-4020"]))).toBe(false);
+    expect(branchMatchesActiveKey("feature/xtea-4020", new Set(["tea-4020"]))).toBe(false);
+    expect(branchMatchesActiveKey("feature/unrelated", new Set(["tea-4020"]))).toBe(false);
+  });
+});
+
+describe("isLockfileOnly", () => {
+  it("is true only when every path is a known lockfile", () => {
+    expect(isLockfileOnly(["pnpm-lock.yaml"])).toBe(true);
+    expect(isLockfileOnly(["packages/app/pnpm-lock.yaml", "package-lock.json"])).toBe(true);
+    expect(isLockfileOnly(["pnpm-lock.yaml", "src/index.ts"])).toBe(false);
+    expect(isLockfileOnly(["yarn.lock"])).toBe(false);
+    expect(isLockfileOnly([])).toBe(false);
+  });
+});
+
 describe("MergeConflictResolver", () => {
   let tmpRoot: string;
 
@@ -141,13 +168,23 @@ describe("MergeConflictResolver", () => {
     try { fs.rmSync(tmpRoot, { recursive: true, force: true }); } catch { /* ignore */ }
   });
 
+  interface Spies {
+    /** Head branches sent to the Claude agent path. */
+    resolved: number[];
+    /** Head branches that took the deterministic lockfile fast-path. */
+    lockfileHeads: string[];
+  }
+
   function makeResolver(opts: {
     config?: Partial<MergeConflictConfig>;
     list: () => Promise<ConflictingPR[]>;
-    runResolution: (ctx: ResolveConflictsContext) => Promise<void>;
+    classify?: (pr: ConflictingPR) => Promise<string[]>;
+    runResolution?: (ctx: ResolveConflictsContext) => Promise<void>;
+    getActiveBranchKeys?: () => Promise<Set<string>>;
     now?: () => number;
-  }): { resolver: MergeConflictResolver; listCalls: () => number } {
+  }): { resolver: MergeConflictResolver; spies: Spies; listCalls: () => number } {
     let listCalls = 0;
+    const spies: Spies = { resolved: [], lockfileHeads: [] };
     const prClient: ConflictPrClient = {
       listConflictingPullRequests: async () => { listCalls++; return opts.list(); },
     };
@@ -159,72 +196,128 @@ describe("MergeConflictResolver", () => {
       mcpConfigPath: undefined,
       logger: makeLogger(),
       prClient,
-      runResolution: opts.runResolution,
+      getActiveBranchKeys: opts.getActiveBranchKeys,
+      // Default classify reports a general (non-lockfile) conflict → agent path.
+      classifyConflicts: async (_cwd, pr) => (opts.classify ? opts.classify(pr) : ["src/foo.ts"]),
+      resolveLockfiles: async (_cwd, head) => { spies.lockfileHeads.push(head); },
+      abortMerge: async () => { /* no-op */ },
+      runResolution: opts.runResolution ?? (async (ctx) => { spies.resolved.push(ctx.pr.number); }),
       now: opts.now,
     });
-    return { resolver, listCalls: () => listCalls };
+    return { resolver, spies, listCalls: () => listCalls };
   }
 
   it("does nothing and never polls when disabled", async () => {
     const { resolver, listCalls } = makeResolver({
       config: { enabled: false },
       list: async () => [makePR(1)],
-      runResolution: async () => undefined,
     });
     await resolver.reconcile();
     expect(listCalls()).toBe(0);
     expect(resolver.getTrackedConflictCount()).toBe(0);
   });
 
-  it("dispatches a resolution for a conflicting PR, then untracks it once resolved", async () => {
-    const resolved: number[] = [];
-    let conflicting: ConflictingPR[] = [makePR(10)];
-    const { resolver } = makeResolver({
+  it("dispatches the agent for a general conflict, then untracks once resolved", async () => {
+    const { resolver, spies } = makeResolver({
       list: async () => conflicting,
-      runResolution: async (ctx) => { resolved.push(ctx.pr.number); },
+      classify: async () => ["src/foo.ts", "src/bar.ts"],
     });
+    let conflicting: ConflictingPR[] = [makePR(10)];
 
     await resolver.reconcile();
     await flush();
-    expect(resolved).toEqual([10]);
+    expect(spies.resolved).toEqual([10]);
     expect(resolver.getTrackedConflictCount()).toBe(1);
-    // The per-PR workspace was created.
     expect(fs.existsSync(path.join(tmpRoot, "conflict-pr-10"))).toBe(true);
 
-    // PR no longer conflicting → cleanup removes tracking and the workspace.
     conflicting = [];
     await resolver.reconcile();
     await flush();
-    expect(resolved).toEqual([10]);
+    expect(spies.resolved).toEqual([10]);
     expect(resolver.getTrackedConflictCount()).toBe(0);
     expect(fs.existsSync(path.join(tmpRoot, "conflict-pr-10"))).toBe(false);
   });
 
-  it("throttles re-attempts on a still-conflicting PR by retryIntervalMs", async () => {
-    const resolved: number[] = [];
-    let nowMs = 0;
-    const { resolver } = makeResolver({
-      config: { retryIntervalMs: 600_000 },
-      list: async () => [makePR(10)],
-      runResolution: async (ctx) => { resolved.push(ctx.pr.number); },
-      now: () => nowMs,
+  it("takes the deterministic lockfile fast-path and skips the agent", async () => {
+    const { resolver, spies } = makeResolver({
+      list: async () => [makePR(11, { headBranch: "feature/pr-11" })],
+      classify: async () => ["pnpm-lock.yaml"],
     });
 
     await resolver.reconcile();
     await flush();
-    expect(resolved).toEqual([10]);
+    expect(spies.lockfileHeads).toEqual(["feature/pr-11"]);
+    expect(spies.resolved).toEqual([]);
+  });
 
-    // Within the cooldown window — no re-dispatch.
+  it("skips entirely when the classifier finds no real conflict", async () => {
+    const { resolver, spies } = makeResolver({
+      list: async () => [makePR(12)],
+      classify: async () => [],
+    });
+    await resolver.reconcile();
+    await flush();
+    expect(spies.resolved).toEqual([]);
+  });
+
+  it("falls back to the agent when classification throws", async () => {
+    const { resolver, spies } = makeResolver({
+      list: async () => [makePR(13)],
+      classify: async () => { throw new Error("git boom"); },
+    });
+    await resolver.reconcile();
+    await flush();
+    expect(spies.resolved).toEqual([13]);
+  });
+
+  it("leaves PRs whose ticket is still actively worked to the owning agent", async () => {
+    const { resolver, spies } = makeResolver({
+      list: async () => [
+        makePR(20, { headBranch: "silas/tea-100-active" }),
+        makePR(21, { headBranch: "silas/tea-200-stale" }),
+      ],
+      classify: async () => ["src/foo.ts"],
+      getActiveBranchKeys: async () => new Set(["tea-100"]),
+    });
+    await resolver.reconcile();
+    await flush();
+    // PR 20's ticket is active → skipped; PR 21 → resolved.
+    expect(spies.resolved).toEqual([21]);
+  });
+
+  it("skips dispatch for the cycle when the active-ticket lookup fails", async () => {
+    const { resolver, spies } = makeResolver({
+      list: async () => [makePR(22)],
+      classify: async () => ["src/foo.ts"],
+      getActiveBranchKeys: async () => { throw new Error("linear down"); },
+    });
+    await resolver.reconcile();
+    await flush();
+    expect(spies.resolved).toEqual([]);
+  });
+
+  it("throttles re-attempts on a still-conflicting PR by retryIntervalMs", async () => {
+    const { resolver, spies } = makeResolver({
+      config: { retryIntervalMs: 600_000 },
+      list: async () => [makePR(10)],
+      classify: async () => ["src/foo.ts"],
+      now: () => nowMs,
+    });
+    let nowMs = 0;
+
+    await resolver.reconcile();
+    await flush();
+    expect(spies.resolved).toEqual([10]);
+
     nowMs = 60_000;
     await resolver.reconcile();
     await flush();
-    expect(resolved).toEqual([10]);
+    expect(spies.resolved).toEqual([10]);
 
-    // Cooldown elapsed — re-dispatch.
     nowMs = 600_001;
     await resolver.reconcile();
     await flush();
-    expect(resolved).toEqual([10, 10]);
+    expect(spies.resolved).toEqual([10, 10]);
   });
 
   it("never dispatches more than maxConcurrent resolutions at once", async () => {
@@ -233,6 +326,7 @@ describe("MergeConflictResolver", () => {
     const { resolver } = makeResolver({
       config: { maxConcurrent: 1 },
       list: async () => [makePR(10), makePR(11)],
+      classify: async () => ["src/foo.ts"],
       runResolution: async (ctx) => {
         started.push(ctx.pr.number);
         await new Promise<void>(resolve => gates.push(resolve));
@@ -241,11 +335,9 @@ describe("MergeConflictResolver", () => {
 
     await resolver.reconcile();
     await flush();
-    // Only one slot, so only the first PR starts; the second is gated out.
     expect(started).toEqual([10]);
     expect(resolver.getTrackedConflictCount()).toBe(1);
 
-    // Release the in-flight resolution so the test doesn't leak a pending promise.
     gates.forEach(release => release());
     await flush();
   });

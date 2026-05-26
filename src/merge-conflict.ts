@@ -39,6 +39,12 @@ interface TrackedConflict {
   lastAttemptMs: number | null;
 }
 
+/** Lockfiles we can regenerate deterministically, mapped to the command that rewrites them. */
+export const LOCKFILE_REGEN: Record<string, string> = {
+  "pnpm-lock.yaml": "pnpm install --lockfile-only",
+  "package-lock.json": "npm install --package-lock-only",
+};
+
 export interface MergeConflictResolverOptions {
   config: MergeConflictConfig;
   workspaceRoot: string;
@@ -49,6 +55,19 @@ export interface MergeConflictResolverOptions {
   prClient?: ConflictPrClient;
   /** Override the per-PR resolution runner; injected by tests. */
   runResolution?: (ctx: ResolveConflictsContext) => Promise<void>;
+  /**
+   * Returns the lowercased Linear identifiers of issues currently in an active
+   * state. Conflicting PRs whose branch maps to one of these are left for the
+   * owning agent to resolve, so the resolver never races the main dispatch loop.
+   * When omitted, every conflicting PR is eligible.
+   */
+  getActiveBranchKeys?: () => Promise<Set<string>>;
+  /** Set up the merge and return the list of conflicted paths; injected by tests. */
+  classifyConflicts?: (cwd: string, pr: ConflictingPR, timeoutMs: number, log: Logger) => Promise<string[]>;
+  /** Resolve a lockfile-only conflict deterministically and push; injected by tests. */
+  resolveLockfiles?: (cwd: string, headBranch: string, files: string[], timeoutMs: number, log: Logger) => Promise<void>;
+  /** Abort an in-progress merge to reset the workspace; injected by tests. */
+  abortMerge?: (cwd: string) => Promise<void>;
   now?: () => number;
 }
 
@@ -95,6 +114,10 @@ export class MergeConflictResolver {
   private readonly log: Logger;
   private readonly prClient: ConflictPrClient;
   private readonly runResolution: (ctx: ResolveConflictsContext) => Promise<void>;
+  private readonly getActiveBranchKeys: (() => Promise<Set<string>>) | undefined;
+  private readonly classifyConflicts: (cwd: string, pr: ConflictingPR, timeoutMs: number, log: Logger) => Promise<string[]>;
+  private readonly resolveLockfiles: (cwd: string, headBranch: string, files: string[], timeoutMs: number, log: Logger) => Promise<void>;
+  private readonly abortMerge: (cwd: string) => Promise<void>;
   private readonly now: () => number;
   private readonly tracked = new Map<number, TrackedConflict>();
   private cycleInFlight = false;
@@ -108,6 +131,10 @@ export class MergeConflictResolver {
     this.log = opts.logger;
     this.prClient = opts.prClient ?? new GhCliConflictPrClient();
     this.runResolution = opts.runResolution ?? runResolveConflicts;
+    this.getActiveBranchKeys = opts.getActiveBranchKeys;
+    this.classifyConflicts = opts.classifyConflicts ?? classifyConflicts;
+    this.resolveLockfiles = opts.resolveLockfiles ?? resolveLockfilesAndPush;
+    this.abortMerge = opts.abortMerge ?? gitAbortMerge;
     this.now = opts.now ?? Date.now;
   }
 
@@ -130,10 +157,41 @@ export class MergeConflictResolver {
 
       const conflictingByNumber = new Map(conflicting.map(pr => [pr.number, pr]));
       await this.cleanupResolved(conflictingByNumber);
-      this.dispatchConflicting(conflicting);
+
+      const dispatchable = await this.filterActivelyWorked(conflicting);
+      if (dispatchable !== null) this.dispatchConflicting(dispatchable);
     } finally {
       this.cycleInFlight = false;
     }
+  }
+
+  /**
+   * Drop PRs whose branch maps to a ticket currently in an active state — the
+   * owning agent resolves those itself, and racing it risks duelling pushes to
+   * the same branch. Returns the PRs safe to resolve, or `null` (skip dispatch
+   * this cycle) when the active-ticket lookup fails, so we err on not racing.
+   */
+  private async filterActivelyWorked(conflicting: ConflictingPR[]): Promise<ConflictingPR[] | null> {
+    if (!this.getActiveBranchKeys) return conflicting;
+
+    let activeKeys: Set<string>;
+    try {
+      activeKeys = await this.getActiveBranchKeys();
+    } catch (e) {
+      this.log.warn(`Active-ticket lookup failed; skipping conflict dispatch this cycle: ${fmtErr(e)}`);
+      return null;
+    }
+
+    const dispatchable: ConflictingPR[] = [];
+    let skipped = 0;
+    for (const pr of conflicting) {
+      if (branchMatchesActiveKey(pr.headBranch, activeKeys)) skipped++;
+      else dispatchable.push(pr);
+    }
+    if (skipped > 0) {
+      this.log.info("Skipped conflicting PRs whose ticket is still being worked", { skipped: String(skipped) });
+    }
+    return dispatchable;
   }
 
   getTrackedConflictCount(): number {
@@ -196,6 +254,47 @@ export class MergeConflictResolver {
         await runHook(this.hooks.afterCreate, wsPath, this.hooks.timeoutMs, this.log);
       }
 
+      // Classify the conflict deterministically. A failure here (e.g. a git
+      // setup hiccup) isn't fatal — fall back to the full agent path, which
+      // re-runs its own setup with more resilience.
+      let conflicted: string[] | null = null;
+      try {
+        conflicted = await this.classifyConflicts(wsPath, pr, this.hooks.timeoutMs, this.log);
+      } catch (e) {
+        this.log.warn(`Conflict classification failed; deferring to agent: ${fmtErr(e)}`, { pr_number: String(pr.number) });
+        await this.abortMerge(wsPath);
+      }
+
+      if (conflicted !== null) {
+        if (conflicted.length === 0) {
+          // GitHub's mergeability data was stale, or a prior run already fixed it.
+          await this.abortMerge(wsPath);
+          this.log.info("No conflicts present; nothing to resolve", { pr_number: String(pr.number) });
+          return;
+        }
+
+        if (isLockfileOnly(conflicted)) {
+          try {
+            this.log.info("Lockfile-only conflict; resolving deterministically", {
+              pr_number: String(pr.number),
+              files: conflicted.join(", "),
+            });
+            await this.resolveLockfiles(wsPath, pr.headBranch, conflicted, this.hooks.timeoutMs, this.log);
+            this.log.info("Resolved via lockfile fast-path", {
+              pr_number: String(pr.number),
+              duration_s: ((this.now() - startedAt) / 1000).toFixed(1),
+            });
+            return;
+          } catch (e) {
+            this.log.warn(`Lockfile fast-path failed; deferring to agent: ${fmtErr(e)}`, { pr_number: String(pr.number) });
+            await this.abortMerge(wsPath);
+          }
+        } else {
+          // General conflict: reset so the agent does its own clean setup.
+          await this.abortMerge(wsPath);
+        }
+      }
+
       await this.runResolution({
         pr,
         workspacePath: wsPath,
@@ -221,6 +320,114 @@ export class MergeConflictResolver {
 
 function workspaceKey(prNumber: number): string {
   return `conflict-pr-${prNumber}`;
+}
+
+/** True when the branch embeds one of the active-ticket keys (e.g. `tea-4020`) as a whole token. */
+export function branchMatchesActiveKey(branch: string, keys: Set<string>): boolean {
+  const b = branch.toLowerCase();
+  for (const key of keys) {
+    if (!key) continue;
+    let from = 0;
+    for (;;) {
+      const idx = b.indexOf(key, from);
+      if (idx === -1) break;
+      const before = idx === 0 ? "" : b[idx - 1];
+      const after = b[idx + key.length] ?? "";
+      // A leading alphanumeric (xtea-1) or a trailing digit (tea-402 vs tea-4020)
+      // means this isn't the same identifier.
+      const beforeOk = before === "" || !/[a-z0-9]/.test(before);
+      const afterOk = after === "" || !/[0-9]/.test(after);
+      if (beforeOk && afterOk) return true;
+      from = idx + 1;
+    }
+  }
+  return false;
+}
+
+/** True when every conflicted path is a lockfile we know how to regenerate. */
+export function isLockfileOnly(files: string[]): boolean {
+  return files.length > 0 && files.every(f => Object.hasOwn(LOCKFILE_REGEN, path.basename(f)));
+}
+
+function regenCommands(files: string[]): string[] {
+  const cmds = new Set<string>();
+  for (const f of files) {
+    const cmd = LOCKFILE_REGEN[path.basename(f)];
+    if (cmd) cmds.add(cmd);
+  }
+  return [...cmds];
+}
+
+async function git(cwd: string, args: string[], timeoutMs: number): Promise<string> {
+  const { stdout } = await execFileP("git", args, {
+    cwd,
+    env: process.env,
+    encoding: "utf8",
+    timeout: timeoutMs,
+    maxBuffer: 4 * 1024 * 1024,
+  });
+  return stdout;
+}
+
+/** Best-effort: abort an in-progress merge. No-op if there's nothing to abort. */
+async function gitAbortMerge(cwd: string): Promise<void> {
+  await git(cwd, ["merge", "--abort"], 30_000).catch(() => undefined);
+}
+
+/**
+ * Default classifier: deepen the clone, check out the PR branch, and merge the
+ * base branch in (re-creating the conflict). Leaves the repo mid-merge and
+ * returns the conflicted paths. An empty result means the branches merge
+ * cleanly — the caller aborts and skips.
+ */
+export async function classifyConflicts(cwd: string, pr: ConflictingPR, timeoutMs: number, _log: Logger): Promise<string[]> {
+  // A shallow clone breaks merge-base detection; deepen it first.
+  await git(cwd, ["fetch", "--unshallow"], timeoutMs)
+    .catch(() => git(cwd, ["fetch", "--all", "--tags", "--prune"], timeoutMs).catch(() => undefined));
+  await git(cwd, ["fetch", "origin", pr.headBranch, pr.baseBranch], timeoutMs);
+  await git(cwd, ["checkout", "-B", pr.headBranch, `origin/${pr.headBranch}`], timeoutMs);
+  await git(cwd, ["reset", "--hard", `origin/${pr.headBranch}`], timeoutMs);
+  // A conflicting merge exits non-zero — that's the expected path, not an error.
+  await git(cwd, ["merge", "--no-commit", "--no-ff", `origin/${pr.baseBranch}`], timeoutMs).catch(() => undefined);
+
+  const out = await git(cwd, ["diff", "--name-only", "--diff-filter=U"], timeoutMs);
+  return out.split("\n").map(s => s.trim()).filter(Boolean);
+}
+
+/**
+ * Default lockfile fast-path: with the merge already set up by the classifier
+ * and only lockfiles in conflict, resolve each lockfile to a valid file, then
+ * regenerate it from the (cleanly merged) manifests and push. No LLM involved.
+ */
+export async function resolveLockfilesAndPush(
+  cwd: string,
+  headBranch: string,
+  files: string[],
+  timeoutMs: number,
+  log: Logger,
+): Promise<void> {
+  // Resolve the unmerged lockfile paths to a valid file so the package manager
+  // can read them; the regen step below rewrites them against the merged manifest.
+  for (const file of files) {
+    await git(cwd, ["checkout", "--theirs", "--", file], timeoutMs)
+      .catch(() => git(cwd, ["checkout", "--ours", "--", file], timeoutMs));
+    await git(cwd, ["add", "--", file], timeoutMs);
+  }
+
+  // Regenerate via a login shell so nvm/pnpm/npm are on PATH, like the hooks.
+  for (const cmd of regenCommands(files)) {
+    await runHook(cmd, cwd, timeoutMs, log);
+  }
+
+  for (const file of files) {
+    await git(cwd, ["add", "--", file], timeoutMs);
+  }
+
+  const stillUnmerged = (await git(cwd, ["diff", "--name-only", "--diff-filter=U"], timeoutMs)).trim();
+  if (stillUnmerged) throw new Error(`unmerged paths remain after lockfile regen: ${stillUnmerged}`);
+
+  await git(cwd, ["commit", "--no-edit"], timeoutMs);
+  await git(cwd, ["push", "origin", headBranch], timeoutMs);
 }
 
 /**

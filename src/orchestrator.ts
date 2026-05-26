@@ -931,6 +931,12 @@ export class Orchestrator {
       symphonyRoot: this.symphonyRoot,
       mcpConfigPath: resolveAgentMcpConfigPath(this.symphonyRoot),
       logger: this.log,
+      // Skip PRs whose ticket is still in an active state — the owning agent
+      // resolves those, so the resolver never races the dispatch loop.
+      getActiveBranchKeys: async () => {
+        const issues = await linear.fetchCandidateIssues(this.config.tracker);
+        return new Set(issues.map(i => i.identifier.toLowerCase()));
+      },
     });
   }
 }
