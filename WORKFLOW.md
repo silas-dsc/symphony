@@ -209,7 +209,9 @@ dependabot:
   # first active state (Dev in Progress) so filed tickets are picked up by the poll loop.
   assignee_email: silas@teamdsc.com.au
   min_severity: low
-  max_new_tickets_per_tick: 3
+  # Only ever one Dependabot ticket open at a time — the next alert isn't filed
+  # until the current ticket reaches a terminal state.
+  max_open_tickets: 1
   request_timeout_ms: 30000
 ---
 

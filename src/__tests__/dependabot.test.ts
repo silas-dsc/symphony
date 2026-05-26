@@ -13,6 +13,7 @@ import {
   type CreatedTicket,
   type DependabotAlert,
   type DependabotAlertClient,
+  type DependabotTicketSnapshot,
   type DependabotTicketStore,
 } from "../dependabot.js";
 import type { DependabotConfig, Logger, TrackerConfig } from "../types.js";
@@ -31,7 +32,7 @@ function makeConfig(overrides?: Partial<DependabotConfig>): DependabotConfig {
     assigneeEmail: "silas@teamdsc.com.au",
     label: "dependabot",
     minSeverity: "low",
-    maxNewTicketsPerTick: 3,
+    maxOpenTickets: 1,
     requestTimeoutMs: 30_000,
     ...overrides,
   };
@@ -71,7 +72,7 @@ function makeAlert(number: number, overrides?: Partial<DependabotAlert>): Depend
 function makeWatcher(opts: {
   config?: Partial<DependabotConfig>;
   alerts: () => Promise<DependabotAlert[]>;
-  existing?: () => Promise<Set<string>>;
+  snapshot?: () => Promise<DependabotTicketSnapshot>;
   onCreate?: (alert: DependabotAlert, key: string) => void;
   createThrows?: boolean;
 }): {
@@ -87,7 +88,8 @@ function makeWatcher(opts: {
   };
 
   const ticketStore: DependabotTicketStore = {
-    listExistingAlertKeys: async () => (opts.existing ? opts.existing() : new Set<string>()),
+    snapshot: async () =>
+      opts.snapshot ? opts.snapshot() : { existingKeys: new Set<string>(), openCount: 0 },
     createTicket: async (alert: DependabotAlert, key: string): Promise<CreatedTicket> => {
       if (opts.createThrows) throw new Error("create failed");
       opts.onCreate?.(alert, key);
@@ -138,7 +140,7 @@ prompt body`, "utf8");
     expect(workflow.config.dependabot.targetState).toBe("Dev in Progress");
     expect(workflow.config.dependabot.label).toBe("dependabot");
     expect(workflow.config.dependabot.minSeverity).toBe("low");
-    expect(workflow.config.dependabot.maxNewTicketsPerTick).toBe(3);
+    expect(workflow.config.dependabot.maxOpenTickets).toBe(1);
   });
 
   it("respects opt-in config and explicit overrides", () => {
@@ -161,7 +163,7 @@ dependabot:
   assignee_email: silas@teamdsc.com.au
   label: deps
   min_severity: high
-  max_new_tickets_per_tick: 1
+  max_open_tickets: 2
   request_timeout_ms: 5000
 ---
 
@@ -177,7 +179,7 @@ prompt body`, "utf8");
       assigneeEmail: "silas@teamdsc.com.au",
       label: "deps",
       minSeverity: "high",
-      maxNewTicketsPerTick: 1,
+      maxOpenTickets: 2,
       requestTimeoutMs: 5000,
     });
     expect(validateConfig(workflow.config)).toBeNull();
@@ -251,19 +253,42 @@ describe("DependabotWatcher", () => {
     expect(created).toHaveLength(0);
   });
 
-  it("files one ticket per new open alert", async () => {
+  it("files a ticket only for the most severe new alert (one open at a time)", async () => {
     const { watcher, created } = makeWatcher({
-      alerts: async () => [makeAlert(1), makeAlert(2, { packageName: "axios" })],
+      alerts: async () => [
+        makeAlert(1, { severity: "low" }),
+        makeAlert(2, { severity: "critical", packageName: "axios" }),
+        makeAlert(3, { severity: "high" }),
+      ],
     });
     await watcher.reconcile();
-    expect(created.map(c => c.key)).toEqual(["team-dsc/team-dsc#1", "team-dsc/team-dsc#2"]);
-    expect(watcher.getCreatedCount()).toBe(2);
+    expect(created.map(c => c.key)).toEqual(["team-dsc/team-dsc#2"]);
+    expect(watcher.getCreatedCount()).toBe(1);
+  });
+
+  it("files nothing while a Dependabot ticket is already open", async () => {
+    const { watcher, created } = makeWatcher({
+      alerts: async () => [makeAlert(1), makeAlert(2)],
+      snapshot: async () => ({ existingKeys: new Set<string>(), openCount: 1 }),
+    });
+    await watcher.reconcile();
+    expect(created).toHaveLength(0);
+  });
+
+  it("counts already-open tickets toward the cap", async () => {
+    const { watcher, created } = makeWatcher({
+      config: { maxOpenTickets: 2 },
+      alerts: async () => [makeAlert(1), makeAlert(2), makeAlert(3)],
+      snapshot: async () => ({ existingKeys: new Set<string>(), openCount: 1 }),
+    });
+    await watcher.reconcile();
+    expect(created).toHaveLength(1);
   });
 
   it("dedupes against existing Linear tickets", async () => {
     const { watcher, created } = makeWatcher({
       alerts: async () => [makeAlert(1), makeAlert(2)],
-      existing: async () => new Set(["team-dsc/team-dsc#1"]),
+      snapshot: async () => ({ existingKeys: new Set(["team-dsc/team-dsc#1"]), openCount: 0 }),
     });
     await watcher.reconcile();
     expect(created.map(c => c.key)).toEqual(["team-dsc/team-dsc#2"]);
@@ -271,6 +296,7 @@ describe("DependabotWatcher", () => {
 
   it("does not re-file a ticket it already created this run", async () => {
     const { watcher, created } = makeWatcher({
+      config: { maxOpenTickets: 10 },
       alerts: async () => [makeAlert(1)],
     });
     await watcher.reconcile();
@@ -278,9 +304,9 @@ describe("DependabotWatcher", () => {
     expect(created.map(c => c.key)).toEqual(["team-dsc/team-dsc#1"]);
   });
 
-  it("skips alerts below the minimum severity", async () => {
+  it("skips alerts below the minimum severity and files worst-first", async () => {
     const { watcher, created } = makeWatcher({
-      config: { minSeverity: "high" },
+      config: { minSeverity: "high", maxOpenTickets: 10 },
       alerts: async () => [
         makeAlert(1, { severity: "low" }),
         makeAlert(2, { severity: "moderate" }),
@@ -289,11 +315,12 @@ describe("DependabotWatcher", () => {
       ],
     });
     await watcher.reconcile();
-    expect(created.map(c => c.key)).toEqual(["team-dsc/team-dsc#3", "team-dsc/team-dsc#4"]);
+    expect(created.map(c => c.key)).toEqual(["team-dsc/team-dsc#4", "team-dsc/team-dsc#3"]);
   });
 
   it("ignores alerts that are not open", async () => {
     const { watcher, created } = makeWatcher({
+      config: { maxOpenTickets: 10 },
       alerts: async () => [
         makeAlert(1, { state: "dismissed" }),
         makeAlert(2, { state: "fixed" }),
@@ -304,23 +331,23 @@ describe("DependabotWatcher", () => {
     expect(created.map(c => c.key)).toEqual(["team-dsc/team-dsc#3"]);
   });
 
-  it("caps new tickets per tick", async () => {
+  it("caps the number of tickets it files at maxOpenTickets", async () => {
     const { watcher, created } = makeWatcher({
-      config: { maxNewTicketsPerTick: 2 },
+      config: { maxOpenTickets: 2 },
       alerts: async () => [makeAlert(1), makeAlert(2), makeAlert(3)],
     });
     await watcher.reconcile();
     expect(created).toHaveLength(2);
   });
 
-  it("skips creation for the whole tick if the dedupe query fails", async () => {
+  it("skips creation for the whole tick if the ticket snapshot fails", async () => {
     const { watcher, created } = makeWatcher({
       alerts: async () => [makeAlert(1)],
-      existing: async () => { throw new Error("linear down"); },
+      snapshot: async () => { throw new Error("linear down"); },
     });
     await watcher.reconcile();
     expect(created).toHaveLength(0);
-    // A later tick with a healthy dedupe query files the ticket.
+    // A later tick with a healthy snapshot files the ticket.
     const recovered = makeWatcher({ alerts: async () => [makeAlert(1)] });
     await recovered.watcher.reconcile();
     expect(recovered.created.map(c => c.key)).toEqual(["team-dsc/team-dsc#1"]);

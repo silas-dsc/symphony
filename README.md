@@ -255,7 +255,7 @@ You are an autonomous coding agent working on {{ issue.identifier }}: {{ issue.t
 | `dependabot.assignee_email` | — | Email (or name) of the Linear user to assign each ticket to; empty leaves it unassigned |
 | `dependabot.label` | `dependabot` | Linear label applied to every ticket; also the dedupe key carrier so the same alert isn't filed twice |
 | `dependabot.min_severity` | `low` | Only file tickets for alerts at or above this severity: `low`, `medium`, `high`, `critical` |
-| `dependabot.max_new_tickets_per_tick` | `3` | Cap on how many new tickets one tick may file — throttles the initial burst when first enabled |
+| `dependabot.max_open_tickets` | `1` | Hard cap on how many Dependabot tickets may be open (in a non-terminal state) at once. The default keeps dependency bumps serialized — the next alert isn't filed until the current ticket is Done/Cancelled |
 | `dependabot.request_timeout_ms` | `30000` | Timeout for the `gh api` call that lists Dependabot alerts |
 
 #### Prompt template variables
@@ -447,7 +447,9 @@ It **never merges, approves, closes, or otherwise state-changes the PR** — a h
 
 ## Automatic Dependabot triage
 
-When `dependabot.enabled` is `true`, every orchestrator tick reads the configured repo's **open GitHub Dependabot alerts** (`gh api repos/<owner>/<repo>/dependabot/alerts?state=open`) and files one Linear ticket per *new* alert. It does **not** spawn its own fix agent — it hands the work to Symphony's existing pipeline by creating the ticket directly in an active state, so the normal poll loop dispatches the Intent → Architect → Developer → Tester → Reviewer flow that bumps the dependency, runs `pnpm install`, tests the affected code, fixes any breakage, and opens a PR.
+When `dependabot.enabled` is `true`, every orchestrator tick reads the configured repo's **open GitHub Dependabot alerts** (`gh api repos/<owner>/<repo>/dependabot/alerts?state=open`) and files a Linear ticket for the most severe *new* alert. It does **not** spawn its own fix agent — it hands the work to Symphony's existing pipeline by creating the ticket directly in an active state, so the normal poll loop dispatches the Intent → Architect → Developer → Tester → Reviewer flow that bumps the dependency, runs `pnpm install`, tests the affected code, fixes any breakage, and opens a PR.
+
+**Only `dependabot.max_open_tickets` Dependabot tickets are ever open at once (default 1).** Each tick the watcher counts Dependabot-labelled tickets in a non-terminal state; once that cap is reached it files nothing, so the next alert isn't picked up until the current ticket reaches a terminal state (Done/Cancelled). This serializes dependency bumps instead of opening a PR per alert simultaneously. Eligible alerts are sorted worst-first, so the single open ticket always targets the highest-severity vulnerability.
 
 Each filed ticket:
 
@@ -455,7 +457,7 @@ Each filed ticket:
 2. Carries a deterministic, machine-generated description: affected package + ecosystem, manifest path, severity, vulnerable range, first patched version, GHSA/CVE IDs, advisory summary, references, and a pnpm-/monorepo-aware acceptance-criteria checklist. (When no patched version is published yet, the checklist instead asks the agent to assess mitigation or dismissal.)
 3. Hides a `<!-- symphony-dependabot:<owner>/<repo>#<alert-number> -->` marker in the description. Before filing anything, the watcher reads back every ticket carrying `dependabot.label` and skips alerts whose key is already present — so the same alert is never filed twice, even across orchestrator restarts. An in-process set covers the same-run fast path.
 
-Alerts below `dependabot.min_severity` are ignored, and at most `dependabot.max_new_tickets_per_tick` tickets are filed per tick so enabling it on a backlog of alerts trickles in rather than flooding the board. If the dedupe read-back fails (Linear hiccup), the watcher files **nothing** that tick rather than risk duplicates, and retries next tick. Once the agent's PR merges, the alert flips to `fixed` on GitHub and stops being reported. Requires the `gh` CLI to be authenticated with access to the repo's Dependabot alerts (a token with `security_events` read, or `repo` scope), same as the other GitHub-backed features.
+Alerts below `dependabot.min_severity` are ignored. If the ticket read-back fails (Linear hiccup), the watcher files **nothing** that tick rather than risk duplicates or breaching the open cap, and retries next tick. Once the agent's PR merges, the alert flips to `fixed` on GitHub and stops being reported. Requires the `gh` CLI to be authenticated with access to the repo's Dependabot alerts (a token with `security_events` read, or `repo` scope), same as the other GitHub-backed features.
 
 ## Continuous self-improvement
 

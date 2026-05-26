@@ -34,10 +34,16 @@ export interface CreatedTicket {
   url: string | null;
 }
 
-/** Reads/writes the Linear side: which alerts already have tickets, and creating new ones. */
+export interface DependabotTicketSnapshot {
+  /** Stable keys (`owner/repo#N`) of alerts that already have a Linear ticket, in any state. Used to dedupe. */
+  existingKeys: Set<string>;
+  /** Count of Dependabot-labelled tickets currently in a non-terminal state. Used to cap concurrency. */
+  openCount: number;
+}
+
+/** Reads/writes the Linear side: the current ticket picture, and creating new ones. */
 export interface DependabotTicketStore {
-  /** Stable keys (`owner/repo#N`) of alerts that already have a Linear ticket. */
-  listExistingAlertKeys(): Promise<Set<string>>;
+  snapshot(): Promise<DependabotTicketSnapshot>;
   createTicket(alert: DependabotAlert, key: string): Promise<CreatedTicket>;
 }
 
@@ -124,10 +130,17 @@ export function buildDependabotTicketDescription(alert: DependabotAlert, key: st
 }
 
 /**
- * Scans the repo's open Dependabot alerts each tick and files one Linear ticket
- * per new alert — assigned to the configured user, in the configured active
- * state — then leaves the rest to Symphony's normal poll loop, which dispatches
- * an agent to bump the dependency, run `pnpm install`, test, and open a PR.
+ * Scans the repo's open Dependabot alerts each tick and files a Linear ticket
+ * for the most severe un-ticketed alert — assigned to the configured user, in
+ * the configured active state — then leaves the rest to Symphony's normal poll
+ * loop, which dispatches an agent to bump the dependency, run `pnpm install`,
+ * test, and open a PR.
+ *
+ * Only `maxOpenTickets` Dependabot tickets (default 1) are ever open at once:
+ * the watcher counts Dependabot-labelled tickets in a non-terminal state and
+ * files nothing while that cap is reached, so the next alert isn't picked up
+ * until the current ticket is Done/Cancelled. This keeps dependency bumps
+ * serialized rather than opening a PR per alert simultaneously.
  *
  * Mirrors MergeConflictResolver's shape: a `cycleInFlight` guard, an injectable
  * GitHub client, and dedupe that survives restarts (markers on labelled tickets)
@@ -165,29 +178,34 @@ export class DependabotWatcher {
       }
 
       const minRank = severityRank(this.cfg.minSeverity);
-      const eligible = alerts.filter(a => a.state === "open" && severityRank(a.severity) >= minRank);
+      const eligible = alerts
+        .filter(a => a.state === "open" && severityRank(a.severity) >= minRank)
+        // Worst first, so the single open ticket targets the most severe alert.
+        .sort((a, b) => severityRank(b.severity) - severityRank(a.severity) || a.number - b.number);
       if (eligible.length === 0) return;
 
-      // Fail safe: if we can't read the existing tickets, skip creation this tick
-      // rather than risk filing duplicates.
-      let existing: Set<string>;
+      // Fail safe: if we can't read the current ticket picture, skip creation this
+      // tick rather than risk filing duplicates or breaching the open-ticket cap.
+      let snap: DependabotTicketSnapshot;
       try {
-        existing = await this.ticketStore.listExistingAlertKeys();
+        snap = await this.ticketStore.snapshot();
       } catch (e) {
-        this.log.warn(`Dependabot dedupe query failed, skipping creation this tick: ${fmtErr(e)}`);
+        this.log.warn(`Dependabot ticket snapshot failed, skipping creation this tick: ${fmtErr(e)}`);
         return;
       }
 
-      let createdThisTick = 0;
+      let openCount = snap.openCount;
       for (const alert of eligible) {
-        if (createdThisTick >= this.cfg.maxNewTicketsPerTick) break;
+        // Hard cap: never exceed maxOpenTickets Dependabot tickets open at once.
+        if (openCount >= this.cfg.maxOpenTickets) break;
         const key = dependabotAlertKey(this.cfg.repoOwner, this.cfg.repoName, alert.number);
-        if (this.createdKeys.has(key) || existing.has(key)) continue;
+        // Already has a ticket (open or already-closed) — never re-file the same alert.
+        if (this.createdKeys.has(key) || snap.existingKeys.has(key)) continue;
 
         try {
           const ticket = await this.ticketStore.createTicket(alert, key);
           this.createdKeys.add(key);
-          createdThisTick++;
+          openCount++;
           this.log.info("Filed Linear ticket for Dependabot alert", {
             alert: key,
             issue: ticket.identifier,
@@ -290,21 +308,26 @@ interface ResolvedRefs {
 
 class LinearTicketStore implements DependabotTicketStore {
   private refs: ResolvedRefs | null = null;
+  private readonly terminalStatesLower: Set<string>;
 
   constructor(
     private readonly cfg: DependabotConfig,
     private readonly tracker: TrackerConfig,
     private readonly log: Logger,
-  ) {}
+  ) {
+    this.terminalStatesLower = new Set(tracker.terminalStates.map(s => s.toLowerCase()));
+  }
 
-  async listExistingAlertKeys(): Promise<Set<string>> {
-    const descriptions = await linear.fetchIssueDescriptionsByLabel(this.tracker, this.cfg.teamKey, this.cfg.label);
-    const keys = new Set<string>();
-    for (const desc of descriptions) {
-      const key = extractAlertKey(desc);
-      if (key) keys.add(key);
+  async snapshot(): Promise<DependabotTicketSnapshot> {
+    const issues = await linear.fetchIssuesByLabel(this.tracker, this.cfg.teamKey, this.cfg.label);
+    const existingKeys = new Set<string>();
+    let openCount = 0;
+    for (const issue of issues) {
+      const key = extractAlertKey(issue.description);
+      if (key) existingKeys.add(key);
+      if (!this.terminalStatesLower.has(issue.state.toLowerCase())) openCount++;
     }
-    return keys;
+    return { existingKeys, openCount };
   }
 
   async createTicket(alert: DependabotAlert, key: string): Promise<CreatedTicket> {

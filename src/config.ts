@@ -234,7 +234,7 @@ function buildConfig(raw: Record<string, unknown>, baseDir: string): WorkflowCon
       assigneeEmail: (dependabot.assignee_email as string | undefined) ?? "",
       label: (dependabot.label as string | undefined) ?? "dependabot",
       minSeverity: ((dependabot.min_severity as string | undefined) ?? "low").toLowerCase(),
-      maxNewTicketsPerTick: (dependabot.max_new_tickets_per_tick as number | undefined) ?? 3,
+      maxOpenTickets: (dependabot.max_open_tickets as number | undefined) ?? 1,
       requestTimeoutMs: (dependabot.request_timeout_ms as number | undefined) ?? 30000,
     },
   };
@@ -287,7 +287,7 @@ export function validateConfig(config: WorkflowConfig): string | null {
       return `dependabot.target_state (${d.targetState}) must be one of tracker.active_states, otherwise the created ticket will never be dispatched`;
     }
     if (!VALID_SEVERITIES.has(d.minSeverity)) return "dependabot.min_severity must be one of: low, medium, high, critical";
-    if (!Number.isInteger(d.maxNewTicketsPerTick) || d.maxNewTicketsPerTick <= 0) return "dependabot.max_new_tickets_per_tick must be a positive integer";
+    if (!Number.isInteger(d.maxOpenTickets) || d.maxOpenTickets <= 0) return "dependabot.max_open_tickets must be a positive integer";
     if (d.requestTimeoutMs <= 0) return "dependabot.request_timeout_ms must be > 0";
   }
   if (!config.workspace.root) return "workspace.root could not be resolved";

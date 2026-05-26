@@ -66,8 +66,8 @@ export interface DependabotConfig {
   label: string;
   /** Only file tickets for alerts at or above this severity: low | medium | high | critical. */
   minSeverity: string;
-  /** Cap on how many new tickets a single tick may create (guards against a flood when first enabled). */
-  maxNewTicketsPerTick: number;
+  /** Hard cap on how many Dependabot tickets may be open (non-terminal) at once. Defaults to 1. */
+  maxOpenTickets: number;
   /** Timeout for the `gh api` call that lists Dependabot alerts, in ms. */
   requestTimeoutMs: number;
 }

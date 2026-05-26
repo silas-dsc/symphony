@@ -776,7 +776,7 @@ const ISSUES_BY_LABEL_QUERY = `
       first: $first
       after: $after
     ) {
-      nodes { id identifier description }
+      nodes { id identifier description state { name } }
       pageInfo { hasNextPage endCursor }
     }
   }
@@ -784,22 +784,28 @@ const ISSUES_BY_LABEL_QUERY = `
 
 interface IssuesByLabelPayload {
   issues: {
-    nodes: Array<{ description: string | null }>;
+    nodes: Array<{ description: string | null; state: { name: string } | null }>;
     pageInfo: { hasNextPage: boolean; endCursor: string | null };
   };
 }
 
+export interface LabeledIssue {
+  description: string;
+  state: string;
+}
+
 /**
- * Returns the descriptions of every issue in the team carrying the given label,
- * across all states. The Dependabot watcher scans these for its dedupe marker so
- * the same alert isn't filed twice (survives restarts, unlike an in-memory set).
+ * Returns every issue in the team carrying the given label, across all states,
+ * with its description and current state name. The Dependabot watcher scans the
+ * descriptions for its dedupe marker (so the same alert isn't filed twice —
+ * survives restarts) and uses the state to count how many tickets are still open.
  */
-export async function fetchIssueDescriptionsByLabel(
+export async function fetchIssuesByLabel(
   config: TrackerConfig,
   teamKey: string,
   label: string,
-): Promise<string[]> {
-  const descriptions: string[] = [];
+): Promise<LabeledIssue[]> {
+  const issues: LabeledIssue[] = [];
   let after: string | null = null;
 
   while (true) {
@@ -808,7 +814,7 @@ export async function fetchIssueDescriptionsByLabel(
     const data = await graphql<IssuesByLabelPayload>(config.endpoint, config.apiKey, ISSUES_BY_LABEL_QUERY, vars);
 
     for (const node of data.issues.nodes) {
-      if (node.description) descriptions.push(node.description);
+      issues.push({ description: node.description ?? "", state: node.state?.name ?? "" });
     }
 
     if (!data.issues.pageInfo.hasNextPage) break;
@@ -816,7 +822,7 @@ export async function fetchIssueDescriptionsByLabel(
     after = data.issues.pageInfo.endCursor;
   }
 
-  return descriptions;
+  return issues;
 }
 
 const ISSUE_CREATE_MUTATION = `
