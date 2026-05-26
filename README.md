@@ -393,6 +393,7 @@ The prompt template in `WORKFLOW.md` instructs the parent agent to coordinate fo
 |---|---|---|
 | Intent gate | Disambiguate the ticket before refinement. | `prompts/INTENT.md` |
 | Ticket refinement | Produce Context / AC / Technical Approach / Test Plan / Out of Scope. | `prompts/REFINE_TICKET.md` |
+| Figma BA | For tickets with a Figma design: import the design (requesting access with instructions if needed), produce detailed desktop **and** mobile specs (collapsing desktop→mobile where no mobile frame exists), map how the parts connect, quantise styles to the nearest existing Tailwind token, and surface/resolve gaps, assumptions, and improvements. Skipped when the ticket has no Figma URL. | `prompts/FIGMA_BA.md` |
 | Architect plan | One commit per task, plus a **Tests to add** section so developer-side tests aren't an afterthought. | `prompts/ARCHITECT.md` |
 | Code quality | Per-file walkthrough + scoped `pnpm --filter` lint/typecheck. | `prompts/CODE_QUALITY.md` |
 | TDD | Failing test first for every bug fix; tests alongside new logic. | `prompts/TDD.md` |
@@ -401,6 +402,7 @@ The prompt template in `WORKFLOW.md` instructs the parent agent to coordinate fo
 | Verify (pre-push gate) | One scripted command (`scripts/verify-changes.sh`) runs scoped lint/typecheck, package unit tests, forbidden-token scan, secret scan, and untracked-leftover scan. The agent must paste `VERIFY: pass` into its workpad before pushing; missing/stale VERIFY notes are Blocking findings during code review. | `prompts/VERIFY.md`, `scripts/verify-changes.sh` |
 | Self-review | Developer-side diff re-read against the five checklists immediately before push. | `prompts/SELF_REVIEW.md` |
 | Tester | Independent E2E verification against the Architect's Functional Test Matrix; element-scoped screenshots only; also re-checks VERIFY. | `prompts/TESTER.md` |
+| Accessibility audit | For frontend changes: independent WCAG 2.2 AA audit (contrast, keyboard navigation, semantic labels, skip-to-main-content, plain language, status messages) via axe-core + manual checks; barriers route back to the Developer. Skipped when the diff touches no frontend. | `prompts/ACCESSIBILITY.md` |
 | Code review | Independent senior-engineer review of the diff, with explicit gates on test coverage, VERIFY freshness, and `docs/AGENT_MEMORY.md` rule compliance. | `prompts/CODE_REVIEW.md` |
 | Delivery | One Linear comment + matching PR body. | `prompts/DELIVERY_COMMENT.md` |
 | Clear writing | Sentence- and word-level style applied to every prose artefact an agent produces — briefs, plans, ticket descriptions, comments, retros. | `prompts/CLEAR_WRITING.md` |

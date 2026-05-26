@@ -20,7 +20,7 @@ You DO:
 
 1. `.claude/intent.md` (Phase 1A output).
 2. The refined Linear ticket description (Context, AC, Technical Approach, Test Plan, Out of Scope).
-3. `.symphony-figma/tech-spec.md` if Figma intake ran.
+3. `.symphony-figma/tech-spec.md`, `.symphony-figma/style-map.md`, and `.symphony-figma/screens/*.md` if the Figma BA ran (per-screen specs and snapped style tokens drive the Plan and Test Matrix).
 4. **`{{ symphony.root }}/docs/AGENT_MEMORY.md`** — project memory. Read every section that names a file or area the ticket touches. The rules in there are non-negotiable defaults; if your Plan needs to break one, justify it under Assumptions.
 5. The codebase — routes, components, types, tests, schemas — on the surface the ticket touches.
 

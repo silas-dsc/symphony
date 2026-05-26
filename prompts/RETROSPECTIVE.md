@@ -104,7 +104,8 @@ PY
   - `delivery` — Delivery comment was too long, missing test steps, missing screenshots, etc.
   - `mobile-ux` — issue at 375px not caught.
   - `performance` — slow query, N+1, hot-path issue.
-  - `figma-intake` — design parsing produced wrong specs.
+  - `figma-intake` — Figma BA design parsing produced wrong specs (mis-read layout, missed a screen, bad style quantisation, unflagged gap).
+  - `accessibility` — a WCAG/accessibility barrier (contrast, keyboard, semantics, skip-link, plain language) shipped or was caught late.
   - `comment-noise` — too many Linear comments / reviewer couldn't find the deliverable.
   - `screenshot-scope` — screenshots not element-scoped, hid the changed section.
   - `flaky-test` — test instability caused false failures.
