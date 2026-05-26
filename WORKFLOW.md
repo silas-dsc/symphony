@@ -194,6 +194,14 @@ retrospective:
   lessons_path: lessons/lessons.jsonl
   max_turns: 15
   timeout_ms: 300000
+merge_conflicts:
+  enabled: true
+  # repo_owner / repo_name inherit from github_preview (team-dsc/team-dsc) when omitted.
+  max_turns: 30
+  timeout_ms: 1200000
+  max_concurrent: 2
+  retry_interval_ms: 600000
+  request_timeout_ms: 30000
 ---
 
 You are the **parent agent** working autonomously on a Linear ticket for the **team-dsc** codebase — a TypeScript/React (Remix) web application with a Firebase/Firestore backend, managed as a pnpm monorepo.
@@ -454,6 +462,9 @@ These are the reusable skills agents apply during the phases above. Sub-agents a
 | Accessibility audit (WCAG 2.2 AA) | Phase 4A — only if the diff touches frontend | `prompts/ACCESSIBILITY.md` |
 | Independent code review | Phase 4.5 | `prompts/CODE_REVIEW.md` |
 | Delivery comment | Phase 5 | `prompts/DELIVERY_COMMENT.md` |
+| Resolve merge conflicts | Orchestrator-triggered (not a phase) — runs on any open PR GitHub reports as conflicting | `prompts/RESOLVE_CONFLICTS.md` |
+
+`prompts/RESOLVE_CONFLICTS.md` is not part of the per-ticket phases above. Symphony spawns it directly (like the retrospective) for each open PR that has merge conflicts: it merges the base branch into the PR branch, resolves the conflicts so both sides' intent survives, and pushes to the PR branch. It never merges the PR. See `merge_conflicts` in the front matter to configure it.
 
 ### Project memory
 

@@ -239,6 +239,14 @@ You are an autonomous coding agent working on {{ issue.identifier }}: {{ issue.t
 | `retrospective.lessons_path` | `<symphony>/lessons/lessons.jsonl` | Absolute or relative path to the JSONL file the retrospective appends to |
 | `retrospective.max_turns` | `15` | Max Claude turns per retrospective before it's aborted |
 | `retrospective.timeout_ms` | `300000` | Hard wall-clock timeout per retrospective run |
+| `merge_conflicts.enabled` | `false` | When true, each orchestrator tick scans open PRs and spawns a sub-agent to resolve the conflicts on any GitHub reports as `CONFLICTING` |
+| `merge_conflicts.repo_owner` | `github_preview.repo_owner` | GitHub repo owner whose open PRs are scanned; falls back to the `github_preview` owner |
+| `merge_conflicts.repo_name` | `github_preview.repo_name` | GitHub repo name whose open PRs are scanned; falls back to the `github_preview` name |
+| `merge_conflicts.max_turns` | `30` | Max Claude turns per resolution before it's aborted |
+| `merge_conflicts.timeout_ms` | `1200000` | Hard wall-clock timeout per resolution run (20 min) |
+| `merge_conflicts.max_concurrent` | `2` | Maximum conflict-resolution sub-agents running at once |
+| `merge_conflicts.retry_interval_ms` | `600000` | Minimum delay before re-attempting a PR that is still conflicting after a prior run |
+| `merge_conflicts.request_timeout_ms` | `30000` | Timeout for the `gh pr list` call that finds conflicting PRs |
 
 #### Prompt template variables
 
@@ -374,6 +382,7 @@ src/
   orchestrator.ts   — poll loop, dispatch, retry queue, state reconciliation
   agent.ts          — spawns `claude` subprocess, streams JSON events, returns AgentResult
   retrospective.ts  — spawns a one-shot retrospective `claude` process per terminal ticket
+  merge-conflict.ts — scans open PRs each tick; spawns a `claude` process to resolve conflicts on each conflicting PR
   meta-improve.ts   — CLI that reads lessons.jsonl and proposes prompt edits on a branch
   linear.ts         — GraphQL client for Linear (issues, states, team URL)
   workspace.ts      — creates/removes per-ticket directories; runs hooks via bash -l
@@ -406,10 +415,24 @@ The prompt template in `WORKFLOW.md` instructs the parent agent to coordinate fo
 | Code review | Independent senior-engineer review of the diff, with explicit gates on test coverage, VERIFY freshness, and `docs/AGENT_MEMORY.md` rule compliance. | `prompts/CODE_REVIEW.md` |
 | Delivery | One Linear comment + matching PR body. | `prompts/DELIVERY_COMMENT.md` |
 | Clear writing | Sentence- and word-level style applied to every prose artefact an agent produces — briefs, plans, ticket descriptions, comments, retros. | `prompts/CLEAR_WRITING.md` |
+| Resolve merge conflicts | Orchestrator-triggered (not a phase). For any open PR GitHub reports as conflicting: merge the base branch into the PR branch, resolve so both sides' intent survives (latest/better outcome wins on true contradictions), and push to the PR branch. Never merges the PR. | `prompts/RESOLVE_CONFLICTS.md` |
 
 ### Project memory — `docs/AGENT_MEMORY.md`
 
 A persistent, gitable knowledge base every relevant sub-agent reads before investigating the codebase. Records domain vocabulary, roles, architectural decisions, file and naming conventions, common pitfalls, and "things that look like bugs but aren't". The meta-improve pass can append to this file when a retrospective's root cause is "agent didn't know about <rule>" — so the next ticket starts with the rule already known.
+
+## Automatic merge-conflict resolution
+
+When `merge_conflicts.enabled` is `true`, every orchestrator tick scans the configured repo's open pull requests (`gh pr list`) and, for each one GitHub reports as `CONFLICTING`, spawns a one-shot Claude session (`prompts/RESOLVE_CONFLICTS.md`) in a fresh per-PR workspace to resolve the conflicts. It runs on **all** open PRs with conflicts — not just the ticket currently in flight.
+
+The resolver:
+
+1. Clones the repo into a `conflict-pr-<n>` workspace (reusing the `hooks.after_create` clone) and merges the **base** branch into the **PR (head)** branch — re-creating the conflict locally without merging the PR itself.
+2. For each conflicted file, reads all three versions (ancestor / PR side / base side), names the intent of each side, and **merges both intents** so neither change is lost.
+3. Only when two intents genuinely contradict does it pick a winner — the side that delivers the better overall outcome, **usually the latest update**, judged from commit recency, the PR's stated goal, and whether the resolution keeps tests passing. Every winner-takes-all call is justified in one sentence and noted in a single PR comment.
+4. Commits and pushes to the **PR branch only** (never force-push, never the base branch).
+
+It **never merges, approves, closes, or otherwise state-changes the PR** — a human still reviews and merges. Resolutions run in the background (up to `merge_conflicts.max_concurrent` at once) so a long session never blocks the orchestrator tick; a PR that stays conflicting after a run isn't re-attempted until `merge_conflicts.retry_interval_ms` has elapsed, and tracking (plus the workspace) is dropped once the PR is no longer conflicting. Requires the `gh` CLI to be authenticated, same as the GitHub preview warmer.
 
 ## Continuous self-improvement
 

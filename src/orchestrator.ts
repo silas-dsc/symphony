@@ -14,6 +14,7 @@ import type {
 } from "./types.js";
 import { loadWorkflow, validateConfig } from "./config.js";
 import { GitHubPreviewWarmer, StaticUrlWarmer } from "./github-preview.js";
+import { MergeConflictResolver } from "./merge-conflict.js";
 import * as linear from "./linear.js";
 import { isCompletionState, sendBatchedSlackNotification } from "./notifications.js";
 import { getWorkspacePath, removeWorkspace } from "./workspace.js";
@@ -48,6 +49,7 @@ export class Orchestrator {
   private reloadTimer: ReturnType<typeof setTimeout> | null = null;
   private previewWarmer: GitHubPreviewWarmer | null = null;
   private staticWarmer: StaticUrlWarmer | null = null;
+  private mergeConflictResolver: MergeConflictResolver | null = null;
   private log: Logger;
 
   constructor(workflowPath: string, logger: Logger) {
@@ -61,6 +63,7 @@ export class Orchestrator {
     this.derived = computeDerived(this.config);
     this.previewWarmer = this.createPreviewWarmer();
     this.staticWarmer = this.createStaticWarmer();
+    this.mergeConflictResolver = this.createMergeConflictResolver();
 
     this.state = {
       pollIntervalMs: this.config.polling.intervalMs,
@@ -279,6 +282,7 @@ export class Orchestrator {
     this.derived = computeDerived(this.config);
     this.previewWarmer = this.createPreviewWarmer();
     this.staticWarmer = this.createStaticWarmer();
+    this.mergeConflictResolver = this.createMergeConflictResolver();
     this.state.pollIntervalMs = this.config.polling.intervalMs;
     this.state.maxConcurrentAgents = this.config.agent.maxConcurrentAgents;
     this.log.info("WORKFLOW.md reloaded");
@@ -299,6 +303,10 @@ export class Orchestrator {
 
     if (this.staticWarmer) {
       await this.staticWarmer.reconcile();
+    }
+
+    if (this.mergeConflictResolver) {
+      await this.mergeConflictResolver.reconcile();
     }
 
     const validationError = validateConfig(this.config);
@@ -912,6 +920,18 @@ export class Orchestrator {
   private createStaticWarmer(): StaticUrlWarmer | null {
     if (this.config.keepAlive.urls.length === 0) return null;
     return new StaticUrlWarmer(this.config.keepAlive, this.log);
+  }
+
+  private createMergeConflictResolver(): MergeConflictResolver | null {
+    if (!this.config.mergeConflicts.enabled) return null;
+    return new MergeConflictResolver({
+      config: this.config.mergeConflicts,
+      workspaceRoot: this.config.workspace.root,
+      hooks: this.config.hooks,
+      symphonyRoot: this.symphonyRoot,
+      mcpConfigPath: resolveAgentMcpConfigPath(this.symphonyRoot),
+      logger: this.log,
+    });
   }
 }
 
