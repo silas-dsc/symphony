@@ -39,6 +39,8 @@ The agent has headless Chrome via the `@playwright/mcp` server, launched with `-
 - [ ] Page has a single `<h1>`; heading levels are sequential.
 - [ ] Body text contrast ≥ 4.5:1.
 
+This is the developer-side quick-pass. The full WCAG 2.2 AA audit (contrast, keyboard navigation, semantics, skip-to-main-content, plain language, status messages) is run independently by the Accessibility Tester in Phase 4A — see `{{ symphony.root }}/prompts/ACCESSIBILITY.md`. Clearing these four here keeps Phase 4A from bouncing the ticket back to you.
+
 ## Lightweight self-verify (no deliverable screenshots)
 
 The dev server is already running on the HTTPS proxy port:

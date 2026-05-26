@@ -247,7 +247,7 @@ Two surfaces only — and they share **one** body. Everything else is private to
 
 The shape of that body is fixed in `{{ symphony.root }}/prompts/DELIVERY_COMMENT.md`: one-sentence summary, three callouts (one short sentence each), one screenshot, and three links (PR, Preview, Linear). Nothing else.
 
-Every other agent artefact — intent brief, plan, test matrix, QA results, code review findings, meta-review, workpad, original description, Figma intake — lives in the per-ticket workspace under `.claude/` (gitignored). Do **not** post any of it to Linear or to the PR. If two agents need to coordinate, they coordinate through files in `.claude/`.
+Every other agent artefact — intent brief, plan, test matrix, QA results, accessibility results, code review findings, meta-review, workpad, original description, Figma BA artefacts — lives in the per-ticket workspace under `.claude/` (gitignored). Do **not** post any of it to Linear or to the PR. If two agents need to coordinate, they coordinate through files in `.claude/`.
 
 The Refiner is the one exception: it still updates the Linear issue **description** (the spec — Context / AC / Technical Approach / Test Plan / Out of Scope). The description is the spec, not a comment.
 
@@ -274,6 +274,8 @@ Note: any `## Rework notes` section already present in the issue description was
   workpad.md                  # Phase checkboxes + notes + VERIFY pass lines
   qa-results.md               # Tester results + screenshot paths (Phase 4)
   tester-findings.md          # Tester → Developer rework brief, if any
+  a11y-results.md             # Accessibility audit results (Phase 4A, frontend only)
+  a11y-findings.md            # Accessibility → Developer rework brief, if any
   code-review.md              # Code Reviewer verdict + findings (Phase 4.5)
   debug-<scenario>.md         # Structured-debug artefacts (created on demand)
   screenshots/                # Tester element-scoped captures
@@ -414,15 +416,17 @@ The Self-review pass (`prompts/SELF_REVIEW.md`) and Phase 4.5 Code Reviewer both
 Phase 0  State check        (quick gate, no sub-agent)
 Phase 1  Intent & Refine    Sub-agent A — prompts/INTENT.md            (Intent Analyst, reads docs/AGENT_MEMORY.md)
                             Sub-agent B — prompts/REFINE_TICKET.md     (Refiner)
-                            Sub-agent C — prompts/FIGMA_INTAKE.md      ← if Figma URL present
+                            Sub-agent C — prompts/FIGMA_BA.md          ← if Figma URL present (skip otherwise)
 Phase 2  Architect          Sub-agent  — prompts/ARCHITECT.md          (Plan + Tests-to-add + Test Matrix, reads docs/AGENT_MEMORY.md)
 Phase 3  Develop            You (parent)  — prompts/CODE_QUALITY.md, prompts/TDD.md, prompts/PERFORMANCE.md, prompts/MOBILE_UX.md
                             Skill on demand — prompts/DEBUG.md         (when stuck or Tester fails)
-                            Sub-agents per screen if Figma intake produced .symphony-figma/screens/
+                            Sub-agents per screen if Figma BA produced .symphony-figma/screens/
                             Pre-push gate — prompts/VERIFY.md          (scripts/verify-changes.sh must exit 0)
                             Final manual gate — prompts/SELF_REVIEW.md (developer-side diff re-read)
 Phase 4   Test              Sub-agent  — prompts/TESTER.md             (independent verifier, also re-checks VERIFY)
                             If any scenario fails → re-dispatch Developer (max 3 round-trips, use DEBUG.md)
+Phase 4A  Accessibility     Sub-agent  — prompts/ACCESSIBILITY.md      ← if the diff touches frontend (skip otherwise)
+                            If any dimension fails → re-dispatch Developer (max 3 round-trips)
 Phase 4.5 Code review       Sub-agent  — prompts/CODE_REVIEW.md        (independent senior-engineer review)
                             If Blocking findings → re-dispatch Developer + targeted Tester re-run (max 2 round-trips)
 Phase 5   Deliver           You (parent)  — prompts/DELIVERY_COMMENT.md (single succinct comment + flip)
@@ -437,6 +441,7 @@ These are the reusable skills agents apply during the phases above. Sub-agents a
 |---|---|---|
 | Intent gating | Phase 1A | `prompts/INTENT.md` |
 | Refinement | Phase 1B | `prompts/REFINE_TICKET.md` |
+| Figma BA (design → spec, mobile, style quantisation, gaps) | Phase 1B — only if a Figma URL is present | `prompts/FIGMA_BA.md` |
 | Architect (plan + tests-to-add + matrix) | Phase 2 | `prompts/ARCHITECT.md` |
 | Code quality (per-file walkthrough + scoped lint/typecheck) | Phase 3 — every file | `prompts/CODE_QUALITY.md` |
 | Test-driven development | Phase 3 — every behavioural change | `prompts/TDD.md` |
@@ -446,6 +451,7 @@ These are the reusable skills agents apply during the phases above. Sub-agents a
 | Verify (pre-push gate) | Phase 3 → before push; Phase 5 → before flip | `prompts/VERIFY.md` + `scripts/verify-changes.sh` |
 | Self-review (manual diff re-read) | Phase 3 — before push | `prompts/SELF_REVIEW.md` |
 | Independent E2E verification | Phase 4 | `prompts/TESTER.md` |
+| Accessibility audit (WCAG 2.2 AA) | Phase 4A — only if the diff touches frontend | `prompts/ACCESSIBILITY.md` |
 | Independent code review | Phase 4.5 | `prompts/CODE_REVIEW.md` |
 | Delivery comment | Phase 5 | `prompts/DELIVERY_COMMENT.md` |
 
@@ -525,9 +531,9 @@ If `.claude/intent.md` already exists from a prior attempt, skip to 1B.
 
 Dispatch the Intent Analyst sub-agent with the prompt body from `{{ symphony.root }}/prompts/INTENT.md`. Verify its Definition of Done before advancing. If the sub-agent could not interpret the ticket and wrote `.claude/cannot-interpret.md`, leave the issue in `Dev in Progress` and write a workpad note (`.claude/workpad.md`) explaining what a human needs to clarify, then exit.
 
-### 1B. Dispatch the Refiner (and Figma intake if needed)
+### 1B. Dispatch the Refiner (and Figma BA if needed)
 
-If the ticket description contains a `figma.com/design/...` URL, dispatch the Figma Intake sub-agent first with `{{ symphony.root }}/prompts/FIGMA_INTAKE.md`. **All** Figma intake artefacts (manifest, classification, flow, per-screen specs, tech-spec) stay in `.symphony-figma/` in the workspace. Do **not** post anything to Linear. The Refiner may incorporate `tech-spec.md` into the refined Linear description if it materially changes the spec.
+If the ticket description contains a `figma.com/design/...` URL, dispatch the Figma BA sub-agent first with `{{ symphony.root }}/prompts/FIGMA_BA.md`. **All** Figma BA artefacts (manifest, classification, flow, per-screen specs, style-map, tech-spec, gaps) stay in `.symphony-figma/` in the workspace. Do **not** post anything to Linear. The Refiner incorporates `tech-spec.md` and the sign-off items from `gaps.md` into the refined Linear description. If there's no Figma URL, skip this — the ticket needs no design intake.
 
 Then dispatch the Refiner sub-agent with `{{ symphony.root }}/prompts/REFINE_TICKET.md`. The Refiner reads `.claude/intent.md` as its source of truth for Who/Wants/So that and preserves the original ticket body in `.claude/original-description.md` before overwriting the description.
 
@@ -598,7 +604,7 @@ You (the parent) implement. The Architect's Plan and Test Matrix are your specif
 **On demand:**
 - `{{ symphony.root }}/prompts/DEBUG.md` — when a test fails twice in a row, when typecheck/lint errors don't immediately yield, when the dev server behaviour disagrees with your mental model. Reproduce → isolate → hypothesise → minimum change → verify. No guessing.
 
-### Multi-screen tickets (Figma intake produced `.symphony-figma/screens/`)
+### Multi-screen tickets (Figma BA produced `.symphony-figma/screens/`)
 
 Implement one screen per sub-agent, sequentially, in the Implementation order from `tech-spec.md`. For each screen, dispatch a sub-agent with `subagent_type: "general-purpose"` whose prompt includes:
 - The full body of `.symphony-figma/tech-spec.md` (shared context).
@@ -659,7 +665,7 @@ Dispatch the Tester sub-agent with `{{ symphony.root }}/prompts/TESTER.md`. The 
 
 ### When the Tester returns
 
-- **All pass** → tick Phase 4 in `.claude/workpad.md` → advance to Phase 4.5.
+- **All pass** → tick Phase 4 in `.claude/workpad.md` → advance to Phase 4A.
 - **Any fail** → `.claude/tester-findings.md` enumerates failures. Re-enter Phase 3 with that file as the brief. **From the second attempt on a given scenario onwards, apply `{{ symphony.root }}/prompts/DEBUG.md`** — reproduce, hypothesise, change one thing, verify; record the trail in `.claude/debug-<scenario>.md`. Fix the failures, re-run the pre-push gate (`scripts/verify-changes.sh`), push to the same branch. Re-dispatch the Tester.
 - **Three round-trips on the same scenario** → stop. The Tester will have written "needs human triage" into `.claude/tester-findings.md`. Leave the ticket in `Dev in Progress`. Do not flip to In Review.
 
@@ -667,14 +673,41 @@ Dispatch the Tester sub-agent with `{{ symphony.root }}/prompts/TESTER.md`. The 
 - [ ] `.claude/qa-results.md` populated, one row per matrix scenario.
 - [ ] Element-scoped screenshots saved under `.claude/screenshots/`.
 - [ ] A primary screenshot path is recorded in `.claude/qa-results.md` for Phase 5 to pick up.
-- [ ] Every matrix row pass=yes (or escalation note in `.claude/tester-findings.md`, in which case Phase 4.5 and Phase 5 do not run).
+- [ ] Every matrix row pass=yes (or escalation note in `.claude/tester-findings.md`, in which case Phase 4A, 4.5, and Phase 5 do not run).
+- [ ] No Linear or PR comments posted.
+
+---
+
+## Phase 4A — Accessibility audit (independent, frontend tickets only)
+
+Triggered when Phase 4 reports all-pass **and** the diff touches frontend. The Tester verifies the change does what the matrix says; the Accessibility Tester verifies a keyboard-only, screen-reader, low-vision, or low-literacy user can actually use it. Backend-only tickets skip this phase.
+
+**Skip decision (you, the parent, make it before dispatching):** run `git diff --name-only origin/main...HEAD`. If nothing under `packages/app` changes what renders (backend-only, types, loaders without markup change, test-only, config), skip — write `Phase 4A: skipped — no frontend changes` in `.claude/workpad.md` and advance to Phase 4.5. Otherwise dispatch.
+
+Dispatch the Accessibility Tester sub-agent with `{{ symphony.root }}/prompts/ACCESSIBILITY.md`. It:
+- Reads `.claude/intent.md`, the refined AC, `.claude/test-matrix.md` (for routes), and the diff (for scope).
+- Audits each changed route against WCAG 2.2 AA: contrast, keyboard navigation, semantic structure & labels, skip-to-main-content, plain language, status messages, images, target size & motion.
+- Runs axe-core where egress allows; falls back to manual `browser_evaluate`/`browser_snapshot` checks otherwise.
+- Writes `.claude/a11y-results.md`; captures element-scoped screenshots for visual findings.
+- Does **not** post anything to Linear or the PR.
+
+### When the Accessibility Tester returns
+
+- **All dimensions pass** → tick Phase 4A in `.claude/workpad.md` → advance to Phase 4.5.
+- **Any fail** → `.claude/a11y-findings.md` enumerates each barrier (selector, WCAG SC, who it blocks, suggested fix). Re-enter Phase 3 with that file as the brief. Fix, re-run the pre-push gate (`scripts/verify-changes.sh`), push, and re-dispatch the Accessibility Tester on the affected routes.
+- **Three round-trips on the same barrier** → stop. The audit will have appended an `## Escalation` block to `.claude/a11y-findings.md`. Leave the ticket in `Dev in Progress`. Do not flip to In Review.
+
+### Definition of Done — Phase 4A
+- [ ] Skipped with a workpad note (backend-only), **or** `.claude/a11y-results.md` populated with a pass/fail + WCAG SC per route × dimension.
+- [ ] Every visual finding has an element-scoped screenshot under `.claude/screenshots/`.
+- [ ] Every dimension passes (or escalation note in `.claude/a11y-findings.md`, in which case Phase 4.5 and Phase 5 do not run).
 - [ ] No Linear or PR comments posted.
 
 ---
 
 ## Phase 4.5 — Code review (independent)
 
-Triggered only when Phase 4 reports all-pass. The Code Reviewer catches what the Tester can't — subtle bugs outside the matrix, security issues, hidden cross-cutting impact — at a strict severity bar ("would a senior engineer block merge?").
+Triggered when Phase 4 reports all-pass and Phase 4A passes or was skipped. The Code Reviewer catches what the Tester can't — subtle bugs outside the matrix, security issues, hidden cross-cutting impact — at a strict severity bar ("would a senior engineer block merge?").
 
 Dispatch the Code Reviewer sub-agent with `{{ symphony.root }}/prompts/CODE_REVIEW.md`. Pass it:
 - The PR URL (for context only — it does **not** post on the PR).
@@ -766,6 +799,7 @@ Do not flip to `In Review` for blockers — `In Review` means a reviewer can rev
 - **Public surfaces are limited to two: the Phase 5 Linear comment, and the PR body. They share one body.** No agent posts intermediate comments to Linear or to the PR. All inter-agent artefacts live in `.claude/` (see the layout above).
 - The Refiner still updates the Linear issue **description** with Context / AC / Technical Approach / Test Plan / Out of Scope — the description is the spec, not a comment.
 - One `## ✅ Ready for review` comment per ticket — only posted once when Phase 5 runs to completion.
-- Figma intake artefacts live in `.symphony-figma/` only — never posted to Linear or the PR.
-- Do not move to `In Review` until every phase's Definition of Done is ticked, the Tester reports all-pass, and the Code Reviewer's verdict is approve.
+- Figma BA artefacts live in `.symphony-figma/` only — never posted to Linear or the PR. Figma BA and the accessibility audit are conditional: skip Figma BA when the ticket has no `figma.com/design/...` URL, and skip Phase 4A when the diff touches no frontend. Record the skip in `.claude/workpad.md`.
+- When the change touches the frontend, Phase 4A (accessibility) must pass before delivery — WCAG 2.2 AA across contrast, keyboard, semantics, skip-to-main, and plain language. Accessibility findings route back to the Developer like Tester findings, not into the PR.
+- Do not move to `In Review` until every phase's Definition of Done is ticked, the Tester reports all-pass, the accessibility audit passes (or was skipped), and the Code Reviewer's verdict is approve.
 - When out-of-scope issues are found, file a Linear Backlog ticket — never expand the current PR.

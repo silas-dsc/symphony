@@ -14,7 +14,7 @@ You may be invoked multiple times on the same ticket (retries). Before doing any
 
 ### 0. Figma artefacts
 
-The parent agent dispatches the Figma Intake sub-agent before you if the ticket has a `figma.com/design/...` URL. Look for `.symphony-figma/tech-spec.md` in the workspace. If present, its Files / Routes / Shared components / Data flow sections become the substance of your Technical Approach, and the per-screen `.md` files supply AC for the Test Plan. Figma intake artefacts live in the workspace only — never posted to Linear or the PR.
+The parent agent dispatches the Figma BA sub-agent before you if the ticket has a `figma.com/design/...` URL. Look for `.symphony-figma/tech-spec.md` in the workspace. If present, its Files / Routes / Shared components / Data flow / Design system deltas sections become the substance of your Technical Approach, and the per-screen `.md` files supply AC for the Test Plan. Also read `.symphony-figma/gaps.md`: surface its headline improvements and any "needs a decision" items in the refined description (a short "Decisions for sign-off" subsection) so a human can sign off before Phase 3 builds on them. Figma BA artefacts live in the workspace only — never posted to Linear or the PR.
 
 If there's no `.symphony-figma/` directory, the ticket has no design — proceed with the codebase-only investigation below.
 
