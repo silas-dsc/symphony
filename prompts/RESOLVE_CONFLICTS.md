@@ -66,6 +66,20 @@ Resolve by understanding, not by picking a side blindly. For every file in the c
 
 Resolve `delete/modify` conflicts the same way: keep the file if either side still needs it; delete it only if both intents agree it should go.
 
+## Generated lockfiles: regenerate, don't hand-merge
+
+`pnpm-lock.yaml` (and other generated lockfiles) are machine-written. Their conflicts are noise — never resolve them line-by-line, and never reason about the intent of individual hunks. The lockfile's only job is to match `package.json`, so regenerate it instead:
+
+1. Resolve the conflicts in `package.json` (and any other source files) first, by intent, exactly as above — that's the real decision.
+2. Then regenerate the lockfile from the resolved manifest and stage it:
+   ```bash
+   pnpm install
+   git add pnpm-lock.yaml
+   ```
+   `pnpm install` rewrites the whole lockfile to satisfy the merged `package.json`, which is the correct, conflict-free state. If the workspace pins a package-manager version, run install through it (e.g. the repo's `before_run` setup) so the regenerated lockfile matches the pinned `pnpm`.
+
+If a lockfile is the *only* conflicted file (the manifests merged cleanly), you can resolve it with `pnpm install` alone — there is no source decision to make.
+
 ## Before you commit
 
 - **No markers remain.** `! git grep -nE '^(<{7}|={7}|>{7})' -- . ` must find nothing.
