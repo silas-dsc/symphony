@@ -97,6 +97,7 @@ function buildConfig(raw: Record<string, unknown>, baseDir: string): WorkflowCon
   const server = raw.server as Record<string, unknown> | undefined;
   const autoUpdate = ((raw.auto_update ?? {}) as Record<string, unknown>);
   const retrospective = ((raw.retrospective ?? {}) as Record<string, unknown>);
+  const mergeConflicts = ((raw.merge_conflicts ?? {}) as Record<string, unknown>);
 
   const apiKeyRaw = (tracker.api_key as string | undefined) ?? "$LINEAR_API_KEY";
   const apiKey = resolveEnvVar(apiKeyRaw);
@@ -203,6 +204,19 @@ function buildConfig(raw: Record<string, unknown>, baseDir: string): WorkflowCon
       maxTurns: (retrospective.max_turns as number | undefined) ?? 15,
       timeoutMs: (retrospective.timeout_ms as number | undefined) ?? 300000,
     },
+    mergeConflicts: {
+      enabled: (mergeConflicts.enabled as boolean | undefined) ?? false,
+      // Default to the github_preview repo so a single repo only needs to be declared once.
+      repoOwner: (mergeConflicts.repo_owner as string | undefined)
+        ?? (githubPreview.repo_owner as string | undefined) ?? "",
+      repoName: (mergeConflicts.repo_name as string | undefined)
+        ?? (githubPreview.repo_name as string | undefined) ?? "",
+      maxTurns: (mergeConflicts.max_turns as number | undefined) ?? 30,
+      timeoutMs: (mergeConflicts.timeout_ms as number | undefined) ?? 1200000,
+      maxConcurrent: (mergeConflicts.max_concurrent as number | undefined) ?? 2,
+      retryIntervalMs: (mergeConflicts.retry_interval_ms as number | undefined) ?? 600000,
+      requestTimeoutMs: (mergeConflicts.request_timeout_ms as number | undefined) ?? 30000,
+    },
   };
 }
 
@@ -230,6 +244,15 @@ export function validateConfig(config: WorkflowConfig): string | null {
     } catch (e) {
       return `github_preview.comment_pattern is not a valid regex: ${e instanceof Error ? e.message : String(e)}`;
     }
+  }
+  if (config.mergeConflicts.enabled) {
+    if (!config.mergeConflicts.repoOwner) return "merge_conflicts.repo_owner is required when merge_conflicts.enabled is true (or set github_preview.repo_owner)";
+    if (!config.mergeConflicts.repoName) return "merge_conflicts.repo_name is required when merge_conflicts.enabled is true (or set github_preview.repo_name)";
+    if (config.mergeConflicts.maxTurns <= 0) return "merge_conflicts.max_turns must be > 0";
+    if (config.mergeConflicts.timeoutMs <= 0) return "merge_conflicts.timeout_ms must be > 0";
+    if (config.mergeConflicts.maxConcurrent <= 0) return "merge_conflicts.max_concurrent must be > 0";
+    if (config.mergeConflicts.retryIntervalMs <= 0) return "merge_conflicts.retry_interval_ms must be > 0";
+    if (config.mergeConflicts.requestTimeoutMs <= 0) return "merge_conflicts.request_timeout_ms must be > 0";
   }
   if (!config.workspace.root) return "workspace.root could not be resolved";
   if (config.agent.maxTurns <= 0) return "agent.max_turns must be > 0";

@@ -45,6 +45,26 @@ export interface WorkflowConfig {
   server?: ServerConfig;
   autoUpdate: AutoUpdateConfig;
   retrospective: RetrospectiveConfig;
+  mergeConflicts: MergeConflictConfig;
+}
+
+export interface MergeConflictConfig {
+  /** When true, Symphony scans open PRs each tick and resolves the conflicts on any that are CONFLICTING. */
+  enabled: boolean;
+  /** GitHub repo owner whose open PRs are scanned (defaults to github_preview.repo_owner). */
+  repoOwner: string;
+  /** GitHub repo name whose open PRs are scanned (defaults to github_preview.repo_name). */
+  repoName: string;
+  /** Max turns the resolver Claude session is allowed before aborting. */
+  maxTurns: number;
+  /** Hard timeout for a single conflict-resolution run, in ms. */
+  timeoutMs: number;
+  /** Max number of conflict-resolution agents running concurrently. */
+  maxConcurrent: number;
+  /** Minimum delay before re-attempting a PR that is still conflicting after a prior run, in ms. */
+  retryIntervalMs: number;
+  /** Timeout for the `gh` call that lists open PRs, in ms. */
+  requestTimeoutMs: number;
 }
 
 export interface RetrospectiveConfig {
