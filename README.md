@@ -247,6 +247,16 @@ You are an autonomous coding agent working on {{ issue.identifier }}: {{ issue.t
 | `merge_conflicts.max_concurrent` | `2` | Maximum conflict-resolution sub-agents running at once |
 | `merge_conflicts.retry_interval_ms` | `600000` | Minimum delay before re-attempting a PR that is still conflicting after a prior run |
 | `merge_conflicts.request_timeout_ms` | `30000` | Timeout for the `gh pr list` call that finds conflicting PRs |
+| `dependabot.enabled` | `false` | When true, each orchestrator tick scans the repo's open GitHub Dependabot alerts and files a Linear ticket for each new one, then lets the normal poll loop dispatch an agent to fix it |
+| `dependabot.repo_owner` | `github_preview.repo_owner` | GitHub repo owner whose Dependabot alerts are scanned; falls back to the `github_preview` owner |
+| `dependabot.repo_name` | `github_preview.repo_name` | GitHub repo name whose Dependabot alerts are scanned; falls back to the `github_preview` name |
+| `dependabot.team_key` | `tracker.team_key` | Linear team key the tickets are created under; falls back to the tracker team key |
+| `dependabot.target_state` | first `tracker.active_states` entry | Workflow state the ticket is created in — must be one of `tracker.active_states` so the agent picks it up |
+| `dependabot.assignee_email` | — | Email (or name) of the Linear user to assign each ticket to; empty leaves it unassigned |
+| `dependabot.label` | `dependabot` | Linear label applied to every ticket; also the dedupe key carrier so the same alert isn't filed twice |
+| `dependabot.min_severity` | `low` | Only file tickets for alerts at or above this severity: `low`, `medium`, `high`, `critical` |
+| `dependabot.max_open_tickets` | `1` | Hard cap on how many Dependabot tickets may be open (in a non-terminal state) at once. The default keeps dependency bumps serialized — the next alert isn't filed until the current ticket is Done/Cancelled |
+| `dependabot.request_timeout_ms` | `30000` | Timeout for the `gh api` call that lists Dependabot alerts |
 
 #### Prompt template variables
 
@@ -383,6 +393,7 @@ src/
   agent.ts          — spawns `claude` subprocess, streams JSON events, returns AgentResult
   retrospective.ts  — spawns a one-shot retrospective `claude` process per terminal ticket
   merge-conflict.ts — scans open PRs each tick; spawns a `claude` process to resolve conflicts on each conflicting PR
+  dependabot.ts     — scans open Dependabot alerts each tick; files a Linear ticket per new alert for the normal poll loop to pick up
   meta-improve.ts   — CLI that reads lessons.jsonl and proposes prompt edits on a branch
   linear.ts         — GraphQL client for Linear (issues, states, team URL)
   workspace.ts      — creates/removes per-ticket directories; runs hooks via bash -l
@@ -435,6 +446,20 @@ Either way it commits and pushes to the **PR branch only** (never force-push, ne
 **It never races the dispatch loop.** Before resolving, it drops any conflicting PR whose branch maps to a Linear ticket currently in an active state (the identifier embedded in the branch name is matched against the active ticket set). Those PRs belong to a running or about-to-run agent that resolves its own conflicts; the resolver only touches PRs whose ticket is past active work (e.g. `In Review`) or has no matching ticket. If the active-ticket lookup fails, it skips dispatch for that cycle rather than risk a duelling push.
 
 Resolutions run in the background (up to `merge_conflicts.max_concurrent` at once) so a long session never blocks the orchestrator tick; a PR that stays conflicting after a run isn't re-attempted until `merge_conflicts.retry_interval_ms` has elapsed, and tracking (plus the workspace) is dropped once the PR is no longer conflicting. Requires the `gh` CLI to be authenticated, same as the GitHub preview warmer.
+
+## Automatic Dependabot triage
+
+When `dependabot.enabled` is `true`, every orchestrator tick reads the configured repo's **open GitHub Dependabot alerts** (`gh api repos/<owner>/<repo>/dependabot/alerts?state=open`) and files a Linear ticket for the most severe *new* alert. It does **not** spawn its own fix agent — it hands the work to Symphony's existing pipeline by creating the ticket directly in an active state, so the normal poll loop dispatches the Intent → Architect → Developer → Tester → Reviewer flow that bumps the dependency, runs `pnpm install`, tests the affected code, fixes any breakage, and opens a PR.
+
+**Only `dependabot.max_open_tickets` Dependabot tickets are ever open at once (default 1).** Each tick the watcher counts Dependabot-labelled tickets in a non-terminal state; once that cap is reached it files nothing, so the next alert isn't picked up until the current ticket reaches a terminal state (Done/Cancelled). This serializes dependency bumps instead of opening a PR per alert simultaneously. Eligible alerts are sorted worst-first, so the single open ticket always targets the highest-severity vulnerability.
+
+Each filed ticket:
+
+1. Is created in team `dependabot.team_key`, in state `dependabot.target_state` (which **must** be one of `tracker.active_states`, or config validation fails — otherwise the ticket would never be dispatched), assigned to `dependabot.assignee_email`, and tagged with the `dependabot.label`.
+2. Carries a deterministic, machine-generated description: affected package + ecosystem, manifest path, severity, vulnerable range, first patched version, GHSA/CVE IDs, advisory summary, references, and a pnpm-/monorepo-aware acceptance-criteria checklist. (When no patched version is published yet, the checklist instead asks the agent to assess mitigation or dismissal.)
+3. Hides a `<!-- symphony-dependabot:<owner>/<repo>#<alert-number> -->` marker in the description. Before filing anything, the watcher reads back every ticket carrying `dependabot.label` and skips alerts whose key is already present — so the same alert is never filed twice, even across orchestrator restarts. An in-process set covers the same-run fast path.
+
+Alerts below `dependabot.min_severity` are ignored. If the ticket read-back fails (Linear hiccup), the watcher files **nothing** that tick rather than risk duplicates or breaching the open cap, and retries next tick. Once the agent's PR merges, the alert flips to `fixed` on GitHub and stops being reported. Requires the `gh` CLI to be authenticated with access to the repo's Dependabot alerts (a token with `security_events` read, or `repo` scope), same as the other GitHub-backed features.
 
 ## Continuous self-improvement
 
