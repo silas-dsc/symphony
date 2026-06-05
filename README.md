@@ -432,6 +432,12 @@ The prompt template in `WORKFLOW.md` instructs the parent agent to coordinate fo
 
 A persistent, gitable knowledge base every relevant sub-agent reads before investigating the codebase. Records domain vocabulary, roles, architectural decisions, file and naming conventions, common pitfalls, and "things that look like bugs but aren't". The meta-improve pass can append to this file when a retrospective's root cause is "agent didn't know about <rule>" — so the next ticket starts with the rule already known.
 
+Rules the meta-improve pass adds carry an invisible marker comment with a stable id and a `confidence` counter (e.g. `<!-- mem:firestore-loader-limit added=2026-05-01 sources=TEA-4181 confidence=2 -->`). Each retrospective scores the marked rules relevant to its ticket (`reinforced` / `violated` / `stale` via the `memory_feedback` field), and the meta-improve pass uses those tallies to **promote** proven rules, **strengthen** ones agents keep missing, and **retire** stale ones — so memory self-corrects instead of only growing. Markers carry no meaning for an agent acting on the rule; they exist only for this loop.
+
+### Per-ticket lesson retrieval
+
+Before dispatching an agent, Symphony reads `lessons/lessons.jsonl`, ranks past lessons by keyword overlap with the ticket (deterministic token matching — no vector store; the corpus is small enough that it isn't worth one), and injects the most relevant *instructive* misses into the prompt as a **Relevant past lessons** block (`src/lessons.ts`). The parent passes that block to the Architect, so a mistake a related ticket already paid for is on the table at planning time — rather than waiting weeks for the batch meta-improve pass to fold it into a prompt. The agent treats each lesson as a warning to confirm, not a rule to obey blindly. Retrieval is best-effort: a missing or empty lessons file simply omits the block.
+
 ## Automatic merge-conflict resolution
 
 When `merge_conflicts.enabled` is `true`, every orchestrator tick scans the configured repo's open pull requests (`gh pr list`) and resolves the conflicts on each one GitHub reports as `CONFLICTING`. It runs on **all** open PRs with conflicts — not just the ticket currently in flight.
@@ -465,13 +471,15 @@ Alerts below `dependabot.min_severity` are ignored. If the ticket read-back fail
 
 Symphony has a two-stage feedback loop that lets the workflow learn from its own misses without unsupervised prompt drift.
 
-**Stage 1 — per-ticket retrospective (automatic).** When `retrospective.enabled` is `true` and a Symphony-tracked Linear issue reaches a `retrospective.trigger_states` state (default just `Done`), the orchestrator spawns a one-shot Claude session inside the workspace before cleanup. That session reads the Linear comments (Intent Brief → Workpad → QA results → Delivery → human review comments), the git diff, and the GitHub PR thread, then appends one structured JSON line to `lessons/lessons.jsonl`. See `prompts/RETROSPECTIVE.md` for the schema. The retrospective never modifies code, Linear, or GitHub — it just records.
+**Stage 1 — per-ticket retrospective (automatic).** When `retrospective.enabled` is `true` and a Symphony-tracked Linear issue reaches a `retrospective.trigger_states` state (default just `Done`), the orchestrator spawns a one-shot Claude session inside the workspace before cleanup. That session reads the Linear comments (Intent Brief → Workpad → QA results → Delivery → human review comments), the git diff, and the GitHub PR thread, then appends one structured JSON line to `lessons/lessons.jsonl`. See `prompts/RETROSPECTIVE.md` for the schema. It also scores any `docs/AGENT_MEMORY.md` rules relevant to the ticket via the `memory_feedback` field, closing the trust loop on past memory edits. The retrospective never modifies code, Linear, or GitHub — it just records.
 
 **Stage 2 — meta-improvement pass (operator-triggered).** Run `npm run meta-improve` to spawn a Claude session in the Symphony repo with `prompts/META_IMPROVE.md`. It reads `lessons/lessons.jsonl` (filtered to a configurable window, default 30 days), clusters lessons by `primary_miss` and `tags`, and identifies up to 3 patterns that meet the actionability threshold (≥ 3 occurrences with agreeing root cause and a clear proposed edit). For each pattern it then:
 
 1. Creates an individual branch `meta-improve/<date>-<slug>` off `main`, applies a narrow (≤ 20-line) edit to one `WORKFLOW.md` or `prompts/*.md` file, pushes, and opens an individual PR.
 2. Cherry-picks every pattern's commit into a long-lived `proposed` branch (force-refreshed each run) and opens or updates a combined PR from `proposed → main`.
 3. Writes `META_IMPROVE_REPORT.md` on the `proposed` branch summarising what was done and what wasn't.
+
+The pass also reconciles `docs/AGENT_MEMORY.md` rule confidence from the accumulated `memory_feedback` tallies — promoting proven rules, strengthening ones agents keep missing, and retiring stale ones — as one extra memory-maintenance PR (its own branch and meta-review, outside the 3-pattern cap).
 
 **Stage 3 — independent meta-review (automatic).** For every PR opened (individual + combined), the meta-pass dispatches a **Meta-reviewer** sub-agent (`prompts/META_REVIEW.md`) that reads the diff and the motivating lessons with fresh eyes and posts one structured `## 🔍 Meta-review` comment with: verdict (approve / request changes / discuss), risk level, what the edit does, whether it actually addresses the stated pattern, concrete concerns, and a recommended next step. It's advisory — it doesn't submit a formal GitHub review and doesn't merge.
 

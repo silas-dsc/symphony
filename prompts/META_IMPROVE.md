@@ -10,6 +10,17 @@ You may not:
 
 Edits to `docs/AGENT_MEMORY.md` follow the same ≤ 20-line cap and one-file-per-PR rule as edits to `prompts/*.md`. A memory edit is the right move when the lesson's root cause is "agent didn't know about <rule>" — the fix is to make the rule discoverable on the next ticket.
 
+**Every rule you add to `docs/AGENT_MEMORY.md` carries a trailing marker comment** so retrospectives can score it over time:
+
+```
+- subcollection reads inside loaders must use limit(N) or risk full-collection scans <!-- mem:firestore-loader-limit added=YYYY-MM-DD sources=TEA-1234,TEA-1240 confidence=1 -->
+```
+
+- `mem:<slug>` — a stable, unique id (lowercase-hyphenated). Never reuse or renumber an existing id.
+- `added` — the date you added it. `sources` — the tickets that motivated it. `confidence` — start at `1`.
+
+This marker is what lets memory **self-correct** instead of only growing. See "Reconcile memory confidence" below.
+
 The operator's contract is: pull the branch, read `.claude/meta-review-<pr>.md`, merge the PRs they agree with, close the ones they don't.
 
 ## Inputs
@@ -40,6 +51,16 @@ A pattern is actionable if **all** of:
 Cap at 3 patterns per run. If more than 3 clear the bar, take the top 3 by occurrence count and surface the rest in the report under "Patterns observed but not acted on".
 
 If no pattern clears the bar: write nothing, open nothing, exit cleanly with "no actionable patterns found".
+
+### 2b. Reconcile memory confidence
+
+Independently of the miss patterns above, tally the `memory_feedback` arrays across the window, grouped by rule `id`. This closes the loop on rules you added in earlier runs:
+
+- **Promote.** A rule with **≥ 3 `reinforced` and zero `stale`** since it was added is proven — bump its marker `confidence` and leave the rule text alone.
+- **Strengthen.** A rule with **≥ 2 `violated`** is correct but isn't landing — agents keep missing it. Move it to a more prominent section or tighten the wording so it's harder to overlook. Don't lower its confidence; the rule is right.
+- **Retire.** A rule with **≥ 2 `stale`** (or whose referenced file no longer exists — `git ls-files` to check) no longer applies. Delete the rule and its marker.
+
+This produces **at most one** additional `docs/AGENT_MEMORY.md` edit, handled exactly like a pattern PR in step 4 (own branch `meta-improve/<date>-memory-confidence`, ≤ 20 lines, its own meta-review). It does **not** count against the 3-pattern cap. If no rule meets a threshold, skip this step silently.
 
 ### 3. Prepare base state
 

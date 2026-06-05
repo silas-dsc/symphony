@@ -17,6 +17,16 @@ This is not a substitute for reading the codebase. It is a head-start: things th
 - Operators can edit directly via normal PRs.
 - Entries that no longer apply (deprecated convention, refactored area) are deleted, not commented out — the meta-improve pass surfaces stale entries when their referenced files no longer exist.
 
+### Rule markers and confidence
+
+Rules added by the meta-improve pass carry a trailing HTML-comment marker so the workflow can score them over time instead of letting memory only grow:
+
+```
+- subcollection reads inside loaders must use limit(N) <!-- mem:firestore-loader-limit added=2026-05-01 sources=TEA-4181 confidence=2 -->
+```
+
+Each retrospective records `memory_feedback` per relevant rule (`reinforced` / `violated` / `stale`; see `prompts/RETROSPECTIVE.md`). The meta-improve pass then **promotes** proven rules (raises `confidence`), **strengthens** rules agents keep missing (more prominent placement), and **retires** stale ones (deletes the rule and its marker). Markers are invisible to readers and carry no meaning for an agent acting on the rule — they exist only for this feedback loop. Hand-written rules need no marker; an operator may add one to opt a rule into scoring.
+
 ## Layout
 
 Each section is short. Bullets are concrete: "do X" or "if Y, then Z". No prose explanations of context — link to the file that has the context if a reviewer wants to dig.

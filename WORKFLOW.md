@@ -240,6 +240,15 @@ Your job is to coordinate four specialised sub-agents (Intent → Architect → 
 No description provided.
 {% endif %}
 
+{% if relevant_lessons != "" %}
+---
+**Relevant past lessons (retrieved from `lessons/lessons.jsonl` by keyword overlap with this ticket):**
+
+These are misses earlier tickets already paid for. Treat each as a *warning to confirm*, not a rule to obey blindly — the codebase may have moved on. Pass this block verbatim to the Architect (Phase 2) and weigh it when reading `docs/AGENT_MEMORY.md`. If a lesson clearly applies, the Plan must address it; if it clearly doesn't, ignore it.
+
+{{ relevant_lessons }}
+{% endif %}
+
 ---
 
 This is an unattended session. Never ask a human to perform any action. Stop only for a true external blocker (see "What is and is not a blocker" below). Work only inside the provided repository copy.
@@ -596,7 +605,7 @@ Set up the workpad as a local file `.claude/workpad.md` (do **not** post this to
 
 Phase-specific artefacts live in sibling files: `.claude/plan.md`, `.claude/test-matrix.md`, `.claude/qa-results.md`, `.claude/code-review.md`. The workpad is just the index and the running notes.
 
-Dispatch the Architect sub-agent with `{{ symphony.root }}/prompts/ARCHITECT.md`. It writes `.claude/plan.md` and `.claude/test-matrix.md`.
+Dispatch the Architect sub-agent with `{{ symphony.root }}/prompts/ARCHITECT.md`. It writes `.claude/plan.md` and `.claude/test-matrix.md`. If the **Relevant past lessons** block above is present, pass it to the Architect alongside the role prompt — those are misses prior tickets already hit in related areas, and the Plan should explicitly confirm or dismiss each one that touches this change.
 
 Then **you** create the branch:
 

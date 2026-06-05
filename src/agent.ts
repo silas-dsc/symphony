@@ -5,6 +5,7 @@ import * as path from "node:path";
 import { Liquid } from "liquidjs";
 import type { Issue, AgentResult, WorkflowConfig, RateLimitInfo, AgentEvent, AgentEventCallback, Logger } from "./types.js";
 import { ensureWorkspace, runHook } from "./workspace.js";
+import { relevantLessonsForIssue } from "./lessons.js";
 import {
   selectClaudeModel,
   spawnCodexAgent,
@@ -19,7 +20,13 @@ import {
 
 const liquid = new Liquid({ strictVariables: true, strictFilters: true });
 
-export function renderPrompt(template: string, issue: Issue, attempt: number | null, symphonyRoot: string): string {
+export function renderPrompt(
+  template: string,
+  issue: Issue,
+  attempt: number | null,
+  symphonyRoot: string,
+  relevantLessons = "",
+): string {
   return liquid.parseAndRenderSync(template, {
     issue: {
       id: issue.id,
@@ -37,6 +44,7 @@ export function renderPrompt(template: string, issue: Issue, attempt: number | n
     },
     attempt,
     symphony: { root: symphonyRoot },
+    relevant_lessons: relevantLessons,
   });
 }
 
@@ -91,9 +99,14 @@ export async function runAgentAttempt(
     await runHook(config.hooks.beforeRun, wsPath, config.hooks.timeoutMs, logger);
   }
 
+  // Retrieve past lessons relevant to this ticket so the Architect starts with
+  // the misses prior tickets already paid for — rather than waiting for the
+  // batch meta-improve pass to fold them into a prompt weeks later.
+  const relevantLessons = relevantLessonsForIssue(config.retrospective.lessonsPath, issue);
+
   let prompt: string;
   try {
-    prompt = renderPrompt(promptTemplate, issue, attempt, symphonyRoot);
+    prompt = renderPrompt(promptTemplate, issue, attempt, symphonyRoot, relevantLessons);
   } catch (e) {
     throw new Error(`Template render error for ${issue.identifier}: ${e}`);
   }
