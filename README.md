@@ -237,6 +237,7 @@ You are an autonomous coding agent working on {{ issue.identifier }}: {{ issue.t
 | `retrospective.enabled` | `false` | When true, run a retrospective sub-agent each time a Symphony-tracked ticket reaches a terminal state — appends one structured JSON line to the lessons log |
 | `retrospective.trigger_states` | `["Done"]` | Terminal states that trigger a retrospective; case-insensitive |
 | `retrospective.lessons_path` | `<symphony>/lessons/lessons.jsonl` | Absolute or relative path to the JSONL file the retrospective appends to |
+| `retrospective.commit_lessons` | `true` | After each retrospective, commit `lessons.jsonl` and push it to the tracked branch (reuses `auto_update.remote`/`branch`/`repo_root`). Set `false` to keep the prior manual-commit behaviour |
 | `retrospective.max_turns` | `15` | Max Claude turns per retrospective before it's aborted |
 | `retrospective.timeout_ms` | `300000` | Hard wall-clock timeout per retrospective run |
 | `merge_conflicts.enabled` | `false` | When true, each orchestrator tick scans open PRs and spawns a sub-agent to resolve the conflicts on any GitHub reports as `CONFLICTING` |
@@ -392,6 +393,8 @@ src/
   orchestrator.ts   — poll loop, dispatch, retry queue, state reconciliation
   agent.ts          — spawns `claude` subprocess, streams JSON events, returns AgentResult
   retrospective.ts  — spawns a one-shot retrospective `claude` process per terminal ticket
+  lessons.ts        — ranks past lessons by keyword overlap with a ticket for dispatch-time injection
+  lessons-sync.ts   — commits + pushes lessons.jsonl after each retrospective (serialized, rebase-on-push)
   merge-conflict.ts — scans open PRs each tick; spawns a `claude` process to resolve conflicts on each conflicting PR
   dependabot.ts     — scans open Dependabot alerts each tick; files a Linear ticket per new alert for the normal poll loop to pick up
   meta-improve.ts   — CLI that reads lessons.jsonl and proposes prompt edits on a branch
@@ -472,6 +475,8 @@ Alerts below `dependabot.min_severity` are ignored. If the ticket read-back fail
 Symphony has a two-stage feedback loop that lets the workflow learn from its own misses without unsupervised prompt drift.
 
 **Stage 1 — per-ticket retrospective (automatic).** When `retrospective.enabled` is `true` and a Symphony-tracked Linear issue reaches a `retrospective.trigger_states` state (default just `Done`), the orchestrator spawns a one-shot Claude session inside the workspace before cleanup. That session reads the Linear comments (Intent Brief → Workpad → QA results → Delivery → human review comments), the git diff, and the GitHub PR thread, then appends one structured JSON line to `lessons/lessons.jsonl`. See `prompts/RETROSPECTIVE.md` for the schema. It also scores any `docs/AGENT_MEMORY.md` rules relevant to the ticket via the `memory_feedback` field, closing the trust loop on past memory edits. The retrospective never modifies code, Linear, or GitHub — it just records.
+
+Once the line is appended, the orchestrator commits `lessons.jsonl` and pushes it to the tracked branch (`retrospective.commit_lessons`, on by default). This needs no manual step and keeps the Symphony working tree clean — which matters because `self-update` refuses to pull over a dirty tree, so an uncommitted lessons file would otherwise stall auto-updates. Concurrent retrospectives are serialized and coalesced into one commit, and a push that races a freshly merged meta-improve PR is rebased and retried automatically.
 
 **Stage 2 — meta-improvement pass (operator-triggered).** Run `npm run meta-improve` to spawn a Claude session in the Symphony repo with `prompts/META_IMPROVE.md`. It reads `lessons/lessons.jsonl` (filtered to a configurable window, default 30 days), clusters lessons by `primary_miss` and `tags`, and identifies up to 3 patterns that meet the actionability threshold (≥ 3 occurrences with agreeing root cause and a clear proposed edit). For each pattern it then:
 

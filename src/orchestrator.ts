@@ -22,6 +22,7 @@ import { getWorkspacePath, removeWorkspace } from "./workspace.js";
 import { runAgentAttempt } from "./agent.js";
 import { claudeBlockedUntil } from "./llm.js";
 import { runRetrospective } from "./retrospective.js";
+import { commitAndPushLessons } from "./lessons-sync.js";
 import { cleanupReworkComments } from "./rework-cleanup.js";
 
 function fmtErr(e: unknown): string {
@@ -700,6 +701,33 @@ export class Orchestrator {
         this.log.warn(`Retrospective threw: ${fmtErr(e)}`, {
           issue_identifier: issue.identifier,
         });
+      }
+
+      // Commit + push the appended lesson so it reaches the remote and the
+      // working tree stays clean for self-update. Runs even if the retrospective
+      // above threw — a partial append still wants committing, and a no-op
+      // commit is harmless. Reuses the auto-update remote/branch/repo.
+      if (retro.commitLessons) {
+        try {
+          const res = await commitAndPushLessons({
+            repoRoot: this.config.autoUpdate.repoRoot ?? this.symphonyRoot,
+            lessonsPath: retro.lessonsPath,
+            branch: this.config.autoUpdate.branch ?? "",
+            remote: this.config.autoUpdate.remote,
+            issueIdentifier: issue.identifier,
+            logger: this.log,
+          });
+          if (res.committed && !res.pushed) {
+            this.log.warn("Lesson committed but not pushed", {
+              issue_identifier: issue.identifier,
+              reason: res.reason,
+            });
+          }
+        } catch (e) {
+          this.log.warn(`Lessons sync threw: ${fmtErr(e)}`, {
+            issue_identifier: issue.identifier,
+          });
+        }
       }
     }
 

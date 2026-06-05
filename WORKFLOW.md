@@ -194,6 +194,10 @@ retrospective:
   lessons_path: lessons/lessons.jsonl
   max_turns: 15
   timeout_ms: 300000
+  # After each retrospective, commit lessons.jsonl and push it to the tracked
+  # branch (reuses auto_update.remote/branch/repo_root). Keeps the loop closed
+  # with no manual commit, and keeps the tree clean so self-update isn't blocked.
+  commit_lessons: true
 merge_conflicts:
   enabled: true
   # repo_owner / repo_name inherit from github_preview (team-dsc/team-dsc) when omitted.

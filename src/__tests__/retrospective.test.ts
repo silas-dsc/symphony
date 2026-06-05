@@ -102,6 +102,7 @@ describe("renderRetrospectivePrompt", () => {
           lessonsPath: "/symphony/lessons/lessons.jsonl",
           maxTurns: 15,
           timeoutMs: 300000,
+          commitLessons: false,
         },
       }
     );
@@ -130,6 +131,7 @@ describe("runRetrospective short-circuits", () => {
     lessonsPath,
     maxTurns: 1,
     timeoutMs: 1000,
+    commitLessons: false,
   });
 
   it("does nothing when retrospective.enabled is false", async () => {
