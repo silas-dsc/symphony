@@ -391,8 +391,8 @@ interface OrgPayload {
 // Body of the bookkeeping comment Symphony posts to mark "Slack completion
 // notification sent" for an issue. Prefixed with the AI-comment marker so the
 // rework cleanup picks it up too if the ticket is later moved back into rework.
-const SLACK_NOTIFICATION_COMMENT = "<!-- symphony-agent -->\nSlack notification sent";
-const SLACK_NOTIFICATION_PAYLOAD = "Slack notification sent";
+const SLACK_NOTIFICATION_COMMENT = "<!-- symphony-agent -->\nSlack notified";
+const SLACK_NOTIFICATION_PAYLOAD = "Slack notified";
 
 // Marker for "picked up" comments added when Symphony first picks up a ticket (rule 1)
 const PICKED_UP_COMMENT_MARKER = "<!-- symphony-picked-up -->";
@@ -543,8 +543,8 @@ export async function addPickedUpComment(
   description: string,
 ): Promise<void> {
   const body = description.trim()
-    ? `${PICKED_UP_COMMENT_MARKER}\n**Original description:**\n${description}`
-    : `${PICKED_UP_COMMENT_MARKER}\n(No description provided)`;
+    ? `${PICKED_UP_COMMENT_MARKER}\n${description}`
+    : `${PICKED_UP_COMMENT_MARKER}`;
 
   const data = await graphql<CommentCreatePayload>(
     config.endpoint,
