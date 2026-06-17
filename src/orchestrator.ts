@@ -369,6 +369,24 @@ export class Orchestrator {
     this.scheduleTick(this.state.pollIntervalMs);
   }
 
+  // ─── Ticket workflow rules ─────────────────────────────────────────────────
+
+  /** Rule 1: Copy original description when first picking up a ticket. Runs async. */
+  private addPickedUpCommentAsync(issue: Issue): void {
+    linear.hasPickedUpComment(this.config.tracker, issue.id)
+      .then(hasComment => {
+        if (!hasComment) {
+          return linear.addPickedUpComment(this.config.tracker, issue.id, issue.description ?? "");
+        }
+      })
+      .catch(e => {
+        this.log.warn(`Failed to add picked-up comment: ${fmtErr(e)}`, {
+          issue_id: issue.id,
+          issue_identifier: issue.identifier,
+        });
+      });
+  }
+
   // ─── Dispatch ──────────────────────────────────────────────────────────────
 
   private sortForDispatch(issues: Issue[]): Issue[] {
@@ -421,6 +439,11 @@ export class Orchestrator {
     const promptTemplate = this.promptTemplate;
     const symphonyRoot = this.symphonyRoot;
     const logger = this.log;
+
+    // Rule 1: Copy original description when first picking up a ticket
+    if (attempt === null) {
+      this.addPickedUpCommentAsync(issue);
+    }
 
     const done = runAgentAttempt(
       issue,

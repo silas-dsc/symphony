@@ -5,6 +5,7 @@ import * as path from "node:path";
 import { Liquid } from "liquidjs";
 import type { Issue, AgentResult, WorkflowConfig, RateLimitInfo, AgentEvent, AgentEventCallback, Logger } from "./types.js";
 import { ensureWorkspace, runHook } from "./workspace.js";
+import { getLatestReassignmentComment } from "./linear.js";
 import {
   selectClaudeModel,
   spawnCodexAgent,
@@ -19,7 +20,7 @@ import {
 
 const liquid = new Liquid({ strictVariables: true, strictFilters: true });
 
-export function renderPrompt(template: string, issue: Issue, attempt: number | null, symphonyRoot: string): string {
+export function renderPrompt(template: string, issue: Issue, attempt: number | null, symphonyRoot: string, reassignmentInstruction: string | null = null): string {
   return liquid.parseAndRenderSync(template, {
     issue: {
       id: issue.id,
@@ -37,6 +38,7 @@ export function renderPrompt(template: string, issue: Issue, attempt: number | n
     },
     attempt,
     symphony: { root: symphonyRoot },
+    reassignment_instruction: reassignmentInstruction,
   });
 }
 
@@ -91,9 +93,22 @@ export async function runAgentAttempt(
     await runHook(config.hooks.beforeRun, wsPath, config.hooks.timeoutMs, logger);
   }
 
+  // Rule 3: Check for reassignment instruction from review (only on retries)
+  let reassignmentInstruction: string | null = null;
+  if (attempt !== null) {
+    try {
+      reassignmentInstruction = await getLatestReassignmentComment(config.tracker, issue.id);
+    } catch (e) {
+      logger?.warn(`Failed to check reassignment comment: ${e instanceof Error ? e.message : String(e)}`, {
+        issue_id: issue.id,
+        issue_identifier: issue.identifier,
+      });
+    }
+  }
+
   let prompt: string;
   try {
-    prompt = renderPrompt(promptTemplate, issue, attempt, symphonyRoot);
+    prompt = renderPrompt(promptTemplate, issue, attempt, symphonyRoot, reassignmentInstruction);
   } catch (e) {
     throw new Error(`Template render error for ${issue.identifier}: ${e}`);
   }
