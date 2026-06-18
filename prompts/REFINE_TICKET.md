@@ -51,14 +51,36 @@ Use this exact structure:
 - Dependencies / migrations: <list or "none">
 
 ## Test Plan
+
+### Functional test plan
+Terse, numbered, click-by-click steps a human (or the Tester) follows to prove each AC by hand. One block per AC. State the exact role, route, element, input, expected result, and any log line to check.
+
+- **AC1 — <outcome>** (role: super-admin)
+  1. Log in as super-admin; go to `/admin/users`.
+  2. Click **Invite**; type `x@y.com` into the Email field; click **Send**.
+  3. See: toast "Invite sent to x@y.com"; new row in the invites table, status "Pending".
+  4. Logs: server log shows `invite.created email=x@y.com`; no `ERROR` lines.
+- **AC2 — empty email rejected** (role: super-admin)
+  1. Repeat steps 1–2 with the Email field blank; click **Send**.
+  2. See: inline error "Email is required" under the field; no toast; invites table unchanged.
+
+### Automated coverage
 - **Unit/integration tests** to add or update: `<test file paths>`
-- **Manual checks**: `<routes>` as `<role>` (super-admin / admin / learner)
 - **Mobile UX checks**: `<pages to verify at 375px>`
 - **Regression risks**: <areas to re-verify because they share code>
 
 ## Out of Scope
 - <Items deferred to follow-up backlog tickets — be explicit about what is NOT being done>
 ```
+
+**Functional test plan rules** (the dot-point steps above):
+- One block per AC, headed `**AC<n> — <outcome>** (role: <super-admin / admin / learner>)`.
+- Steps are **user actions only** — "Click **Save**", "type `…`", "toggle X off". Never "POST /api/…" or "set state". The reader does not know the implementation.
+- Every block ends with a **See:** line stating what a human observes — exact toast text, route change, visible element, empty/filled state.
+- Add a **Logs:** line whenever the AC has a server-side or async effect: the literal log line to grep for, and "no `ERROR` lines". Omit it for pure-UI changes.
+- Name exact routes, element labels, and input values. "Click the button" / "check it works" are not steps.
+- Keep it terse: short imperative sentences, no filler. 2–5 steps per block is typical.
+- Cover the happy path plus one error/edge block per AC that implies a failure mode.
 
 ### 4. Run the refined description through UNSLOP and CLEAR_WRITING
 Open `{{ symphony.root }}/UNSLOP.md` and apply its three principles (MECE, DRY, simple-but-not-shorthand) to your draft. Cut filler. Merge overlapping bullets. Don't cut concrete details (file paths, role names, specific routes).
@@ -110,6 +132,7 @@ All of the following must be true before moving to Phase 2:
 - [ ] `.claude/original-description.md` exists with the raw pre-refinement body.
 - [ ] The Linear issue description has been replaced with the refined version (or skipped because it already met the bar — noted in `.claude/workpad.md`).
 - [ ] The refined description contains all five sections: Context, Acceptance Criteria, Technical Approach, Test Plan, Out of Scope.
+- [ ] The Test Plan opens with a **Functional test plan**: one terse, numbered click-by-click block per AC, each with a **See:** line and a **Logs:** line where the AC has a server-side or async effect.
 - [ ] UNSLOP applied: no MECE overlaps, no DRY violations, no filler.
 - [ ] CLEAR_WRITING applied: active voice, sentences ≤ 25 words, plain words from the substitution table, acronyms spelled out on first use.
 - [ ] **No Linear comments were posted by this phase.** The only thing this phase writes to Linear is the description itself.

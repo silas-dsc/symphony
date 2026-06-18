@@ -579,6 +579,7 @@ Then dispatch the Refiner sub-agent with `{{ symphony.root }}/prompts/REFINE_TIC
 - [ ] `.claude/intent.md` populated with all four sections.
 - [ ] `.claude/original-description.md` populated with the raw pre-refinement body.
 - [ ] Refined Linear description has Context, AC, Technical Approach, Test Plan, Out of Scope.
+- [ ] The Test Plan opens with a **Functional test plan**: one terse, click-by-click block per AC (role, steps, observable result, log lines to check).
 - [ ] AC list is consistent with `.claude/intent.md`'s Success Signals.
 - [ ] No new Linear comments were posted by this phase.
 
