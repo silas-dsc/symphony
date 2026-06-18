@@ -391,8 +391,13 @@ interface OrgPayload {
 // Body of the bookkeeping comment Symphony posts to mark "Slack completion
 // notification sent" for an issue. Prefixed with the AI-comment marker so the
 // rework cleanup picks it up too if the ticket is later moved back into rework.
-const SLACK_NOTIFICATION_COMMENT = "<!-- symphony-agent -->\nSlack notification sent";
-const SLACK_NOTIFICATION_PAYLOAD = "Slack notification sent";
+const SLACK_NOTIFICATION_COMMENT = "<!-- symphony-agent -->\nSlack notified";
+const SLACK_NOTIFICATION_PAYLOAD = "Slack notified";
+
+// Marker for "picked up" comments added when Symphony first picks up a ticket (rule 1)
+const PICKED_UP_COMMENT_MARKER = "<!-- symphony-picked-up -->";
+// Marker for reassignment comments when a ticket comes back from review (rule 3)
+const REASSIGNMENT_COMMENT_MARKER = "<!-- symphony-reassigned-from-review -->";
 
 const ISSUE_COMMENTS_QUERY = `
   query IssueComments($issueId: String!, $first: Int!, $after: String) {
@@ -498,6 +503,84 @@ export async function addSlackNotificationComment(
   if (!data.commentCreate?.success) {
     throw new LinearError("linear_unknown_payload", "Linear commentCreate did not report success");
   }
+}
+
+// ─── Ticket workflow rules (rule 1, 3) ──────────────────────────────────────
+
+/** Check if a ticket has already been marked as picked up (rule 1). */
+export async function hasPickedUpComment(
+  config: TrackerConfig,
+  issueId: string,
+): Promise<boolean> {
+  let after: string | null = null;
+
+  while (true) {
+    const data: IssueCommentsPayload = await graphql<IssueCommentsPayload>(
+      config.endpoint,
+      config.apiKey,
+      ISSUE_COMMENTS_QUERY,
+      { issueId, first: 50, after },
+    );
+
+    const comments: IssueCommentsConnection | undefined = data.issue?.comments;
+    if (!comments) return false;
+
+    if (comments.nodes.some(c => c.body?.includes(PICKED_UP_COMMENT_MARKER))) {
+      return true;
+    }
+
+    if (!comments.pageInfo.hasNextPage) return false;
+    if (!comments.pageInfo.endCursor) break;
+    after = comments.pageInfo.endCursor;
+  }
+  return false;
+}
+
+/** Add a "picked up" comment with the original description (rule 1). */
+export async function addPickedUpComment(
+  config: TrackerConfig,
+  issueId: string,
+  description: string,
+): Promise<void> {
+  const body = description.trim()
+    ? `${PICKED_UP_COMMENT_MARKER}\n${description}`
+    : `${PICKED_UP_COMMENT_MARKER}`;
+
+  const data = await graphql<CommentCreatePayload>(
+    config.endpoint,
+    config.apiKey,
+    COMMENT_CREATE_MUTATION,
+    { issueId, body },
+  );
+
+  if (!data.commentCreate?.success) {
+    throw new LinearError("linear_unknown_payload", "Linear commentCreate did not report success for picked-up comment");
+  }
+}
+
+/** Fetch the latest comment from a reassignment (rule 3). Returns null if no reassignment exists. */
+export async function getLatestReassignmentComment(
+  config: TrackerConfig,
+  issueId: string,
+): Promise<string | null> {
+  const comments = await fetchIssueCommentsDetail(config, issueId);
+
+  // Find the most recent reassignment comment
+  for (let i = comments.length - 1; i >= 0; i--) {
+    const comment = comments[i];
+    if (comment.body.includes(REASSIGNMENT_COMMENT_MARKER)) {
+      // Extract the actual instruction (everything after the marker)
+      const lines = comment.body.split('\n');
+      const instructionStart = lines.findIndex(line => line.includes(REASSIGNMENT_COMMENT_MARKER));
+      if (instructionStart !== -1) {
+        const instruction = lines.slice(instructionStart + 1).join('\n').trim();
+        return instruction || null;
+      }
+      return comment.body.replace(REASSIGNMENT_COMMENT_MARKER, '').trim() || null;
+    }
+  }
+
+  return null;
 }
 
 // ─── Comment detail / delete / description update (used by rework cleanup) ──

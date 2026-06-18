@@ -127,6 +127,105 @@ Don't invent synonyms. If the ticket says "students", confirm whether it means "
 - **`.symphony-ports` survives across runs** — intentional. Restarting Symphony reuses the same ports for the same ticket.
 - **Slack webhook in `.env` triggers double-posts in dev** — known. Set `NOTIFICATIONS_DISABLED=1` locally when developing notification code.
 
+## Codebase-health tooling — adoption status
+
+Symphony's `scripts/verify-changes.sh` lights up extra checks **automatically** when the corresponding tool is present in this workspace. Each entry below shows the current adoption state. When `VERIFY` reports `skipped` for any of these, the agent should flag it in `.claude/workpad.md` under `## Tooling gaps` and (once per missing tool) file a Linear Backlog ticket to wire it up. Don't file the same gap ticket twice.
+
+| Check | Tool | Adopted? | Config file | What it catches |
+|---|---|---|---|---|
+| Dependency audit | `pnpm audit --prod --audit-level high` | yes (built into pnpm) | — | Known-vulnerable transitive npm deps. |
+| SAST | `semgrep --config auto` | not yet | — | XSS via `dangerouslySetInnerHTML`, eval, NoSQL/SQL injection, prototype pollution. Adopt via `pnpm add -D -W semgrep` + ensure `semgrep` is on PATH in workspace setup. |
+| Architectural boundaries | `dependency-cruiser` | not yet | `.dependency-cruiser.cjs` | "packages/app shouldn't import packages/functions/src internals" — declared as forbidden rules. Adopt via `pnpm add -D -W dependency-cruiser` + commit a config. |
+| Unused exports / files | `knip` | not yet | `knip.json` or `knip.config.ts` | Files and exports nothing references. Catches orphans the diff creates. |
+| Firestore rules tests | `@firebase/rules-unit-testing` + a `firestore:test` script | not yet | `firestore-tests/` directory | Rules regressions: a learner reading another learner's submissions, an admin writing super-admin-only fields. High-value because rule bugs are silent until exploited. |
+| Bundle-size budget | Custom JSON budget file | not yet | `.bundle-budget.json` (map of `built-file-path → byte-limit`) | Accidental 200kb library imports that bloat a route chunk. Requires a build artefact already on disk; designed for CI rather than agent's pre-push gate. |
+| Test changed-only | `vitest --changed` or `jest --changedSince` | partial | — | Skipped where neither runner is in the package's deps. team-dsc uses Jest; the script auto-uses `--changedSince`. |
+| Diff-aware unused-symbol delete | `knip --reporter json` filtered to changed files | not yet | requires knip | Orphan symbols THIS diff created. |
+| Accessibility (a11y) | `axe-core` loaded by Tester via `browser_evaluate` | yes (no install needed — loaded from CDN at test time) | — | Missing labels, ARIA misuse, contrast, focus-trap regressions. Serious/critical violations fail the scenario. |
+
+### Adopting a missing tool — the supported path
+
+Symphony ships an installer at `{{ symphony.root }}/scripts/install-verify-tools.sh` that detects, installs, and scaffolds these tools in the workspace. Run modes:
+
+```bash
+# 1) Just see what's missing — no writes, safe to run anytime.
+bash {{ symphony.root }}/scripts/install-verify-tools.sh
+
+# 2) Install the npm-installable tools (dependency-cruiser, knip,
+#    @firebase/rules-unit-testing when firestore.rules is present).
+#    Updates package.json + lockfile but doesn't commit.
+bash {{ symphony.root }}/scripts/install-verify-tools.sh --install
+
+# 3) Scaffold starter config files (.dependency-cruiser.cjs, knip.json,
+#    firestore-tests/example.test.ts, .bundle-budget.json). Refuses to
+#    overwrite existing files.
+bash {{ symphony.root }}/scripts/install-verify-tools.sh --scaffold
+
+# 4) Both, plus print the suggested commit message.
+bash {{ symphony.root }}/scripts/install-verify-tools.sh --all
+
+# 5) Preview without writes.
+bash {{ symphony.root }}/scripts/install-verify-tools.sh --all --dry-run
+```
+
+`semgrep` is a Python tool and isn't auto-installed — the script prints the install command for macOS / Linux / Docker. Run the appropriate one yourself.
+
+After running `--install` or `--scaffold`:
+1. Review the diff (`git diff` + `git status`).
+2. Tune the scaffolded configs — the starters are minimal, not finished.
+3. Run `bash {{ symphony.root }}/scripts/verify-changes.sh` to confirm the new checks light up.
+4. Commit. The script prints a suggested message that lists what it actioned.
+
+Adoption tickets, when filed by the agent for tools the operator hasn't yet adopted, should follow this shape:
+- Title: "Adopt <tool> for agent VERIFY gate"
+- Description: one paragraph on what the tool catches, the install command (`bash {{ symphony.root }}/scripts/install-verify-tools.sh --install` for npm-installable tools), the config file to commit, a sample run output, a budget for cleaning up any pre-existing violations the tool surfaces on first run.
+
+When adopting `dependency-cruiser`, `semgrep`, or `knip`, the first commit should include `// rules: <list of intentional exceptions>` for any pre-existing violations the team consciously accepts. Don't disable rules wholesale — annotate the exceptions so future violations stand out.
+
+## Periodic codebase-health audit
+
+For monthly or quarterly full-repo audits (not per-ticket), the operator can run heavy tools that would be too noisy in `VERIFY`:
+
+```bash
+pnpm exec knip --reporter compact    # unused files, exports, types, deps
+pnpm exec depcheck                    # unused npm deps (subset of knip but faster)
+pnpm exec jscpd packages/             # duplicate-code finder
+```
+
+Triage the output and file Linear Backlog tickets for the worth-fixing entries. Don't push wholesale cleanup PRs — they're hard to review. Slice into per-package or per-area tickets.
+
+## Agent artefacts in `.gitignore`
+
+Every workspace the agent operates in must have these patterns ignored — they're per-ticket state, not deliverables, and committing them by accident pollutes both the diff and the eventual PR review:
+
+| Pattern | What it is |
+|---|---|
+| `.claude/` | Inter-agent artefacts (intent, plan, matrix, workpad, qa-results, code-review, debug, screenshots). |
+| `.symphony-figma/` | Figma intake outputs (manifest, classifications, per-screen specs). |
+| `.symphony-ports` | Per-workspace port allocations (`APP_PORT`, `PROXY_PORT`). |
+| `.symphony-app.pid` | PID of the workspace's dev server process. |
+| `.symphony-proxy.pid` | PID of the workspace's SSL proxy process. |
+
+To add the missing patterns idempotently:
+
+```bash
+bash {{ symphony.root }}/scripts/install-verify-tools.sh --scaffold
+```
+
+It checks each pattern individually (not the wrapping comment) so it doesn't duplicate entries you've already added under a different heading. When run for the first time, it inserts a marker-delimited block (`# >>> Symphony agent artefacts ... # <<<`) so future runs can identify and skip the section.
+
+## Cleaning up historically-committed artefacts
+
+If the codebase has accumulated stray files over previous tickets — build outputs, `.DS_Store`, coverage reports, oversized binaries outside asset directories — surface them with:
+
+```bash
+bash {{ symphony.root }}/scripts/install-verify-tools.sh --audit-tracked
+```
+
+Read-only. Prints each candidate path with the reason (output directory, OS junk, image >100kb in non-asset path, large binary, etc.) and the `git rm --cached <path>` command to remove it from the index without deleting locally. The operator coordinates the cleanup — these removals affect everyone who pulls, so they need to be batched into a deliberate PR rather than slipped into a feature ticket.
+
+The per-PR gate complementing this is in `scripts/verify-changes.sh` → `tracked_artefacts` check, which fails the build when a ticket diff *adds* new files matching the same heuristics. So new accumulation is blocked at the door, and existing accumulation is surfaced for deliberate triage.
+
 ## When this file is missing the thing you need
 
 Don't assume the absence of a rule means "no rule". Read the closest existing pattern in the codebase. If you make a judgement call that a future ticket would benefit from, capture it as a retrospective `proposed_workflow_change` so the meta-improve pass can add it here.

@@ -6,6 +6,7 @@ import { Liquid } from "liquidjs";
 import type { Issue, AgentResult, WorkflowConfig, RateLimitInfo, AgentEvent, AgentEventCallback, Logger } from "./types.js";
 import { ensureWorkspace, runHook } from "./workspace.js";
 import { relevantLessonsForIssue } from "./lessons.js";
+import { getLatestReassignmentComment } from "./linear.js";
 import {
   selectClaudeModel,
   spawnCodexAgent,
@@ -26,6 +27,7 @@ export function renderPrompt(
   attempt: number | null,
   symphonyRoot: string,
   relevantLessons = "",
+  reassignmentInstruction: string | null = null 
 ): string {
   return liquid.parseAndRenderSync(template, {
     issue: {
@@ -45,6 +47,7 @@ export function renderPrompt(
     attempt,
     symphony: { root: symphonyRoot },
     relevant_lessons: relevantLessons,
+    reassignment_instruction: reassignmentInstruction,
   });
 }
 
@@ -103,10 +106,22 @@ export async function runAgentAttempt(
   // the misses prior tickets already paid for — rather than waiting for the
   // batch meta-improve pass to fold them into a prompt weeks later.
   const relevantLessons = relevantLessonsForIssue(config.retrospective.lessonsPath, issue);
+  // Rule 3: Check for reassignment instruction from review (only on retries)
+  let reassignmentInstruction: string | null = null;
+  if (attempt !== null) {
+    try {
+      reassignmentInstruction = await getLatestReassignmentComment(config.tracker, issue.id);
+    } catch (e) {
+      logger?.warn(`Failed to check reassignment comment: ${e instanceof Error ? e.message : String(e)}`, {
+        issue_id: issue.id,
+        issue_identifier: issue.identifier,
+      });
+    }
+  }
 
   let prompt: string;
   try {
-    prompt = renderPrompt(promptTemplate, issue, attempt, symphonyRoot, relevantLessons);
+    prompt = renderPrompt(promptTemplate, issue, attempt, symphonyRoot, relevantLessons, reassignmentInstruction);
   } catch (e) {
     throw new Error(`Template render error for ${issue.identifier}: ${e}`);
   }

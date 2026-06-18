@@ -68,6 +68,18 @@ rg "function <similar-name>|const <similar-name>" packages/<pkg>/src
 
 Minimum code that solves the problem. The senior-engineer test: would a reviewer say this diff is overcomplicated? If yes, simplify before committing. See `{{ symphony.root }}/WORKFLOW.md` → Simplicity first.
 
+## Shrink-on-touch
+
+After making your changes, run the shrink checks from `{{ symphony.root }}/prompts/SHRINK.md`:
+
+1. Did your change orphan a function, component, or constant? Delete it.
+2. Did your change make a dependency unused? Remove it from `package.json`.
+3. Did you write a 3+ line block that duplicates an existing helper? Extract or justify in workpad.
+4. Did your change reduce a function to a single caller? Consider inlining.
+
+These are mandatory on every commit that touches code. The detailed procedure is in `SHRINK.md`.
+
+## When you find unrelated tech debt
 - [ ] **No features beyond Intent / AC.** Scope creep doesn't slip in via "while I'm here".
 - [ ] **No abstractions for single-use code.** A helper with one caller is not a helper — inline it.
 - [ ] **No "flexibility" or "configurability" the ticket didn't ask for.** Hard-code values until a second caller demonstrates the need.

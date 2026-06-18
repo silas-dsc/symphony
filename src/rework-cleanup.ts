@@ -19,7 +19,7 @@ export const AI_COMMENT_MARKER = "<!-- symphony-agent -->";
  * Heading used inside the issue description to hold the human-comment summary
  * produced on a rework cycle. Replaced (not duplicated) on subsequent cycles.
  */
-export const REWORK_NOTES_HEADING = "## Rework notes";
+export const REWORK_NOTES_HEADING = "## Fix";
 
 /** A comment is "AI" if its body starts with the marker (after trimming leading whitespace). */
 export function isAiComment(comment: LinearComment): boolean {
@@ -61,26 +61,23 @@ export function upsertReworkNotes(description: string | null, body: string): str
   return parts.join("\n\n");
 }
 
-const SUMMARY_PROMPT = `You are summarising reviewer comments on a Linear ticket that has been sent back from "In Review" to "Dev in Progress" for rework.
+const SUMMARY_PROMPT = `Summarise reviewer comments on this Linear ticket.
 
-Reviewer comments (in chronological order):
+Reviewer comments (in order):
 ---
 {{comments}}
 ---
 
-Produce a single, concise rework summary with two short sections. Use this exact format and nothing else:
+Use this exact format:
 
-### Done
-- <one line per item the reviewer says is already addressed, or omit the section entirely if there are none>
-
-### To do
-- <one line per outstanding change the reviewer wants>
+## Fix
+- <one line per change needed>
 
 Rules:
-- Plain English, no preamble, no closing sentence.
-- Each bullet is one short sentence.
-- If a reviewer comment is just acknowledgement / chitchat with no actionable content, ignore it.
-- Never include "the reviewer said" — just state the change.`;
+- One sentence per line. Verb first. No preamble.
+- Omit "Done" section entirely.
+- Skip chitchat / acknowledgements.
+- Never write "reviewer said" — just state the action.`;
 
 /** Calls Claude Haiku once to summarise the human reviewer comments. Returns null on any failure. */
 async function summariseWithHaiku(commentBodies: string[]): Promise<string | null> {
