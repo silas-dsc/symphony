@@ -58,9 +58,37 @@ For each row in `.claude/test-matrix.md`:
    - `browser_snapshot` — does the page match the matrix's Expected column?
    - `browser_console_messages` — any uncaught errors? Console errors are a fail unless the matrix permits them.
    - `browser_network_requests` — any 4xx/5xx that the matrix didn't expect? Fail.
-5. Capture an **element-scoped screenshot** of the changed section (procedure below). Save it to `.claude/screenshots/<#>-<state>-<viewport>.png`.
-6. If the scenario has multiple states (loading, empty, error, success), exercise and screenshot each.
-7. Re-run at desktop 1024×768 if the matrix Section is responsive.
+5. **Accessibility check** (via axe-core, injected through `browser_evaluate`):
+
+   ```js
+   // Pseudocode for the browser_evaluate body.
+   // Loads axe-core from CDN if not present, then runs against the page.
+   await (async () => {
+     if (!window.axe) {
+       const s = document.createElement("script");
+       s.src = "https://cdn.jsdelivr.net/npm/axe-core@4/axe.min.js";
+       await new Promise((r) => { s.onload = r; document.head.appendChild(s); });
+     }
+     const result = await window.axe.run(document, {
+       runOnly: { type: "tag", values: ["wcag2a", "wcag2aa", "wcag21aa"] },
+     });
+     return {
+       violations: result.violations.map((v) => ({
+         id: v.id,
+         impact: v.impact,
+         help: v.help,
+         nodes: v.nodes.length,
+         targets: v.nodes.slice(0, 3).map((n) => n.target.join(" ")),
+       })),
+     };
+   })();
+   ```
+
+   Violations with `impact` of `serious` or `critical` count as a scenario fail. `moderate` and `minor` go into `.claude/qa-results.md` under a per-row `a11y` column but don't fail the scenario unless the matrix Section names accessibility (e.g. "keyboard navigation across modal", "screen-reader announcements"). Record up to three offending element selectors per violation so the Developer can locate them.
+
+6. Capture an **element-scoped screenshot** of the changed section (procedure below). Save it to `.claude/screenshots/<#>-<state>-<viewport>.png`.
+7. If the scenario has multiple states (loading, empty, error, success), exercise and screenshot each.
+8. Re-run at desktop 1024×768 if the matrix Section is responsive.
 
 ## Element-scoped screenshots (mandatory)
 
@@ -109,6 +137,7 @@ A scenario passes only when **all** of:
 - Observed behaviour matches `Expected` exactly. "Mostly works" is a fail.
 - Console messages are clean (or fail listed in matrix as expected).
 - Network requests during the scenario returned 2xx (or non-2xx listed in matrix as expected).
+- axe-core reported zero violations of `serious` or `critical` impact (or all such violations are listed as expected in the matrix Section column — e.g. a planned remediation deferred to a follow-up ticket).
 
 If any of these is false: the scenario fails. Record it. Continue to the next scenario — do not stop at the first failure.
 

@@ -80,11 +80,23 @@ The exception: changes that legitimately don't need a test per `TDD.md` (pure re
 - A `docs/AGENT_MEMORY.md` rule contradicted by the diff with no Assumption in the Plan justifying the deviation.
 - A debug artefact left behind: `.claude/debug-*.md` referencing a hypothesis that's never confirmed verified — the bug it diagnoses may still be live.
 
+### Codebase-shrink opportunities (Suggestion unless the diff created them)
+
+Three patterns are **Blocking** when the current diff is responsible:
+
+- A symbol whose last caller this diff removed but that wasn't deleted.
+- A dependency in `package.json` that this diff stopped importing.
+- A 3+ line block this diff added that duplicates an existing helper in the same package.
+
+Pre-existing dead code or duplication in untouched files: at most a Suggestion (and usually skipped — file a Backlog ticket only if it's adjacent to the diff and the fix is small).
+
+If `.claude/workpad.md` contains a `Shrink pass on <SHA>` note: the Developer has already considered this. Cross-check against the actual diff — a Shrink-pass note without a corresponding cleanup in the diff is itself Blocking.
+
 ### Maintainability (usually a Suggestion, not Blocking)
 - Premature abstraction for a single caller.
-- Dead code, unused exports, commented-out blocks.
+- Dead code, unused exports, commented-out blocks (in untouched files; see Codebase-shrink above if in the diff).
 - Magic numbers / strings in new code.
-- A copy-pasted block of ≥ 3 lines that should be extracted.
+- A copy-pasted block of ≥ 3 lines that should be extracted (Blocking if this diff added it; Suggestion if it predates the diff).
 
 ### Cosmetic (always a Suggestion)
 - Naming, ordering, comment phrasing.

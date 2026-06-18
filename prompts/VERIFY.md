@@ -21,15 +21,61 @@ The fix is mechanical: a single script runs every check, prints a structured sum
 bash {{ symphony.root }}/scripts/verify-changes.sh
 ```
 
-The script:
+The script runs ten checks in total. Seven of them run in parallel (capped at `VERIFY_PARALLELISM`, default `nproc`); the cheap scanners run synchronously after.
 
-1. Computes the set of changed files via `git diff --name-only origin/main...HEAD` (plus working-tree changes).
-2. Derives the set of touched packages (`packages/<pkg>`) and runs **scoped** lint and typecheck for each via `pnpm --filter <pkg>`. A non-`packages/` change falls back to a workspace-wide `pnpm typecheck && pnpm lint`.
-3. For each touched package that has a `test` script, runs `pnpm --filter <pkg> test -- --run` (or the package's equivalent non-watch mode).
-4. Scans the diff for forbidden tokens introduced by this branch: `TODO`, `FIXME`, `XXX`, `console.log`, `console.debug`, `debugger`, `as any`, `as unknown as`, `.only(`, `.skip(`, `xit(`, `xdescribe(`.
-5. Scans the diff for likely secrets (`-----BEGIN`, `sk-`, `AKIA[0-9A-Z]{16}`, `password\s*=\s*['"][^'"]+['"]`, etc.) and refuses to pass if any matches sit inside `packages/*/.env` or any file other than `.env.example`.
-6. Confirms the working tree has no untracked files inside `src/` or `packages/*/src/` that look like accidental leftovers (`*.tmp`, `*.bak`, `*.log`, `*.swp`).
-7. Prints a one-line `VERIFY: pass` or `VERIFY: fail (<reasons>)` and exits 0/1.
+**Parallel checks:**
+1. **Scoped lint** — `pnpm --filter <pkg> lint` for every touched package.
+2. **Scoped typecheck** — `pnpm --filter <pkg> typecheck` for every touched package.
+3. **Diff-aware tests** — `vitest --changed $BASE_REF` or `jest --changedSince=$BASE_REF` for every touched package (auto-detected from `package.json` dependencies). Falls back to the package's `test` script if neither is present.
+4. **Dependency audit** — `pnpm audit --prod --audit-level high`. Catches known-vulnerable transitive deps.
+5. **SAST** — `semgrep --config auto` on touched source files. Catches XSS via `dangerouslySetInnerHTML`, eval, injection, prototype pollution, etc. Skipped if `semgrep` isn't on `PATH`.
+6. **Architectural boundaries** — `dependency-cruiser` validated against `.dependency-cruiser.{js,cjs,mjs,json}` if a config exists. Catches "package A imports package B internals when it shouldn't" violations.
+7. **Unused exports / orphan files** — `knip --reporter json`, filtered to findings that intersect the touched files. Pre-existing dead code in untouched files is not flagged — only orphans the current diff created.
+8. **Firestore rules tests** — runs only when `firestore.rules` was modified, via the repo's `firestore:test` / `rules:test` / `test:rules` script, or vitest against `firestore-tests/`.
+9. **Bundle-size budget** — checks each `target → byte-limit` pair in `.bundle-budget.json` against the corresponding built file's size. Doesn't build itself — expects a build artefact already on disk. Skipped if no budget file is present.
+
+**Synchronous checks:**
+10. **Forbidden-token scan** on the diff: `TODO`, `FIXME`, `XXX`, `console.log`, `console.debug`, `debugger`, `as any`, `as unknown as`, `.only(`, `.skip(`, `xit(`, `xdescribe(`. Excludes `.md`, `.lock`, `.snap`, and `scripts/verify-changes.sh` itself.
+11. **Secret scan** on the diff: `-----BEGIN ... PRIVATE KEY-----`, `sk-...`, `AKIA[0-9A-Z]{16}`, `(password|secret|api_key|token) = "..."`. Allows matches in `.env.example` since it documents placeholder shapes.
+12. **Untracked-leftover scan**: `*.tmp`, `*.bak`, `*.log`, `*.swp`, `*.orig`, `*.rej`, `*~` inside the working tree.
+13. **Tracked-artefact scan on the diff**: flags new additions in build/coverage/test-report directories (`dist/`, `build/`, `coverage/`, `playwright-report/`, `test-results/`, `out/`, `.next/`, `.nuxt/`), OS junk (`.DS_Store`, `Thumbs.db`, `desktop.ini`), `node_modules/`, and image files >100kb outside designated asset directories (`public/`, `assets/`, `images/`, `static/`, `fonts/`, `media/`, `icons/`, `__image_snapshots__/`, `__screenshots__/`). Complements `.gitignore` rather than duplicating it: only ungignored additions can trigger this check.
+
+### Graceful skips
+
+Each parallel check is **graceful**: if the underlying tool or its config file isn't present, the check exits with code 77 ("skipped") and the script reports `SKIP: <name>` instead of failing. This means the script works against repos that haven't yet adopted every tool — and lights up automatically as adoption happens. A check explicitly skipped via `VERIFY_SKIP=audit,semgrep` also surfaces as a SKIP.
+
+The verdict line counts skips separately so the agent knows when it should push the operator to wire up a missing tool:
+
+```
+VERIFY: pass (sha=abc1234, packages=2, files=8, ran=9, skipped=3)
+```
+
+If `skipped` is non-zero on a PR that touches `packages/app/**`, the agent should note which tools are missing in `.claude/workpad.md` under `## Tooling gaps` and (optionally) file a Linear Backlog ticket to adopt them. Doing this once per missing tool, not once per ticket.
+
+### Adopting a missing tool
+
+For each `SKIP` line, the agent can run the detection script to confirm which tool is missing and print the install path:
+
+```bash
+bash {{ symphony.root }}/scripts/install-verify-tools.sh --check
+```
+
+Output is a list of `PRESENT:` / `MISSING:` lines plus a verdict count. To actually adopt — install npm packages, scaffold configs — the **operator** runs `--install --scaffold` (or `--all`). The agent does **not** run install mode itself: adoption is an operator decision that touches `package.json` and adds new gates the team has to live with. The agent surfaces the gap; the operator adopts.
+
+### Per-check logs
+
+Each parallel check writes its full output to `/tmp/symphony-verify-<sha>/<check>.log`. The script prints the last 30 lines of each failing log inline so the agent doesn't need to grep, but the full logs persist for deeper investigation.
+
+### Environment knobs
+
+| Env var | Default | Purpose |
+|---|---|---|
+| `VERIFY_BASE_REF` | `origin/main` | Diff base for "what changed" detection. |
+| `VERIFY_PARALLELISM` | `nproc` (clamped to 1–8) | Concurrent jobs. Lower on memory-constrained machines. |
+| `VERIFY_SKIP` | `""` | Comma-separated check names to skip (e.g. `audit,semgrep`). Use sparingly — the gate exists for a reason. |
+| `VERIFY_LOG_DIR` | `/tmp/symphony-verify-<sha>` | Where per-check logs go. |
+| `SEMGREP_TIMEOUT` | `60` | Per-rule timeout for SAST scan. |
+| `BUDGET_FILE` | `.bundle-budget.json` | Bundle-budget definition file. |
 
 ## When it fails
 
