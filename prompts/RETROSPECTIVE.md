@@ -64,6 +64,9 @@ lesson = {
   "what_would_have_caught_it_earlier": "<one sentence>",
   "proposed_workflow_change": "<one sentence, concrete and actionable — empty string if none>",
   "tags": ["<from the closed list below>"],
+  "memory_feedback": [
+    {"id": "<AGENT_MEMORY rule id, see memory_feedback below>", "signal": "<reinforced | violated | stale>"}
+  ],
   "diff_summary": {
     "files_changed": 0,
     "lines_added": 0,
@@ -113,8 +116,14 @@ PY
   - `pr-feedback` — human reviewer asked for changes a sub-agent should have caught.
   - `tdd` — missing developer-side test caused a regression or made the rework loop longer; or a snapshot accepted without inspection.
   - `verify` — VERIFY gate failed or was skipped; lint/typecheck/secret/forbidden-token check regression slipped through.
-  - `memory` — a rule that should live in `docs/AGENT_MEMORY.md` would have prevented this miss; the retrospective recommends adding or updating an entry.
+  - `memory` — a rule that should live in `{{ symphony.root }}/docs/AGENT_MEMORY.md` would have prevented this miss; the retrospective recommends adding or updating an entry.
   - `debug` — issue could have been caught earlier by following the structured-debug protocol; agent guessed instead of reproducing.
+
+- **memory_feedback** — closes the trust loop on `{{ symphony.root }}/docs/AGENT_MEMORY.md`. Rules added by the meta-improve pass carry a marker comment with a stable id, e.g. `<!-- mem:firestore-loader-limit added=2026-05-01 sources=TEA-4181 confidence=2 -->`. For each marked rule that was *relevant to the area this ticket touched*, append one entry. Leave the array empty (`[]`) when no marked rule was clearly relevant — don't guess.
+  - `reinforced` — the rule was relevant and correct; the ticket respected it (or would have, had the area been touched the wrong way). Raises the rule's confidence.
+  - `violated` — the rule was relevant and correct, but this ticket's miss is exactly what it warned about. The rule is right but isn't landing — it needs to be more prominent, not removed.
+  - `stale` — the rule no longer applies: the file, convention, or component it references has changed or gone. Candidate for removal.
+  - Only reference ids that actually exist in `{{ symphony.root }}/docs/AGENT_MEMORY.md` (read the file's markers first). Never invent an id.
 
 ## Rules
 

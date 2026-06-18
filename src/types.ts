@@ -98,6 +98,8 @@ export interface RetrospectiveConfig {
   triggerStates: string[];
   /** Absolute path to the lessons.jsonl file the retrospective appends to. */
   lessonsPath: string;
+  /** When true, commit lessons.jsonl and push it to the tracked branch after each retrospective. */
+  commitLessons: boolean;
   /** Max turns the retrospective Claude session is allowed before aborting. */
   maxTurns: number;
   /** Hard timeout for a single retrospective run, in ms. */

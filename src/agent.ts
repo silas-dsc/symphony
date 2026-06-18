@@ -5,6 +5,7 @@ import * as path from "node:path";
 import { Liquid } from "liquidjs";
 import type { Issue, AgentResult, WorkflowConfig, RateLimitInfo, AgentEvent, AgentEventCallback, Logger } from "./types.js";
 import { ensureWorkspace, runHook } from "./workspace.js";
+import { relevantLessonsForIssue } from "./lessons.js";
 import { getLatestReassignmentComment } from "./linear.js";
 import {
   selectClaudeModel,
@@ -20,7 +21,14 @@ import {
 
 const liquid = new Liquid({ strictVariables: true, strictFilters: true });
 
-export function renderPrompt(template: string, issue: Issue, attempt: number | null, symphonyRoot: string, reassignmentInstruction: string | null = null): string {
+export function renderPrompt(
+  template: string,
+  issue: Issue,
+  attempt: number | null,
+  symphonyRoot: string,
+  relevantLessons = "",
+  reassignmentInstruction: string | null = null 
+): string {
   return liquid.parseAndRenderSync(template, {
     issue: {
       id: issue.id,
@@ -38,6 +46,7 @@ export function renderPrompt(template: string, issue: Issue, attempt: number | n
     },
     attempt,
     symphony: { root: symphonyRoot },
+    relevant_lessons: relevantLessons,
     reassignment_instruction: reassignmentInstruction,
   });
 }
@@ -93,6 +102,10 @@ export async function runAgentAttempt(
     await runHook(config.hooks.beforeRun, wsPath, config.hooks.timeoutMs, logger);
   }
 
+  // Retrieve past lessons relevant to this ticket so the Architect starts with
+  // the misses prior tickets already paid for — rather than waiting for the
+  // batch meta-improve pass to fold them into a prompt weeks later.
+  const relevantLessons = relevantLessonsForIssue(config.retrospective.lessonsPath, issue);
   // Rule 3: Check for reassignment instruction from review (only on retries)
   let reassignmentInstruction: string | null = null;
   if (attempt !== null) {
@@ -108,7 +121,7 @@ export async function runAgentAttempt(
 
   let prompt: string;
   try {
-    prompt = renderPrompt(promptTemplate, issue, attempt, symphonyRoot, reassignmentInstruction);
+    prompt = renderPrompt(promptTemplate, issue, attempt, symphonyRoot, relevantLessons, reassignmentInstruction);
   } catch (e) {
     throw new Error(`Template render error for ${issue.identifier}: ${e}`);
   }

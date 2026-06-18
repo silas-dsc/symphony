@@ -237,6 +237,7 @@ You are an autonomous coding agent working on {{ issue.identifier }}: {{ issue.t
 | `retrospective.enabled` | `false` | When true, run a retrospective sub-agent each time a Symphony-tracked ticket reaches a terminal state — appends one structured JSON line to the lessons log |
 | `retrospective.trigger_states` | `["Done"]` | Terminal states that trigger a retrospective; case-insensitive |
 | `retrospective.lessons_path` | `<symphony>/lessons/lessons.jsonl` | Absolute or relative path to the JSONL file the retrospective appends to |
+| `retrospective.commit_lessons` | `true` | After each retrospective, commit `lessons.jsonl` and push it to the tracked branch (reuses `auto_update.remote`/`branch`/`repo_root`). Set `false` to keep the prior manual-commit behaviour |
 | `retrospective.max_turns` | `15` | Max Claude turns per retrospective before it's aborted |
 | `retrospective.timeout_ms` | `300000` | Hard wall-clock timeout per retrospective run |
 | `merge_conflicts.enabled` | `false` | When true, each orchestrator tick scans open PRs and spawns a sub-agent to resolve the conflicts on any GitHub reports as `CONFLICTING` |
@@ -392,6 +393,8 @@ src/
   orchestrator.ts   — poll loop, dispatch, retry queue, state reconciliation
   agent.ts          — spawns `claude` subprocess, streams JSON events, returns AgentResult
   retrospective.ts  — spawns a one-shot retrospective `claude` process per terminal ticket
+  lessons.ts        — ranks past lessons by keyword overlap with a ticket for dispatch-time injection
+  lessons-sync.ts   — commits + pushes lessons.jsonl after each retrospective (serialized, rebase-on-push)
   merge-conflict.ts — scans open PRs each tick; spawns a `claude` process to resolve conflicts on each conflicting PR
   dependabot.ts     — scans open Dependabot alerts each tick; files a Linear ticket per new alert for the normal poll loop to pick up
   meta-improve.ts   — CLI that reads lessons.jsonl and proposes prompt edits on a branch
@@ -434,6 +437,12 @@ The prompt template in `WORKFLOW.md` instructs the parent agent to coordinate fo
 
 A persistent, gitable knowledge base every relevant sub-agent reads before investigating the codebase. Records domain vocabulary, roles, architectural decisions, file and naming conventions, common pitfalls, and "things that look like bugs but aren't". The meta-improve pass can append to this file when a retrospective's root cause is "agent didn't know about <rule>" — so the next ticket starts with the rule already known.
 
+Rules the meta-improve pass adds carry an invisible marker comment with a stable id and a `confidence` counter (e.g. `<!-- mem:firestore-loader-limit added=2026-05-01 sources=TEA-4181 confidence=2 -->`). Each retrospective scores the marked rules relevant to its ticket (`reinforced` / `violated` / `stale` via the `memory_feedback` field), and the meta-improve pass uses those tallies to **promote** proven rules, **strengthen** ones agents keep missing, and **retire** stale ones — so memory self-corrects instead of only growing. Markers carry no meaning for an agent acting on the rule; they exist only for this loop.
+
+### Per-ticket lesson retrieval
+
+Before dispatching an agent, Symphony reads `lessons/lessons.jsonl`, ranks past lessons by keyword overlap with the ticket (deterministic token matching — no vector store; the corpus is small enough that it isn't worth one), and injects the most relevant *instructive* misses into the prompt as a **Relevant past lessons** block (`src/lessons.ts`). The parent passes that block to the Architect, so a mistake a related ticket already paid for is on the table at planning time — rather than waiting weeks for the batch meta-improve pass to fold it into a prompt. The agent treats each lesson as a warning to confirm, not a rule to obey blindly. Retrieval is best-effort: a missing or empty lessons file simply omits the block.
+
 ## Automatic merge-conflict resolution
 
 When `merge_conflicts.enabled` is `true`, every orchestrator tick scans the configured repo's open pull requests (`gh pr list`) and resolves the conflicts on each one GitHub reports as `CONFLICTING`. It runs on **all** open PRs with conflicts — not just the ticket currently in flight.
@@ -467,13 +476,17 @@ Alerts below `dependabot.min_severity` are ignored. If the ticket read-back fail
 
 Symphony has a two-stage feedback loop that lets the workflow learn from its own misses without unsupervised prompt drift.
 
-**Stage 1 — per-ticket retrospective (automatic).** When `retrospective.enabled` is `true` and a Symphony-tracked Linear issue reaches a `retrospective.trigger_states` state (default just `Done`), the orchestrator spawns a one-shot Claude session inside the workspace before cleanup. That session reads the Linear comments (Intent Brief → Workpad → QA results → Delivery → human review comments), the git diff, and the GitHub PR thread, then appends one structured JSON line to `lessons/lessons.jsonl`. See `prompts/RETROSPECTIVE.md` for the schema. The retrospective never modifies code, Linear, or GitHub — it just records.
+**Stage 1 — per-ticket retrospective (automatic).** When `retrospective.enabled` is `true` and a Symphony-tracked Linear issue reaches a `retrospective.trigger_states` state (default just `Done`), the orchestrator spawns a one-shot Claude session inside the workspace before cleanup. That session reads the Linear comments (Intent Brief → Workpad → QA results → Delivery → human review comments), the git diff, and the GitHub PR thread, then appends one structured JSON line to `lessons/lessons.jsonl`. See `prompts/RETROSPECTIVE.md` for the schema. It also scores any `docs/AGENT_MEMORY.md` rules relevant to the ticket via the `memory_feedback` field, closing the trust loop on past memory edits. The retrospective never modifies code, Linear, or GitHub — it just records.
+
+Once the line is appended, the orchestrator commits `lessons.jsonl` and pushes it to the tracked branch (`retrospective.commit_lessons`, on by default). This needs no manual step and keeps the Symphony working tree clean — which matters because `self-update` refuses to pull over a dirty tree, so an uncommitted lessons file would otherwise stall auto-updates. Concurrent retrospectives are serialized and coalesced into one commit, and a push that races a freshly merged meta-improve PR is rebased and retried automatically.
 
 **Stage 2 — meta-improvement pass (operator-triggered).** Run `npm run meta-improve` to spawn a Claude session in the Symphony repo with `prompts/META_IMPROVE.md`. It reads `lessons/lessons.jsonl` (filtered to a configurable window, default 30 days), clusters lessons by `primary_miss` and `tags`, and identifies up to 3 patterns that meet the actionability threshold (≥ 3 occurrences with agreeing root cause and a clear proposed edit). For each pattern it then:
 
 1. Creates an individual branch `meta-improve/<date>-<slug>` off `main`, applies a narrow (≤ 20-line) edit to one `WORKFLOW.md` or `prompts/*.md` file, pushes, and opens an individual PR.
 2. Cherry-picks every pattern's commit into a long-lived `proposed` branch (force-refreshed each run) and opens or updates a combined PR from `proposed → main`.
 3. Writes `META_IMPROVE_REPORT.md` on the `proposed` branch summarising what was done and what wasn't.
+
+The pass also reconciles `docs/AGENT_MEMORY.md` rule confidence from the accumulated `memory_feedback` tallies — promoting proven rules, strengthening ones agents keep missing, and retiring stale ones — as one extra memory-maintenance PR (its own branch and meta-review, outside the 3-pattern cap).
 
 **Stage 3 — independent meta-review (automatic).** For every PR opened (individual + combined), the meta-pass dispatches a **Meta-reviewer** sub-agent (`prompts/META_REVIEW.md`) that reads the diff and the motivating lessons with fresh eyes and posts one structured `## 🔍 Meta-review` comment with: verdict (approve / request changes / discuss), risk level, what the edit does, whether it actually addresses the stated pattern, concrete concerns, and a recommended next step. It's advisory — it doesn't submit a formal GitHub review and doesn't merge.
 

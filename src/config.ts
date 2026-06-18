@@ -205,6 +205,7 @@ function buildConfig(raw: Record<string, unknown>, baseDir: string): WorkflowCon
       lessonsPath: typeof retrospective.lessons_path === "string"
         ? resolvePath(retrospective.lessons_path, baseDir)
         : path.join(baseDir, "lessons", "lessons.jsonl"),
+      commitLessons: (retrospective.commit_lessons as boolean | undefined) ?? true,
       maxTurns: (retrospective.max_turns as number | undefined) ?? 15,
       timeoutMs: (retrospective.timeout_ms as number | undefined) ?? 300000,
     },
