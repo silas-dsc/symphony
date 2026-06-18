@@ -415,7 +415,7 @@ The prompt template in `WORKFLOW.md` instructs the parent agent to coordinate fo
 | Skill | Purpose | File |
 |---|---|---|
 | Intent gate | Disambiguate the ticket before refinement. | `prompts/INTENT.md` |
-| Ticket refinement | Produce Context / AC / Technical Approach / Test Plan / Out of Scope. | `prompts/REFINE_TICKET.md` |
+| Ticket refinement | Produce Context / AC / Technical Approach / Test Plan / Out of Scope. The Test Plan opens with a terse, click-by-click functional test plan (one block per AC: role, steps, observable result, log lines). | `prompts/REFINE_TICKET.md` |
 | Figma BA | For tickets with a Figma design: import the design (requesting access with instructions if needed), produce detailed desktop **and** mobile specs (collapsing desktop→mobile where no mobile frame exists), map how the parts connect, quantise styles to the nearest existing Tailwind token, and surface/resolve gaps, assumptions, and improvements. Skipped when the ticket has no Figma URL. | `prompts/FIGMA_BA.md` |
 | Architect plan | One commit per task, plus a **Tests to add** section so developer-side tests aren't an afterthought. | `prompts/ARCHITECT.md` |
 | Code quality | Per-file walkthrough + scoped `pnpm --filter` lint/typecheck. | `prompts/CODE_QUALITY.md` |

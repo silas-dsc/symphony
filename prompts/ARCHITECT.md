@@ -62,6 +62,8 @@ Rules:
 
 Write `.claude/test-matrix.md`. One row per AC. If two ACs share a flow, write one row that covers both and reference both ACs.
 
+The refined description's **Test Plan** already contains a **Functional test plan** — terse, click-by-click steps per AC, written by the Refiner. Use it as the seed: turn each block into a matrix row, keeping the same role, steps, and expected result. Tighten or correct it against the codebase; do not contradict it silently. If a block is wrong or missing an AC, fix it in the matrix and note the discrepancy in `.claude/workpad.md`.
+
 ```md
 # Functional test matrix — {{ issue.identifier }}
 
