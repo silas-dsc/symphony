@@ -10,6 +10,72 @@
         "--ignore-https-errors",
         "--browser=chrome"
       ]
+    },
+    "sequential-thinking": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-sequential-thinking"
+      ]
+    },
+    "context7": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@upstash/context7-mcp@latest"
+      ]
+    },
+    "serena": {
+      "command": "uvx",
+      "args": [
+        "--from",
+        "git+https://github.com/oraios/serena",
+        "serena",
+        "start-mcp-server",
+        "--context",
+        "ide-assistant",
+        "--enable-web-dashboard",
+        "false"
+      ]
+    },
+    "chrome-devtools": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "chrome-devtools-mcp@latest"
+      ]
+    },
+    "magic": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@21st-dev/magic"
+      ],
+      "env": {
+        "TWENTYFIRST_API_KEY": "${TWENTYFIRST_API_KEY}"
+      }
+    },
+    "morphllm-fast-apply": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@morph-llm/morph-fast-apply"
+      ],
+      "env": {
+        "MORPH_API_KEY": "${MORPH_API_KEY}",
+        "ALL_TOOLS": "true"
+      }
+    },
+    "tavily": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-remote",
+        "https://mcp.tavily.com/mcp/?tavilyApiKey=${TAVILY_API_KEY}"
+      ],
+      "env": {
+        "TAVILY_API_KEY": "${TAVILY_API_KEY}"
+      }
     }
   }
 }

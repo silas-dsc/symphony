@@ -104,7 +104,8 @@ PY
   - `delivery` — Delivery comment was too long, missing test steps, missing screenshots, etc.
   - `mobile-ux` — issue at 375px not caught.
   - `performance` — slow query, N+1, hot-path issue.
-  - `figma-intake` — design parsing produced wrong specs.
+  - `figma-intake` — Figma BA design parsing produced wrong specs (mis-read layout, missed a screen, bad style quantisation, unflagged gap).
+  - `accessibility` — a WCAG/accessibility barrier (contrast, keyboard, semantics, skip-link, plain language) shipped or was caught late.
   - `comment-noise` — too many Linear comments / reviewer couldn't find the deliverable.
   - `screenshot-scope` — screenshots not element-scoped, hid the changed section.
   - `flaky-test` — test instability caused false failures.
@@ -121,6 +122,7 @@ PY
 - **Don't post anything to Linear or GitHub.** This sub-agent is silent — its only output is the appended JSON line.
 - **Don't fabricate.** If you can't determine a field from the available signal, write your honest best estimate and lower-confidence wording in `notes`. Better to write `"primary_miss": "unknown — no review comments and no rework"` than to invent one.
 - **Keep `notes` short.** ≤ 400 characters. Anything longer means you're trying to hide nuance in prose instead of structuring it into fields.
+- **Plain words.** Apply `{{ symphony.root }}/prompts/CLEAR_WRITING.md` to `notes` and `primary_miss` — active voice, no jargon, no filler. The meta-improve pass reads many of these in a row; verbose retros are wasted tokens.
 - **Memory candidate.** If the lesson points at a convention or gotcha the codebase repeatedly violates, suggest a concrete one-line edit to `docs/AGENT_MEMORY.md` inside `proposed_workflow_change` (e.g. `proposed_workflow_change: "Add to docs/AGENT_MEMORY.md → Common pitfalls → Firestore: 'subcollection reads inside loaders must use limit(N) or risk full-collection scans'."`). The meta-improve pass acts on these.
 - **Time-box yourself.** ≤ 15 turns. If you can't find the data, write a sparse lesson with `"notes": "low-signal ticket: <why>"` and exit.
 

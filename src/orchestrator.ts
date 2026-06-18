@@ -14,6 +14,8 @@ import type {
 } from "./types.js";
 import { loadWorkflow, validateConfig } from "./config.js";
 import { GitHubPreviewWarmer, StaticUrlWarmer } from "./github-preview.js";
+import { MergeConflictResolver } from "./merge-conflict.js";
+import { DependabotWatcher } from "./dependabot.js";
 import * as linear from "./linear.js";
 import { isCompletionState, sendBatchedSlackNotification } from "./notifications.js";
 import { getWorkspacePath, removeWorkspace } from "./workspace.js";
@@ -48,6 +50,8 @@ export class Orchestrator {
   private reloadTimer: ReturnType<typeof setTimeout> | null = null;
   private previewWarmer: GitHubPreviewWarmer | null = null;
   private staticWarmer: StaticUrlWarmer | null = null;
+  private mergeConflictResolver: MergeConflictResolver | null = null;
+  private dependabotWatcher: DependabotWatcher | null = null;
   private log: Logger;
 
   constructor(workflowPath: string, logger: Logger) {
@@ -61,6 +65,8 @@ export class Orchestrator {
     this.derived = computeDerived(this.config);
     this.previewWarmer = this.createPreviewWarmer();
     this.staticWarmer = this.createStaticWarmer();
+    this.mergeConflictResolver = this.createMergeConflictResolver();
+    this.dependabotWatcher = this.createDependabotWatcher();
 
     this.state = {
       pollIntervalMs: this.config.polling.intervalMs,
@@ -279,6 +285,8 @@ export class Orchestrator {
     this.derived = computeDerived(this.config);
     this.previewWarmer = this.createPreviewWarmer();
     this.staticWarmer = this.createStaticWarmer();
+    this.mergeConflictResolver = this.createMergeConflictResolver();
+    this.dependabotWatcher = this.createDependabotWatcher();
     this.state.pollIntervalMs = this.config.polling.intervalMs;
     this.state.maxConcurrentAgents = this.config.agent.maxConcurrentAgents;
     this.log.info("WORKFLOW.md reloaded");
@@ -299,6 +307,14 @@ export class Orchestrator {
 
     if (this.staticWarmer) {
       await this.staticWarmer.reconcile();
+    }
+
+    if (this.mergeConflictResolver) {
+      await this.mergeConflictResolver.reconcile();
+    }
+
+    if (this.dependabotWatcher) {
+      await this.dependabotWatcher.reconcile();
     }
 
     const validationError = validateConfig(this.config);
@@ -353,6 +369,24 @@ export class Orchestrator {
     this.scheduleTick(this.state.pollIntervalMs);
   }
 
+  // ─── Ticket workflow rules ─────────────────────────────────────────────────
+
+  /** Rule 1: Copy original description when first picking up a ticket. Runs async. */
+  private addPickedUpCommentAsync(issue: Issue): void {
+    linear.hasPickedUpComment(this.config.tracker, issue.id)
+      .then(hasComment => {
+        if (!hasComment) {
+          return linear.addPickedUpComment(this.config.tracker, issue.id, issue.description ?? "");
+        }
+      })
+      .catch(e => {
+        this.log.warn(`Failed to add picked-up comment: ${fmtErr(e)}`, {
+          issue_id: issue.id,
+          issue_identifier: issue.identifier,
+        });
+      });
+  }
+
   // ─── Dispatch ──────────────────────────────────────────────────────────────
 
   private sortForDispatch(issues: Issue[]): Issue[] {
@@ -405,6 +439,11 @@ export class Orchestrator {
     const promptTemplate = this.promptTemplate;
     const symphonyRoot = this.symphonyRoot;
     const logger = this.log;
+
+    // Rule 1: Copy original description when first picking up a ticket
+    if (attempt === null) {
+      this.addPickedUpCommentAsync(issue);
+    }
 
     const done = runAgentAttempt(
       issue,
@@ -912,6 +951,33 @@ export class Orchestrator {
   private createStaticWarmer(): StaticUrlWarmer | null {
     if (this.config.keepAlive.urls.length === 0) return null;
     return new StaticUrlWarmer(this.config.keepAlive, this.log);
+  }
+
+  private createMergeConflictResolver(): MergeConflictResolver | null {
+    if (!this.config.mergeConflicts.enabled) return null;
+    return new MergeConflictResolver({
+      config: this.config.mergeConflicts,
+      workspaceRoot: this.config.workspace.root,
+      hooks: this.config.hooks,
+      symphonyRoot: this.symphonyRoot,
+      mcpConfigPath: resolveAgentMcpConfigPath(this.symphonyRoot),
+      logger: this.log,
+      // Skip PRs whose ticket is still in an active state — the owning agent
+      // resolves those, so the resolver never races the dispatch loop.
+      getActiveBranchKeys: async () => {
+        const issues = await linear.fetchCandidateIssues(this.config.tracker);
+        return new Set(issues.map(i => i.identifier.toLowerCase()));
+      },
+    });
+  }
+
+  private createDependabotWatcher(): DependabotWatcher | null {
+    if (!this.config.dependabot.enabled) return null;
+    return new DependabotWatcher({
+      config: this.config.dependabot,
+      tracker: this.config.tracker,
+      logger: this.log,
+    });
   }
 }
 

@@ -45,6 +45,50 @@ export interface WorkflowConfig {
   server?: ServerConfig;
   autoUpdate: AutoUpdateConfig;
   retrospective: RetrospectiveConfig;
+  mergeConflicts: MergeConflictConfig;
+  dependabot: DependabotConfig;
+}
+
+export interface DependabotConfig {
+  /** When true, Symphony scans GitHub Dependabot alerts each tick and files a Linear ticket for each new one. */
+  enabled: boolean;
+  /** GitHub repo owner whose Dependabot alerts are scanned (defaults to github_preview.repo_owner). */
+  repoOwner: string;
+  /** GitHub repo name whose Dependabot alerts are scanned (defaults to github_preview.repo_name). */
+  repoName: string;
+  /** Linear team key the tickets are created under (defaults to tracker.team_key). */
+  teamKey: string;
+  /** Workflow state name the ticket is created in — must be one of tracker.active_states so the agent picks it up. */
+  targetState: string;
+  /** Email (or name) of the Linear user to assign the ticket to. Empty = unassigned. */
+  assigneeEmail: string;
+  /** Linear label applied to every ticket; also used to dedupe so the same alert isn't filed twice. */
+  label: string;
+  /** Only file tickets for alerts at or above this severity: low | medium | high | critical. */
+  minSeverity: string;
+  /** Hard cap on how many Dependabot tickets may be open (non-terminal) at once. Defaults to 1. */
+  maxOpenTickets: number;
+  /** Timeout for the `gh api` call that lists Dependabot alerts, in ms. */
+  requestTimeoutMs: number;
+}
+
+export interface MergeConflictConfig {
+  /** When true, Symphony scans open PRs each tick and resolves the conflicts on any that are CONFLICTING. */
+  enabled: boolean;
+  /** GitHub repo owner whose open PRs are scanned (defaults to github_preview.repo_owner). */
+  repoOwner: string;
+  /** GitHub repo name whose open PRs are scanned (defaults to github_preview.repo_name). */
+  repoName: string;
+  /** Max turns the resolver Claude session is allowed before aborting. */
+  maxTurns: number;
+  /** Hard timeout for a single conflict-resolution run, in ms. */
+  timeoutMs: number;
+  /** Max number of conflict-resolution agents running concurrently. */
+  maxConcurrent: number;
+  /** Minimum delay before re-attempting a PR that is still conflicting after a prior run, in ms. */
+  retryIntervalMs: number;
+  /** Timeout for the `gh` call that lists open PRs, in ms. */
+  requestTimeoutMs: number;
 }
 
 export interface RetrospectiveConfig {

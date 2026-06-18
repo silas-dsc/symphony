@@ -14,14 +14,14 @@ You may be invoked multiple times on the same ticket (retries). Before doing any
 
 ### 0. Figma artefacts
 
-The parent agent dispatches the Figma Intake sub-agent before you if the ticket has a `figma.com/design/...` URL. Look for `.symphony-figma/tech-spec.md` in the workspace. If present, its Files / Routes / Shared components / Data flow sections become the substance of your Technical Approach, and the per-screen `.md` files supply AC for the Test Plan. Figma intake artefacts live in the workspace only — never posted to Linear or the PR.
+The parent agent dispatches the Figma BA sub-agent before you if the ticket has a `figma.com/design/...` URL. Look for `.symphony-figma/tech-spec.md` in the workspace. If present, its Files / Routes / Shared components / Data flow / Design system deltas sections become the substance of your Technical Approach, and the per-screen `.md` files supply AC for the Test Plan. Also read `.symphony-figma/gaps.md`: surface its headline improvements and any "needs a decision" items in the refined description (a short "Decisions for sign-off" subsection) so a human can sign off before Phase 3 builds on them. Figma BA artefacts live in the workspace only — never posted to Linear or the PR.
 
 If there's no `.symphony-figma/` directory, the ticket has no design — proceed with the codebase-only investigation below.
 
 ### 1. Read the Intent Brief and the current description
 - Open `.claude/intent.md`. Its Who/Wants/So that is the canonical statement of intent — your refined description must remain consistent with it.
 - Read the current Linear description critically against the Intent Brief. Identify gaps: missing repro steps, unstated acceptance criteria, ambiguous scope, no test plan, vague success metric.
-- If the description is already implementation-ready, consistent with the Intent Brief, and passes UNSLOP — note that in `.claude/workpad.md` and skip the rewrite.
+- If the description is already implementation-ready, consistent with the Intent Brief, and passes UNSLOP + CLEAR_WRITING — note that in `.claude/workpad.md` and skip the rewrite.
 
 ### 2. Investigate the codebase to fill gaps
 - Locate the routes, components, functions, and types the change touches.
@@ -60,8 +60,10 @@ Use this exact structure:
 - <Items deferred to follow-up backlog tickets — be explicit about what is NOT being done>
 ```
 
-### 4. Run the refined description through UNSLOP
+### 4. Run the refined description through UNSLOP and CLEAR_WRITING
 Open `{{ symphony.root }}/UNSLOP.md` and apply its three principles (MECE, DRY, simple-but-not-shorthand) to your draft. Cut filler. Merge overlapping bullets. Don't cut concrete details (file paths, role names, specific routes).
+
+Then open `{{ symphony.root }}/prompts/CLEAR_WRITING.md` and apply its sentence- and word-level rules: average ≤ 15 words per sentence, active voice, no jargon or filler ("in order to", "at this point in time", "there is/are"), spelled-out acronyms on first use, second person where it suits.
 
 ### 5. Preserve the original locally, then update the description
 
@@ -109,4 +111,5 @@ All of the following must be true before moving to Phase 2:
 - [ ] The Linear issue description has been replaced with the refined version (or skipped because it already met the bar — noted in `.claude/workpad.md`).
 - [ ] The refined description contains all five sections: Context, Acceptance Criteria, Technical Approach, Test Plan, Out of Scope.
 - [ ] UNSLOP applied: no MECE overlaps, no DRY violations, no filler.
+- [ ] CLEAR_WRITING applied: active voice, sentences ≤ 25 words, plain words from the substitution table, acronyms spelled out on first use.
 - [ ] **No Linear comments were posted by this phase.** The only thing this phase writes to Linear is the description itself.

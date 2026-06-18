@@ -391,8 +391,13 @@ interface OrgPayload {
 // Body of the bookkeeping comment Symphony posts to mark "Slack completion
 // notification sent" for an issue. Prefixed with the AI-comment marker so the
 // rework cleanup picks it up too if the ticket is later moved back into rework.
-const SLACK_NOTIFICATION_COMMENT = "<!-- symphony-agent -->\nSlack notification sent";
-const SLACK_NOTIFICATION_PAYLOAD = "Slack notification sent";
+const SLACK_NOTIFICATION_COMMENT = "<!-- symphony-agent -->\nSlack notified";
+const SLACK_NOTIFICATION_PAYLOAD = "Slack notified";
+
+// Marker for "picked up" comments added when Symphony first picks up a ticket (rule 1)
+const PICKED_UP_COMMENT_MARKER = "<!-- symphony-picked-up -->";
+// Marker for reassignment comments when a ticket comes back from review (rule 3)
+const REASSIGNMENT_COMMENT_MARKER = "<!-- symphony-reassigned-from-review -->";
 
 const ISSUE_COMMENTS_QUERY = `
   query IssueComments($issueId: String!, $first: Int!, $after: String) {
@@ -498,6 +503,84 @@ export async function addSlackNotificationComment(
   if (!data.commentCreate?.success) {
     throw new LinearError("linear_unknown_payload", "Linear commentCreate did not report success");
   }
+}
+
+// ─── Ticket workflow rules (rule 1, 3) ──────────────────────────────────────
+
+/** Check if a ticket has already been marked as picked up (rule 1). */
+export async function hasPickedUpComment(
+  config: TrackerConfig,
+  issueId: string,
+): Promise<boolean> {
+  let after: string | null = null;
+
+  while (true) {
+    const data: IssueCommentsPayload = await graphql<IssueCommentsPayload>(
+      config.endpoint,
+      config.apiKey,
+      ISSUE_COMMENTS_QUERY,
+      { issueId, first: 50, after },
+    );
+
+    const comments: IssueCommentsConnection | undefined = data.issue?.comments;
+    if (!comments) return false;
+
+    if (comments.nodes.some(c => c.body?.includes(PICKED_UP_COMMENT_MARKER))) {
+      return true;
+    }
+
+    if (!comments.pageInfo.hasNextPage) return false;
+    if (!comments.pageInfo.endCursor) break;
+    after = comments.pageInfo.endCursor;
+  }
+  return false;
+}
+
+/** Add a "picked up" comment with the original description (rule 1). */
+export async function addPickedUpComment(
+  config: TrackerConfig,
+  issueId: string,
+  description: string,
+): Promise<void> {
+  const body = description.trim()
+    ? `${PICKED_UP_COMMENT_MARKER}\n${description}`
+    : `${PICKED_UP_COMMENT_MARKER}`;
+
+  const data = await graphql<CommentCreatePayload>(
+    config.endpoint,
+    config.apiKey,
+    COMMENT_CREATE_MUTATION,
+    { issueId, body },
+  );
+
+  if (!data.commentCreate?.success) {
+    throw new LinearError("linear_unknown_payload", "Linear commentCreate did not report success for picked-up comment");
+  }
+}
+
+/** Fetch the latest comment from a reassignment (rule 3). Returns null if no reassignment exists. */
+export async function getLatestReassignmentComment(
+  config: TrackerConfig,
+  issueId: string,
+): Promise<string | null> {
+  const comments = await fetchIssueCommentsDetail(config, issueId);
+
+  // Find the most recent reassignment comment
+  for (let i = comments.length - 1; i >= 0; i--) {
+    const comment = comments[i];
+    if (comment.body.includes(REASSIGNMENT_COMMENT_MARKER)) {
+      // Extract the actual instruction (everything after the marker)
+      const lines = comment.body.split('\n');
+      const instructionStart = lines.findIndex(line => line.includes(REASSIGNMENT_COMMENT_MARKER));
+      if (instructionStart !== -1) {
+        const instruction = lines.slice(instructionStart + 1).join('\n').trim();
+        return instruction || null;
+      }
+      return comment.body.replace(REASSIGNMENT_COMMENT_MARKER, '').trim() || null;
+    }
+  }
+
+  return null;
 }
 
 // ─── Comment detail / delete / description update (used by rework cleanup) ──
@@ -638,4 +721,225 @@ export async function executeGraphQL(
   variables?: Record<string, unknown>
 ): Promise<unknown> {
   return graphql<unknown>(config.endpoint, config.apiKey, query, variables);
+}
+
+// ─── Issue creation (used by the Dependabot watcher) ────────────────────────
+
+const TEAM_BY_KEY_QUERY = `
+  query TeamByKey($key: String!) {
+    teams(filter: { key: { eq: $key } }, first: 1) {
+      nodes { id key name }
+    }
+  }
+`;
+
+interface TeamByKeyPayload {
+  teams: { nodes: Array<{ id: string; key: string; name: string }> };
+}
+
+export async function fetchTeamByKey(
+  config: TrackerConfig,
+  key: string,
+): Promise<{ id: string; key: string; name: string } | null> {
+  const data = await graphql<TeamByKeyPayload>(config.endpoint, config.apiKey, TEAM_BY_KEY_QUERY, { key });
+  return data.teams.nodes[0] ?? null;
+}
+
+const WORKFLOW_STATES_QUERY = `
+  query WorkflowStates($teamId: ID!) {
+    workflowStates(filter: { team: { id: { eq: $teamId } } }, first: 100) {
+      nodes { id name type }
+    }
+  }
+`;
+
+interface WorkflowStatesPayload {
+  workflowStates: { nodes: Array<{ id: string; name: string; type: string }> };
+}
+
+export async function fetchWorkflowStates(
+  config: TrackerConfig,
+  teamId: string,
+): Promise<Array<{ id: string; name: string; type: string }>> {
+  const data = await graphql<WorkflowStatesPayload>(config.endpoint, config.apiKey, WORKFLOW_STATES_QUERY, { teamId });
+  return data.workflowStates.nodes;
+}
+
+const USER_BY_EMAIL_QUERY = `
+  query UserByEmail($email: String!) {
+    users(filter: { email: { eq: $email } }, first: 1) {
+      nodes { id name email }
+    }
+  }
+`;
+
+const USER_BY_NAME_QUERY = `
+  query UserByName($name: String!) {
+    users(filter: { name: { containsIgnoreCase: $name } }, first: 5) {
+      nodes { id name email }
+    }
+  }
+`;
+
+interface UsersPayload {
+  users: { nodes: Array<{ id: string; name: string; email: string | null }> };
+}
+
+/** Resolves a Linear user by email (preferred) or by a case-insensitive name match. */
+export async function fetchUserByEmailOrName(
+  config: TrackerConfig,
+  query: string,
+): Promise<{ id: string; name: string; email: string | null } | null> {
+  if (query.includes("@")) {
+    const byEmail = await graphql<UsersPayload>(config.endpoint, config.apiKey, USER_BY_EMAIL_QUERY, { email: query });
+    if (byEmail.users.nodes[0]) return byEmail.users.nodes[0];
+    return null;
+  }
+  const byName = await graphql<UsersPayload>(config.endpoint, config.apiKey, USER_BY_NAME_QUERY, { name: query });
+  return byName.users.nodes[0] ?? null;
+}
+
+const LABEL_BY_NAME_QUERY = `
+  query LabelByName($name: String!) {
+    issueLabels(filter: { name: { eq: $name } }, first: 20) {
+      nodes { id name team { id } }
+    }
+  }
+`;
+
+interface LabelByNamePayload {
+  issueLabels: { nodes: Array<{ id: string; name: string; team: { id: string } | null }> };
+}
+
+const LABEL_CREATE_MUTATION = `
+  mutation LabelCreate($input: IssueLabelCreateInput!) {
+    issueLabelCreate(input: $input) {
+      success
+      issueLabel { id name }
+    }
+  }
+`;
+
+interface LabelCreatePayload {
+  issueLabelCreate: { success: boolean; issueLabel: { id: string; name: string } | null } | null;
+}
+
+/** Finds the team-scoped (or workspace-level) label by name, creating a team label if none exists. */
+export async function resolveOrCreateLabelId(
+  config: TrackerConfig,
+  teamId: string,
+  name: string,
+): Promise<string> {
+  const found = await graphql<LabelByNamePayload>(config.endpoint, config.apiKey, LABEL_BY_NAME_QUERY, { name });
+  const match =
+    found.issueLabels.nodes.find(l => l.team?.id === teamId) ??
+    found.issueLabels.nodes.find(l => l.team == null) ??
+    found.issueLabels.nodes[0];
+  if (match) return match.id;
+
+  const created = await graphql<LabelCreatePayload>(
+    config.endpoint,
+    config.apiKey,
+    LABEL_CREATE_MUTATION,
+    { input: { name, teamId } },
+  );
+  if (!created.issueLabelCreate?.success || !created.issueLabelCreate.issueLabel) {
+    throw new LinearError("linear_unknown_payload", "Linear issueLabelCreate did not report success");
+  }
+  return created.issueLabelCreate.issueLabel.id;
+}
+
+const ISSUES_BY_LABEL_QUERY = `
+  query IssuesByLabel($teamKey: String!, $label: String!, $first: Int!, $after: String) {
+    issues(
+      filter: {
+        team: { key: { eq: $teamKey } }
+        labels: { name: { eq: $label } }
+      }
+      first: $first
+      after: $after
+    ) {
+      nodes { id identifier description state { name } }
+      pageInfo { hasNextPage endCursor }
+    }
+  }
+`;
+
+interface IssuesByLabelPayload {
+  issues: {
+    nodes: Array<{ description: string | null; state: { name: string } | null }>;
+    pageInfo: { hasNextPage: boolean; endCursor: string | null };
+  };
+}
+
+export interface LabeledIssue {
+  description: string;
+  state: string;
+}
+
+/**
+ * Returns every issue in the team carrying the given label, across all states,
+ * with its description and current state name. The Dependabot watcher scans the
+ * descriptions for its dedupe marker (so the same alert isn't filed twice —
+ * survives restarts) and uses the state to count how many tickets are still open.
+ */
+export async function fetchIssuesByLabel(
+  config: TrackerConfig,
+  teamKey: string,
+  label: string,
+): Promise<LabeledIssue[]> {
+  const issues: LabeledIssue[] = [];
+  let after: string | null = null;
+
+  while (true) {
+    const vars: Record<string, unknown> = { teamKey, label, first: 50 };
+    if (after !== null) vars.after = after;
+    const data = await graphql<IssuesByLabelPayload>(config.endpoint, config.apiKey, ISSUES_BY_LABEL_QUERY, vars);
+
+    for (const node of data.issues.nodes) {
+      issues.push({ description: node.description ?? "", state: node.state?.name ?? "" });
+    }
+
+    if (!data.issues.pageInfo.hasNextPage) break;
+    if (!data.issues.pageInfo.endCursor) break;
+    after = data.issues.pageInfo.endCursor;
+  }
+
+  return issues;
+}
+
+const ISSUE_CREATE_MUTATION = `
+  mutation IssueCreate($input: IssueCreateInput!) {
+    issueCreate(input: $input) {
+      success
+      issue { id identifier url }
+    }
+  }
+`;
+
+interface IssueCreatePayload {
+  issueCreate: {
+    success: boolean;
+    issue: { id: string; identifier: string; url: string | null } | null;
+  } | null;
+}
+
+export interface CreateIssueInput {
+  teamId: string;
+  title: string;
+  description: string;
+  stateId?: string;
+  assigneeId?: string;
+  labelIds?: string[];
+}
+
+export async function createIssue(
+  config: TrackerConfig,
+  input: CreateIssueInput,
+): Promise<{ id: string; identifier: string; url: string | null }> {
+  const data = await graphql<IssueCreatePayload>(config.endpoint, config.apiKey, ISSUE_CREATE_MUTATION, { input });
+  if (!data.issueCreate?.success || !data.issueCreate.issue) {
+    throw new LinearError("linear_unknown_payload", "Linear issueCreate did not report success");
+  }
+  return data.issueCreate.issue;
 }

@@ -113,11 +113,27 @@ cp .env.example .env
 
 Symphony passes `--mcp-config <path>` to each spawned `claude` process so agents have a known, deterministic set of MCP tools regardless of what the cloned target repo declares. By default, Symphony looks for `agent-mcp.json` in the orchestrator directory; override with `SYMPHONY_AGENT_MCP_CONFIG=/abs/path/to/file.json`.
 
-The repo ships an `agent-mcp.json` that wires up [`@playwright/mcp`](https://github.com/microsoft/playwright-mcp) in headless + isolated + `--ignore-https-errors` mode. This is what the agent uses to verify mobile UX (`prompts/MOBILE_UX.md`): screenshots at 375px, accessibility snapshots, console-log capture, form interaction, network-request counting. The `--ignore-https-errors` flag lets the agent navigate to the workspace's `https://localhost:<port>` SSL proxy — required for Firebase Auth and other secure-context features.
+The repo ships an `agent-mcp.json` that wires up the [SuperClaude_Framework](https://github.com/SuperClaude-Org/SuperClaude_Framework) MCP server set:
 
-**Prerequisite:** Playwright downloads its own Chromium build on first run. If your machine has restricted network egress, pre-install via `npx playwright install chrome` (or specify `--executable-path` in `agent-mcp.json`).
+| Server | Purpose | Key required |
+|---|---|---|
+| [`@playwright/mcp`](https://github.com/microsoft/playwright-mcp) | Cross-browser automation & mobile UX verification | — |
+| [`@modelcontextprotocol/server-sequential-thinking`](https://github.com/modelcontextprotocol/servers/tree/main/src/sequentialthinking) | Multi-step structured reasoning | — |
+| [`@upstash/context7-mcp`](https://github.com/upstash/context7) | Official library documentation lookup | — |
+| [`serena`](https://github.com/oraios/serena) | Semantic code analysis & intelligent editing (LSP-backed) | — |
+| [`chrome-devtools-mcp`](https://www.npmjs.com/package/chrome-devtools-mcp) | Chrome DevTools debugging & perf analysis | — |
+| [`@21st-dev/magic`](https://21st.dev) | Modern UI component generation | `TWENTYFIRST_API_KEY` |
+| [`@morph-llm/morph-fast-apply`](https://morphllm.com) | Fast-apply context-aware code edits | `MORPH_API_KEY` |
+| [`tavily`](https://app.tavily.com) (via `mcp-remote`) | Web search & real-time information | `TAVILY_API_KEY` |
 
-To disable: delete `agent-mcp.json` and unset `SYMPHONY_AGENT_MCP_CONFIG`. Agents will then run with whatever MCPs are configured user-level in `~/.claude.json`.
+Playwright is launched in headless + isolated + `--ignore-https-errors` mode, which is what the agent uses to verify mobile UX (`prompts/MOBILE_UX.md`): screenshots at 375px, accessibility snapshots, console-log capture, form interaction, network-request counting. The `--ignore-https-errors` flag lets the agent navigate to the workspace's `https://localhost:<port>` SSL proxy — required for Firebase Auth and other secure-context features.
+
+**Prerequisites:**
+- **Playwright** downloads its own Chromium build on first run. If your machine has restricted network egress, pre-install via `npx playwright install chrome` (or specify `--executable-path` in `agent-mcp.json`).
+- **Serena** is launched via [`uvx`](https://docs.astral.sh/uv/). Install `uv` (`curl -LsSf https://astral.sh/uv/install.sh | sh`) if you want Serena's semantic editing tools; without `uv` the server simply fails to start and the other servers keep working.
+- The three API-keyed servers (Magic, Morphllm, Tavily) pick up keys from your `.env` — see `.env.example`. If a key is unset, that server's tools return auth errors at call time; the rest stay available.
+
+To disable an individual server: delete its entry from `agent-mcp.json`. To bypass entirely: delete `agent-mcp.json` and unset `SYMPHONY_AGENT_MCP_CONFIG`. Agents will then run with whatever MCPs are configured user-level in `~/.claude.json`.
 
 ### 3. WORKFLOW.md
 
@@ -223,6 +239,24 @@ You are an autonomous coding agent working on {{ issue.identifier }}: {{ issue.t
 | `retrospective.lessons_path` | `<symphony>/lessons/lessons.jsonl` | Absolute or relative path to the JSONL file the retrospective appends to |
 | `retrospective.max_turns` | `15` | Max Claude turns per retrospective before it's aborted |
 | `retrospective.timeout_ms` | `300000` | Hard wall-clock timeout per retrospective run |
+| `merge_conflicts.enabled` | `false` | When true, each orchestrator tick scans open PRs and spawns a sub-agent to resolve the conflicts on any GitHub reports as `CONFLICTING` |
+| `merge_conflicts.repo_owner` | `github_preview.repo_owner` | GitHub repo owner whose open PRs are scanned; falls back to the `github_preview` owner |
+| `merge_conflicts.repo_name` | `github_preview.repo_name` | GitHub repo name whose open PRs are scanned; falls back to the `github_preview` name |
+| `merge_conflicts.max_turns` | `30` | Max Claude turns per resolution before it's aborted |
+| `merge_conflicts.timeout_ms` | `1200000` | Hard wall-clock timeout per resolution run (20 min) |
+| `merge_conflicts.max_concurrent` | `2` | Maximum conflict-resolution sub-agents running at once |
+| `merge_conflicts.retry_interval_ms` | `600000` | Minimum delay before re-attempting a PR that is still conflicting after a prior run |
+| `merge_conflicts.request_timeout_ms` | `30000` | Timeout for the `gh pr list` call that finds conflicting PRs |
+| `dependabot.enabled` | `false` | When true, each orchestrator tick scans the repo's open GitHub Dependabot alerts and files a Linear ticket for each new one, then lets the normal poll loop dispatch an agent to fix it |
+| `dependabot.repo_owner` | `github_preview.repo_owner` | GitHub repo owner whose Dependabot alerts are scanned; falls back to the `github_preview` owner |
+| `dependabot.repo_name` | `github_preview.repo_name` | GitHub repo name whose Dependabot alerts are scanned; falls back to the `github_preview` name |
+| `dependabot.team_key` | `tracker.team_key` | Linear team key the tickets are created under; falls back to the tracker team key |
+| `dependabot.target_state` | first `tracker.active_states` entry | Workflow state the ticket is created in — must be one of `tracker.active_states` so the agent picks it up |
+| `dependabot.assignee_email` | — | Email (or name) of the Linear user to assign each ticket to; empty leaves it unassigned |
+| `dependabot.label` | `dependabot` | Linear label applied to every ticket; also the dedupe key carrier so the same alert isn't filed twice |
+| `dependabot.min_severity` | `low` | Only file tickets for alerts at or above this severity: `low`, `medium`, `high`, `critical` |
+| `dependabot.max_open_tickets` | `1` | Hard cap on how many Dependabot tickets may be open (in a non-terminal state) at once. The default keeps dependency bumps serialized — the next alert isn't filed until the current ticket is Done/Cancelled |
+| `dependabot.request_timeout_ms` | `30000` | Timeout for the `gh api` call that lists Dependabot alerts |
 
 #### Prompt template variables
 
@@ -358,6 +392,8 @@ src/
   orchestrator.ts   — poll loop, dispatch, retry queue, state reconciliation
   agent.ts          — spawns `claude` subprocess, streams JSON events, returns AgentResult
   retrospective.ts  — spawns a one-shot retrospective `claude` process per terminal ticket
+  merge-conflict.ts — scans open PRs each tick; spawns a `claude` process to resolve conflicts on each conflicting PR
+  dependabot.ts     — scans open Dependabot alerts each tick; files a Linear ticket per new alert for the normal poll loop to pick up
   meta-improve.ts   — CLI that reads lessons.jsonl and proposes prompt edits on a branch
   linear.ts         — GraphQL client for Linear (issues, states, team URL)
   workspace.ts      — creates/removes per-ticket directories; runs hooks via bash -l
@@ -377,6 +413,7 @@ The prompt template in `WORKFLOW.md` instructs the parent agent to coordinate fo
 |---|---|---|
 | Intent gate | Disambiguate the ticket before refinement. | `prompts/INTENT.md` |
 | Ticket refinement | Produce Context / AC / Technical Approach / Test Plan / Out of Scope. | `prompts/REFINE_TICKET.md` |
+| Figma BA | For tickets with a Figma design: import the design (requesting access with instructions if needed), produce detailed desktop **and** mobile specs (collapsing desktop→mobile where no mobile frame exists), map how the parts connect, quantise styles to the nearest existing Tailwind token, and surface/resolve gaps, assumptions, and improvements. Skipped when the ticket has no Figma URL. | `prompts/FIGMA_BA.md` |
 | Architect plan | One commit per task, plus a **Tests to add** section so developer-side tests aren't an afterthought. | `prompts/ARCHITECT.md` |
 | Code quality | Per-file walkthrough + scoped `pnpm --filter` lint/typecheck. | `prompts/CODE_QUALITY.md` |
 | Codebase shrink | Per-touch checks: delete orphans the diff creates, remove unused deps, extract duplication. Adjacent waste filed as Backlog tickets, not widened into the PR. Periodic full-repo audits use `knip` / `depcheck` / `jscpd`. | `prompts/SHRINK.md` |
@@ -386,13 +423,45 @@ The prompt template in `WORKFLOW.md` instructs the parent agent to coordinate fo
 | Verify (pre-push gate) | One scripted command (`scripts/verify-changes.sh`) runs in parallel: scoped lint/typecheck, diff-aware unit tests (`vitest --changed` / `jest --changedSince`), `pnpm audit`, SAST via `semgrep`, architectural boundaries via `dependency-cruiser`, orphan/dead-code detection via `knip`, Firestore rules tests when `firestore.rules` was modified, bundle-size budget against `.bundle-budget.json`. Plus synchronous forbidden-token, secret, and untracked-leftover scans. Each parallel check skips gracefully when its tool/config isn't present, so the gate works against repos at any stage of tooling adoption. The agent pastes `VERIFY: pass` into its workpad before pushing. | `prompts/VERIFY.md`, `scripts/verify-changes.sh` |
 | Install VERIFY tooling | Detects, installs (npm packages), and scaffolds starter configs for `dependency-cruiser`, `knip`, `@firebase/rules-unit-testing`, `.bundle-budget.json`. Also merges Symphony agent-artefact patterns into the workspace `.gitignore` idempotently. Prints install instructions for `semgrep` (Python tool). `--audit-tracked` mode is a read-only scan of `git ls-files` for stray build/coverage/test-output files, OS junk, oversized binaries — prints `git rm --cached` commands for the operator to triage. Default mode is `--check` (no writes); operators opt in via `--install` / `--scaffold` / `--all`. | `scripts/install-verify-tools.sh` |
 | Self-review | Developer-side diff re-read against the five checklists immediately before push. | `prompts/SELF_REVIEW.md` |
-| Tester | Independent E2E verification against the Architect's Functional Test Matrix; element-scoped screenshots only; per-scenario accessibility check via `axe-core` (loaded from CDN, run through Playwright MCP); also re-checks VERIFY. | `prompts/TESTER.md` |
+| Tester | Independent E2E verification against the Architect's Functional Test Matrix; element-scoped screenshots only; also re-checks VERIFY. | `prompts/TESTER.md` |
+| Accessibility audit | For frontend changes: independent WCAG 2.2 AA audit (contrast, keyboard navigation, semantic labels, skip-to-main-content, plain language, status messages) via axe-core + manual checks; barriers route back to the Developer. Skipped when the diff touches no frontend. | `prompts/ACCESSIBILITY.md` |
 | Code review | Independent senior-engineer review of the diff, with explicit gates on test coverage, VERIFY freshness, and `docs/AGENT_MEMORY.md` rule compliance. | `prompts/CODE_REVIEW.md` |
 | Delivery | One Linear comment + matching PR body. | `prompts/DELIVERY_COMMENT.md` |
+| Clear writing | Sentence- and word-level style applied to every prose artefact an agent produces — briefs, plans, ticket descriptions, comments, retros. | `prompts/CLEAR_WRITING.md` |
+| Resolve merge conflicts | Orchestrator-triggered (not a phase). For any open PR GitHub reports as conflicting: merge the base branch into the PR branch, resolve so both sides' intent survives (latest/better outcome wins on true contradictions), and push to the PR branch. Never merges the PR. | `prompts/RESOLVE_CONFLICTS.md` |
 
 ### Project memory — `docs/AGENT_MEMORY.md`
 
 A persistent, gitable knowledge base every relevant sub-agent reads before investigating the codebase. Records domain vocabulary, roles, architectural decisions, file and naming conventions, common pitfalls, and "things that look like bugs but aren't". The meta-improve pass can append to this file when a retrospective's root cause is "agent didn't know about <rule>" — so the next ticket starts with the rule already known.
+
+## Automatic merge-conflict resolution
+
+When `merge_conflicts.enabled` is `true`, every orchestrator tick scans the configured repo's open pull requests (`gh pr list`) and resolves the conflicts on each one GitHub reports as `CONFLICTING`. It runs on **all** open PRs with conflicts — not just the ticket currently in flight.
+
+For each conflicting PR the resolver clones the repo into a `conflict-pr-<n>` workspace (reusing the `hooks.after_create` clone) and merges the **base** branch into the **PR (head)** branch — re-creating the conflict locally without merging the PR itself. It then classifies the conflict and routes it:
+
+- **Lockfile-only conflicts take a deterministic fast-path — no LLM.** When every conflicted file is a lockfile Symphony knows how to regenerate (`pnpm-lock.yaml` → `pnpm install --lockfile-only`, `package-lock.json` → `npm install --package-lock-only`), it resolves the source manifests (which merged cleanly), regenerates the lockfile, commits, and pushes — saving a full Claude session on the most common, lowest-judgement conflicts.
+- **Everything else spawns a one-shot Claude session** (`prompts/RESOLVE_CONFLICTS.md`) that, for each conflicted file, reads all three versions (ancestor / PR side / base side), names the intent of each side, and **merges both intents** so neither change is lost. Only when two intents genuinely contradict does it pick a winner — the side with the better overall outcome, **usually the latest update**, judged from commit recency, the PR's stated goal, and whether the resolution keeps tests passing. Every winner-takes-all call is justified in one sentence and noted in a single PR comment.
+
+Either way it commits and pushes to the **PR branch only** (never force-push, never the base branch) and **never merges, approves, closes, or otherwise state-changes the PR** — a human still reviews and merges.
+
+**It never races the dispatch loop.** Before resolving, it drops any conflicting PR whose branch maps to a Linear ticket currently in an active state (the identifier embedded in the branch name is matched against the active ticket set). Those PRs belong to a running or about-to-run agent that resolves its own conflicts; the resolver only touches PRs whose ticket is past active work (e.g. `In Review`) or has no matching ticket. If the active-ticket lookup fails, it skips dispatch for that cycle rather than risk a duelling push.
+
+Resolutions run in the background (up to `merge_conflicts.max_concurrent` at once) so a long session never blocks the orchestrator tick; a PR that stays conflicting after a run isn't re-attempted until `merge_conflicts.retry_interval_ms` has elapsed, and tracking (plus the workspace) is dropped once the PR is no longer conflicting. Requires the `gh` CLI to be authenticated, same as the GitHub preview warmer.
+
+## Automatic Dependabot triage
+
+When `dependabot.enabled` is `true`, every orchestrator tick reads the configured repo's **open GitHub Dependabot alerts** (`gh api repos/<owner>/<repo>/dependabot/alerts?state=open`) and files a Linear ticket for the most severe *new* alert. It does **not** spawn its own fix agent — it hands the work to Symphony's existing pipeline by creating the ticket directly in an active state, so the normal poll loop dispatches the Intent → Architect → Developer → Tester → Reviewer flow that bumps the dependency, runs `pnpm install`, tests the affected code, fixes any breakage, and opens a PR.
+
+**Only `dependabot.max_open_tickets` Dependabot tickets are ever open at once (default 1).** Each tick the watcher counts Dependabot-labelled tickets in a non-terminal state; once that cap is reached it files nothing, so the next alert isn't picked up until the current ticket reaches a terminal state (Done/Cancelled). This serializes dependency bumps instead of opening a PR per alert simultaneously. Eligible alerts are sorted worst-first, so the single open ticket always targets the highest-severity vulnerability.
+
+Each filed ticket:
+
+1. Is created in team `dependabot.team_key`, in state `dependabot.target_state` (which **must** be one of `tracker.active_states`, or config validation fails — otherwise the ticket would never be dispatched), assigned to `dependabot.assignee_email`, and tagged with the `dependabot.label`.
+2. Carries a deterministic, machine-generated description: affected package + ecosystem, manifest path, severity, vulnerable range, first patched version, GHSA/CVE IDs, advisory summary, references, and a pnpm-/monorepo-aware acceptance-criteria checklist. (When no patched version is published yet, the checklist instead asks the agent to assess mitigation or dismissal.)
+3. Hides a `<!-- symphony-dependabot:<owner>/<repo>#<alert-number> -->` marker in the description. Before filing anything, the watcher reads back every ticket carrying `dependabot.label` and skips alerts whose key is already present — so the same alert is never filed twice, even across orchestrator restarts. An in-process set covers the same-run fast path.
+
+Alerts below `dependabot.min_severity` are ignored. If the ticket read-back fails (Linear hiccup), the watcher files **nothing** that tick rather than risk duplicates or breaching the open cap, and retries next tick. Once the agent's PR merges, the alert flips to `fixed` on GitHub and stops being reported. Requires the `gh` CLI to be authenticated with access to the repo's Dependabot alerts (a token with `security_events` read, or `repo` scope), same as the other GitHub-backed features.
 
 ## Continuous self-improvement
 

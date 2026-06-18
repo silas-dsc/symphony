@@ -84,6 +84,7 @@ Write **one** file: `.claude/meta-review-<PR_NUMBER>.md` with this body.
 - **Read the actual diff.** The PR body is the Meta-improve agent's claim of what changed; the diff is the truth. If they disagree, that's a `request changes` verdict with the discrepancy named.
 - **Keep the file short.** Aim for ≤ 15 lines. If you need more, the verdict is probably `discuss` and the operator should look themselves.
 - **Be specific.** "Concerns: none" is fine if you genuinely have none. "Concerns: looks fine" is not — say nothing or say something concrete.
+- **Apply `{{ symphony.root }}/prompts/CLEAR_WRITING.md`.** Active voice, plain words, ≤ 25-word sentences. The operator skims many of these — long sentences cost their time.
 - **Time-box yourself.** ≤ 10 turns. If you can't form a confident verdict, write `discuss` with the specific reason you're unsure.
 
 ## Definition of Done

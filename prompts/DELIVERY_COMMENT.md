@@ -40,6 +40,7 @@ The `<!-- symphony-agent -->` marker is mandatory on every Linear comment any Sy
 - **Three links at the bottom, in this order: PR, Preview, Linear.** Nothing below them. If the preview comment hasn't appeared after a 5-minute wait, write `Preview: building…` and proceed.
 - **No emoji** other than the `✅` in the heading.
 - **No back-and-forth.** Every agent-to-agent artefact (intent brief, plan, test matrix, QA results, code review findings, workpad notes) stays in `.claude/` in the workspace. The only public surfaces are this comment and the matching PR body.
+- **Apply `{{ symphony.root }}/prompts/CLEAR_WRITING.md` to the summary and callouts.** Active voice, plain words, second person where it fits, no jargon, no filler. The summary and each callout is one short sentence the reviewer can read in two seconds.
 
 ## How to assemble the body
 
