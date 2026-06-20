@@ -13,6 +13,18 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 cd "$REPO_ROOT"
 
+# Build from source before the first launch so a fresh checkout (dist/ is
+# gitignored, never committed) always runs current code. The self-updater
+# rebuilds on its own after each pull, so this only guards the initial boot.
+# Fail loud if the build breaks — never fall back to a stale/absent dist.
+if [[ -x "$REPO_ROOT/node_modules/.bin/tsc" ]]; then
+  echo "[symphony-supervisor] building (tsc)" >&2
+  "$REPO_ROOT/node_modules/.bin/tsc" || { echo "[symphony-supervisor] build failed; aborting" >&2; exit 1; }
+else
+  echo "[symphony-supervisor] tsc not found — run 'pnpm install' first" >&2
+  exit 1
+fi
+
 RESTART_EXIT_CODE=75
 child_pid=""
 terminating=0
