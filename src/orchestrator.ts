@@ -19,7 +19,7 @@ import { DependabotWatcher } from "./dependabot.js";
 import * as linear from "./linear.js";
 import { isCompletionState, sendBatchedSlackNotification } from "./notifications.js";
 import { getWorkspacePath, removeWorkspace } from "./workspace.js";
-import { runAgentAttempt } from "./agent.js";
+import { runAgentAttempt, isAuthError, CLAUDE_LOGIN_INSTRUCTIONS } from "./agent.js";
 import { claudeBlockedUntil } from "./llm.js";
 import { runRetrospective } from "./retrospective.js";
 import { commitAndPushLessons } from "./lessons-sync.js";
@@ -570,6 +570,14 @@ export class Orchestrator {
         error: result.error ?? "unknown",
         next_attempt: nextAttempt,
       });
+      // Surface re-login instructions on auth failures — retries are futile
+      // until the operator re-authenticates the spawned `claude` CLI.
+      if (isAuthError(result.error ?? "")) {
+        this.log.error(CLAUDE_LOGIN_INSTRUCTIONS, {
+          issue_id: issueId,
+          issue_identifier: entry.issueIdentifier,
+        });
+      }
       this.scheduleRetry(issueId, entry.issueIdentifier, nextAttempt, result.error ?? null, delay);
     }
   }

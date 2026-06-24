@@ -295,6 +295,46 @@ export function isRateLimitText(text: string): boolean {
 }
 
 /**
+ * Detect a Claude/Anthropic authentication failure in agent output. This is the
+ * signature of an expired/invalid OAuth session or API key on the spawned
+ * `claude` CLI — e.g. "Failed to authenticate. API Error: 401 Invalid
+ * authentication credentials" or "Not logged in". Distinct from a rate-limit:
+ * retrying won't help until the operator re-authenticates.
+ */
+export function isAuthError(text: string): boolean {
+  if (!text) return false;
+  const t = text.toLowerCase();
+  if (
+    t.includes("invalid authentication credentials") ||
+    t.includes("failed to authenticate") ||
+    t.includes("authentication_error") ||
+    t.includes("invalid x-api-key") ||
+    t.includes("invalid api key") ||
+    t.includes("oauth token has expired") ||
+    t.includes("oauth token expired") ||
+    t.includes("not logged in") ||
+    t.includes("please run /login") ||
+    t.includes("please login")
+  ) return true;
+  // HTTP 401/403 only when adjacent to an HTTP/status context, so a stray
+  // "401" elsewhere in agent output doesn't trip a false positive.
+  if (/\b(?:http|status|code|error)[\s/:]*(?:401|403)\b/i.test(text)) return true;
+  return false;
+}
+
+/**
+ * Human-readable, copy-pasteable instructions for re-authenticating the
+ * spawned `claude` CLI. Logged whenever an auth failure is detected so the
+ * operator knows the retry loop is stuck until they act.
+ */
+export const CLAUDE_LOGIN_INSTRUCTIONS =
+  "Claude authentication failed (expired/invalid login) — retries will keep failing until you re-authenticate.\n" +
+  "  Fix (pick one):\n" +
+  "    1. Re-login via OAuth:  run `claude` interactively, then `/login`.\n" +
+  "    2. Use an API key:      set ANTHROPIC_API_KEY=<sk-ant-...> in .env (uncomment the line) and restart Symphony.\n" +
+  "  Then the orchestrator will pick up the new credentials on the next spawn.";
+
+/**
  * Resolve the path to the agent's MCP config (e.g. for chrome-devtools-mcp).
  * Prefers $SYMPHONY_AGENT_MCP_CONFIG when set, else `<symphonyRoot>/agent-mcp.json`.
  * Returns undefined if no file is found, so the agent runs with the user's default MCPs only.
