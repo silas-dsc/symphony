@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { formatFailoverError, isRateLimitText, renderPrompt } from "../agent.js";
+import { formatFailoverError, isRateLimitText, isAuthError, renderPrompt } from "../agent.js";
 import type { Issue } from "../types.js";
 
 describe("isRateLimitText", () => {
@@ -44,6 +44,39 @@ describe("isRateLimitText", () => {
   it("returns false for unrelated text", () => {
     expect(isRateLimitText("everything fine")).toBe(false);
     expect(isRateLimitText("")).toBe(false);
+  });
+});
+
+describe("isAuthError", () => {
+  it("matches the spawned CLI 401 auth-failure phrasing", () => {
+    expect(isAuthError("agent_reported_error: Failed to authenticate. API Error: 401 Invalid authentication credentials")).toBe(true);
+    expect(isAuthError("Invalid authentication credentials")).toBe(true);
+  });
+
+  it("matches OAuth / login-required phrasing", () => {
+    expect(isAuthError("Not logged in")).toBe(true);
+    expect(isAuthError("OAuth token has expired, please run /login")).toBe(true);
+  });
+
+  it("matches API-key phrasing and authentication_error", () => {
+    expect(isAuthError("invalid x-api-key")).toBe(true);
+    expect(isAuthError("error: authentication_error")).toBe(true);
+  });
+
+  it("matches HTTP 401/403 only with context", () => {
+    expect(isAuthError("HTTP 401 Unauthorized")).toBe(true);
+    expect(isAuthError("status: 403")).toBe(true);
+  });
+
+  it("does not false-positive on bare 401/403 or unrelated text", () => {
+    expect(isAuthError("see file.ts line 401 for details")).toBe(false);
+    expect(isAuthError("found 403 items")).toBe(false);
+    expect(isAuthError("everything fine")).toBe(false);
+    expect(isAuthError("")).toBe(false);
+  });
+
+  it("does not treat a rate-limit as an auth error", () => {
+    expect(isAuthError("You've hit your usage limit")).toBe(false);
   });
 });
 
