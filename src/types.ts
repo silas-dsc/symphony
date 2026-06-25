@@ -47,6 +47,38 @@ export interface WorkflowConfig {
   retrospective: RetrospectiveConfig;
   mergeConflicts: MergeConflictConfig;
   dependabot: DependabotConfig;
+  queryInsights: QueryInsightsConfig;
+}
+
+export interface QueryInsightsConfig {
+  /** When true, Symphony scans the BigQuery offender table ~weekly and files Linear tickets for the worst query shapes. */
+  enabled: boolean;
+  /** GCP project holding the BigQuery dataset. */
+  projectId: string;
+  /** BigQuery dataset name (default "query_insights"). */
+  dataset: string;
+  /** BigQuery table name (default "query_stats"). */
+  table: string;
+  /** Linear team key the tickets are created under (defaults to tracker.team_key). */
+  teamKey: string;
+  /** Workflow state name the ticket is created in — must be one of tracker.active_states so the agent picks it up. */
+  targetState: string;
+  /** Email (or name) of the Linear user to assign the ticket to. Empty = unassigned. */
+  assigneeEmail: string;
+  /** Linear label applied to every ticket; also used to dedupe so the same shape isn't filed twice. */
+  label: string;
+  /** How many days of stats the ranking query aggregates over. */
+  lookbackDays: number;
+  /** Floor on SUM(readOps) per shape — below this, a shape is too cheap to ticket. */
+  minReadOps: number;
+  /** Hard cap on how many query-insights tickets may be open (non-terminal) at once. */
+  maxOpenTickets: number;
+  /** Max tickets to file in a single weekly run. */
+  maxTicketsPerRun: number;
+  /** How often the (expensive) BigQuery scan runs, in ms. Defaults to ~7 days. */
+  runIntervalMs: number;
+  /** Timeout for the `bq query` call, in ms. */
+  bqTimeoutMs: number;
 }
 
 export interface DependabotConfig {

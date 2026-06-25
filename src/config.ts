@@ -99,6 +99,7 @@ function buildConfig(raw: Record<string, unknown>, baseDir: string): WorkflowCon
   const retrospective = ((raw.retrospective ?? {}) as Record<string, unknown>);
   const mergeConflicts = ((raw.merge_conflicts ?? {}) as Record<string, unknown>);
   const dependabot = ((raw.dependabot ?? {}) as Record<string, unknown>);
+  const queryInsights = ((raw.query_insights ?? {}) as Record<string, unknown>);
 
   const apiKeyRaw = (tracker.api_key as string | undefined) ?? "$LINEAR_API_KEY";
   const apiKey = resolveEnvVar(apiKeyRaw);
@@ -238,6 +239,23 @@ function buildConfig(raw: Record<string, unknown>, baseDir: string): WorkflowCon
       maxOpenTickets: (dependabot.max_open_tickets as number | undefined) ?? 1,
       requestTimeoutMs: (dependabot.request_timeout_ms as number | undefined) ?? 30000,
     },
+    queryInsights: {
+      enabled: (queryInsights.enabled as boolean | undefined) ?? false,
+      projectId: (queryInsights.project_id as string | undefined) ?? "",
+      dataset: (queryInsights.dataset as string | undefined) ?? "query_insights",
+      table: (queryInsights.table as string | undefined) ?? "query_stats",
+      teamKey: (queryInsights.team_key as string | undefined) ?? trackerTeamKey ?? "",
+      // Default to the first active state so the created ticket is dispatchable by the poll loop.
+      targetState: (queryInsights.target_state as string | undefined) ?? activeStates[0] ?? "",
+      assigneeEmail: (queryInsights.assignee_email as string | undefined) ?? "",
+      label: (queryInsights.label as string | undefined) ?? "query-insights",
+      lookbackDays: (queryInsights.lookback_days as number | undefined) ?? 7,
+      minReadOps: (queryInsights.min_read_ops as number | undefined) ?? 10000,
+      maxOpenTickets: (queryInsights.max_open_tickets as number | undefined) ?? 3,
+      maxTicketsPerRun: (queryInsights.max_tickets_per_run as number | undefined) ?? 3,
+      runIntervalMs: (queryInsights.run_interval_ms as number | undefined) ?? 7 * 24 * 60 * 60 * 1000,
+      bqTimeoutMs: (queryInsights.bq_timeout_ms as number | undefined) ?? 60000,
+    },
   };
 }
 
@@ -290,6 +308,24 @@ export function validateConfig(config: WorkflowConfig): string | null {
     if (!VALID_SEVERITIES.has(d.minSeverity)) return "dependabot.min_severity must be one of: low, medium, high, critical";
     if (!Number.isInteger(d.maxOpenTickets) || d.maxOpenTickets <= 0) return "dependabot.max_open_tickets must be a positive integer";
     if (d.requestTimeoutMs <= 0) return "dependabot.request_timeout_ms must be > 0";
+  }
+  if (config.queryInsights.enabled) {
+    const q = config.queryInsights;
+    if (!q.projectId) return "query_insights.project_id is required when query_insights.enabled is true";
+    if (!q.dataset) return "query_insights.dataset is required when query_insights.enabled is true";
+    if (!q.table) return "query_insights.table is required when query_insights.enabled is true";
+    if (!q.teamKey) return "query_insights.team_key is required when query_insights.enabled is true (or set tracker.team_key)";
+    if (!q.targetState) return "query_insights.target_state is required when query_insights.enabled is true";
+    const activeLower = config.tracker.activeStates.map(s => s.toLowerCase());
+    if (!activeLower.includes(q.targetState.toLowerCase())) {
+      return `query_insights.target_state (${q.targetState}) must be one of tracker.active_states, otherwise the created ticket will never be dispatched`;
+    }
+    if (!Number.isInteger(q.maxOpenTickets) || q.maxOpenTickets <= 0) return "query_insights.max_open_tickets must be a positive integer";
+    if (!Number.isInteger(q.maxTicketsPerRun) || q.maxTicketsPerRun <= 0) return "query_insights.max_tickets_per_run must be a positive integer";
+    if (!Number.isInteger(q.lookbackDays) || q.lookbackDays <= 0) return "query_insights.lookback_days must be a positive integer";
+    if (!Number.isInteger(q.minReadOps) || q.minReadOps < 0) return "query_insights.min_read_ops must be a non-negative integer";
+    if (q.runIntervalMs <= 0) return "query_insights.run_interval_ms must be > 0";
+    if (q.bqTimeoutMs <= 0) return "query_insights.bq_timeout_ms must be > 0";
   }
   if (!config.workspace.root) return "workspace.root could not be resolved";
   if (config.agent.maxTurns <= 0) return "agent.max_turns must be > 0";
