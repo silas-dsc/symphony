@@ -217,6 +217,24 @@ dependabot:
   # until the current ticket reaches a terminal state.
   max_open_tickets: 1
   request_timeout_ms: 30000
+query_insights:
+  enabled: true
+  # GCP project holding the BigQuery query_insights.query_stats table that the
+  # team-dsc app streams Firestore execution stats into.
+  project_id: team-dsc-au
+  # dataset/table default to query_insights/query_stats.
+  # team_key inherits from tracker.team_key (TEA); target_state defaults to the
+  # first active state (Dev in Progress) so filed tickets are picked up.
+  assignee_email: silas@teamdsc.com.au
+  # Aggregate the last 7 days; ignore shapes that read < 10k docs in that window.
+  lookback_days: 7
+  min_read_ops: 10000
+  # File up to 3 tickets per weekly run, max 3 open at once.
+  max_open_tickets: 3
+  max_tickets_per_run: 3
+  # The (relatively expensive) BigQuery scan runs about once a week.
+  run_interval_ms: 604800000
+  bq_timeout_ms: 60000
 ---
 
 You are the **parent agent** working autonomously on a Linear ticket for the **team-dsc** codebase — a TypeScript/React (Remix) web application with a Firebase/Firestore backend, managed as a pnpm monorepo.
@@ -492,6 +510,8 @@ These are the reusable skills agents apply during the phases above. Sub-agents a
 `prompts/RESOLVE_CONFLICTS.md` is not part of the per-ticket phases above. Symphony spawns it directly (like the retrospective) for each open PR that has merge conflicts: it merges the base branch into the PR branch, resolves the conflicts so both sides' intent survives, and pushes to the PR branch. It never merges the PR. See `merge_conflicts` in the front matter to configure it.
 
 Dependabot triage is also orchestrator-driven, not a phase. When `dependabot` is enabled, each tick reads the repo's open GitHub Dependabot alerts and files a Linear ticket (assigned, in the active `Dev in Progress` state, tagged `dependabot`) for each new one — including a pnpm-/monorepo-aware checklist to bump the dependency, run `pnpm install`, test the affected code, and open a PR. The ticket then flows through the same phases as any other. A hidden `<!-- symphony-dependabot:owner/repo#N -->` marker dedupes so an alert is never filed twice. See `dependabot` in the front matter to configure it.
+
+Query-insights triage is the same shape, on a weekly cadence. When `query_insights` is enabled, the orchestrator runs a BigQuery scan about once a week (gated internally — a cheap no-op on every other tick) over the `query_insights.query_stats` table the team-dsc app streams Firestore execution stats into. It ranks query shapes by **absolute cost** — `SUM(readOps) × AVG(latencyMs)`, not the docs-scanned/results ratio — and files a Linear ticket (assigned, active state, tagged `query-insights`) for the worst un-ticketed ones, each carrying the read-op/latency metrics and a `.select()`/scope/index optimisation checklist. The ticket then flows through the normal phases, so a Developer agent reads the call site and reduces read volume. A hidden `<!-- symphony-query-insights:callSite|shape -->` marker dedupes so a shape is never filed twice. See `query_insights` in the front matter to configure it.
 
 ### Project memory
 

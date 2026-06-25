@@ -99,6 +99,7 @@ function buildConfig(raw: Record<string, unknown>, baseDir: string): WorkflowCon
   const retrospective = ((raw.retrospective ?? {}) as Record<string, unknown>);
   const mergeConflicts = ((raw.merge_conflicts ?? {}) as Record<string, unknown>);
   const dependabot = ((raw.dependabot ?? {}) as Record<string, unknown>);
+  const queryInsights = ((raw.query_insights ?? {}) as Record<string, unknown>);
 
   const apiKeyRaw = (tracker.api_key as string | undefined) ?? "$LINEAR_API_KEY";
   const apiKey = resolveEnvVar(apiKeyRaw);
@@ -237,6 +238,23 @@ function buildConfig(raw: Record<string, unknown>, baseDir: string): WorkflowCon
       minSeverity: ((dependabot.min_severity as string | undefined) ?? "low").toLowerCase(),
       maxOpenTickets: (dependabot.max_open_tickets as number | undefined) ?? 1,
       requestTimeoutMs: (dependabot.request_timeout_ms as number | undefined) ?? 30000,
+    },
+    queryInsights: {
+      enabled: (queryInsights.enabled as boolean | undefined) ?? false,
+      projectId: (queryInsights.project_id as string | undefined) ?? "",
+      dataset: (queryInsights.dataset as string | undefined) ?? "query_insights",
+      table: (queryInsights.table as string | undefined) ?? "query_stats",
+      teamKey: (queryInsights.team_key as string | undefined) ?? trackerTeamKey ?? "",
+      // Default to the first active state so the created ticket is dispatchable by the poll loop.
+      targetState: (queryInsights.target_state as string | undefined) ?? activeStates[0] ?? "",
+      assigneeEmail: (queryInsights.assignee_email as string | undefined) ?? "",
+      label: (queryInsights.label as string | undefined) ?? "query-insights",
+      lookbackDays: (queryInsights.lookback_days as number | undefined) ?? 7,
+      minReadOps: (queryInsights.min_read_ops as number | undefined) ?? 10000,
+      maxOpenTickets: (queryInsights.max_open_tickets as number | undefined) ?? 3,
+      maxTicketsPerRun: (queryInsights.max_tickets_per_run as number | undefined) ?? 3,
+      runIntervalMs: (queryInsights.run_interval_ms as number | undefined) ?? 7 * 24 * 60 * 60 * 1000,
+      bqTimeoutMs: (queryInsights.bq_timeout_ms as number | undefined) ?? 60000,
     },
   };
 }

@@ -16,6 +16,7 @@ import { loadWorkflow, validateConfig } from "./config.js";
 import { GitHubPreviewWarmer, StaticUrlWarmer } from "./github-preview.js";
 import { MergeConflictResolver } from "./merge-conflict.js";
 import { DependabotWatcher } from "./dependabot.js";
+import { QueryInsightsWatcher } from "./query-insights.js";
 import * as linear from "./linear.js";
 import { isCompletionState, sendBatchedSlackNotification } from "./notifications.js";
 import { getWorkspacePath, removeWorkspace } from "./workspace.js";
@@ -53,6 +54,7 @@ export class Orchestrator {
   private staticWarmer: StaticUrlWarmer | null = null;
   private mergeConflictResolver: MergeConflictResolver | null = null;
   private dependabotWatcher: DependabotWatcher | null = null;
+  private queryInsightsWatcher: QueryInsightsWatcher | null = null;
   private log: Logger;
 
   constructor(workflowPath: string, logger: Logger) {
@@ -68,6 +70,7 @@ export class Orchestrator {
     this.staticWarmer = this.createStaticWarmer();
     this.mergeConflictResolver = this.createMergeConflictResolver();
     this.dependabotWatcher = this.createDependabotWatcher();
+    this.queryInsightsWatcher = this.createQueryInsightsWatcher();
 
     this.state = {
       pollIntervalMs: this.config.polling.intervalMs,
@@ -288,6 +291,7 @@ export class Orchestrator {
     this.staticWarmer = this.createStaticWarmer();
     this.mergeConflictResolver = this.createMergeConflictResolver();
     this.dependabotWatcher = this.createDependabotWatcher();
+    this.queryInsightsWatcher = this.createQueryInsightsWatcher();
     this.state.pollIntervalMs = this.config.polling.intervalMs;
     this.state.maxConcurrentAgents = this.config.agent.maxConcurrentAgents;
     this.log.info("WORKFLOW.md reloaded");
@@ -316,6 +320,11 @@ export class Orchestrator {
 
     if (this.dependabotWatcher) {
       await this.dependabotWatcher.reconcile();
+    }
+
+    if (this.queryInsightsWatcher) {
+      // Internally gated to run ~weekly; cheap no-op on every other tick.
+      await this.queryInsightsWatcher.reconcile();
     }
 
     const validationError = validateConfig(this.config);
@@ -1011,6 +1020,15 @@ export class Orchestrator {
     if (!this.config.dependabot.enabled) return null;
     return new DependabotWatcher({
       config: this.config.dependabot,
+      tracker: this.config.tracker,
+      logger: this.log,
+    });
+  }
+
+  private createQueryInsightsWatcher(): QueryInsightsWatcher | null {
+    if (!this.config.queryInsights.enabled) return null;
+    return new QueryInsightsWatcher({
+      config: this.config.queryInsights,
       tracker: this.config.tracker,
       logger: this.log,
     });
