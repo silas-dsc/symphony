@@ -228,21 +228,27 @@ export function buildRankingSql(cfg: QueryInsightsConfig): string {
   const days = Math.max(1, Math.floor(cfg.lookbackDays));
   const minReadOps = Math.max(0, Math.floor(cfg.minReadOps));
   const limit = Math.max(1, Math.floor(cfg.maxTicketsPerRun * 3)); // over-fetch; dedupe trims.
+  // Rank/report on serverDurationMs (Firestore executionStats.executionDuration)
+  // when present, falling back to wall-clock latencyMs. The capture wraps a timer
+  // around explain({analyze:true}), so latencyMs includes explain-analysis
+  // overhead and over-reports real query time; serverDurationMs is the honest
+  // server-side execution duration that should drive the cost ranking.
+  const dur = "COALESCE(serverDurationMs, latencyMs)";
   return [
     "SELECT",
     "  callSite,",
     "  shape,",
     "  COUNT(*) AS execCount,",
     "  SUM(readOps) AS totalReadOps,",
-    "  AVG(latencyMs) AS avgLatencyMs,",
-    "  APPROX_QUANTILES(latencyMs, 100)[OFFSET(95)] AS p95LatencyMs,",
+    `  AVG(${dur}) AS avgLatencyMs,`,
+    `  APPROX_QUANTILES(${dur}, 100)[OFFSET(95)] AS p95LatencyMs,`,
     "  AVG(resultsReturned) AS avgResults,",
     "  ANY_VALUE(indexesUsed) AS sampleIndexesUsed",
     `FROM ${table}`,
     `WHERE ts >= TIMESTAMP_SUB(CURRENT_TIMESTAMP(), INTERVAL ${days} DAY)`,
     "GROUP BY callSite, shape",
     `HAVING totalReadOps >= ${minReadOps}`,
-    "ORDER BY SUM(readOps) * AVG(latencyMs) DESC",
+    `ORDER BY SUM(readOps) * AVG(${dur}) DESC`,
     `LIMIT ${limit}`,
   ].join("\n");
 }
@@ -324,9 +330,15 @@ class LinearTicketStore implements QueryInsightsTicketStore {
     const existingKeys = new Set<string>();
     let openCount = 0;
     for (const issue of issues) {
+      // Dedupe ONLY against non-terminal tickets. A shape whose ticket was fixed
+      // and closed must be re-fileable if the call site later regresses —
+      // including a terminal ticket here would suppress that regression forever.
+      // (Within ~lookbackDays of a fix landing, stale rows can briefly re-trigger;
+      // that data ages out of the window by the next run.)
+      if (this.terminalStatesLower.has(issue.state.toLowerCase())) continue;
+      openCount++;
       const key = extractOffenderKey(issue.description);
       if (key) existingKeys.add(key);
-      if (!this.terminalStatesLower.has(issue.state.toLowerCase())) openCount++;
     }
     return { existingKeys, openCount };
   }

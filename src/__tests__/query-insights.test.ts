@@ -182,6 +182,50 @@ prompt body`, "utf8");
     });
     expect(validateConfig(workflow.config)).toBeNull();
   });
+
+  it("rejects an enabled config with no project_id", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "symphony-qi-cfg-"));
+    const workflowPath = path.join(tmpDir, "WORKFLOW.md");
+    fs.writeFileSync(workflowPath, `---
+tracker:
+  kind: linear
+  api_key: test-key
+  project_slug: ALL
+  team_key: TEA
+  active_states:
+    - Dev in Progress
+query_insights:
+  enabled: true
+---
+
+prompt body`, "utf8");
+
+    const workflow = loadWorkflow(workflowPath);
+    expect(validateConfig(workflow.config)).toMatch(/project_id/);
+  });
+
+  it("rejects a target_state that is not an active state", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "symphony-qi-cfg-"));
+    const workflowPath = path.join(tmpDir, "WORKFLOW.md");
+    fs.writeFileSync(workflowPath, `---
+tracker:
+  kind: linear
+  api_key: test-key
+  project_slug: ALL
+  team_key: TEA
+  active_states:
+    - Dev in Progress
+query_insights:
+  enabled: true
+  project_id: team-dsc-au
+  target_state: Backlog
+---
+
+prompt body`, "utf8");
+
+    const workflow = loadWorkflow(workflowPath);
+    expect(validateConfig(workflow.config)).toMatch(/target_state/);
+  });
 });
 
 describe("query-insights helpers", () => {
@@ -202,7 +246,9 @@ describe("query-insights helpers", () => {
     expect(sql).toContain("`team-dsc-au.query_insights.query_stats`");
     expect(sql).toContain("INTERVAL 7 DAY");
     expect(sql).toContain("HAVING totalReadOps >= 10000");
-    expect(sql).toContain("ORDER BY SUM(readOps) * AVG(latencyMs) DESC");
+    expect(sql).toContain(
+      "ORDER BY SUM(readOps) * AVG(COALESCE(serverDurationMs, latencyMs)) DESC",
+    );
   });
 });
 

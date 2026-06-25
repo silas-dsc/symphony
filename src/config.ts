@@ -309,6 +309,24 @@ export function validateConfig(config: WorkflowConfig): string | null {
     if (!Number.isInteger(d.maxOpenTickets) || d.maxOpenTickets <= 0) return "dependabot.max_open_tickets must be a positive integer";
     if (d.requestTimeoutMs <= 0) return "dependabot.request_timeout_ms must be > 0";
   }
+  if (config.queryInsights.enabled) {
+    const q = config.queryInsights;
+    if (!q.projectId) return "query_insights.project_id is required when query_insights.enabled is true";
+    if (!q.dataset) return "query_insights.dataset is required when query_insights.enabled is true";
+    if (!q.table) return "query_insights.table is required when query_insights.enabled is true";
+    if (!q.teamKey) return "query_insights.team_key is required when query_insights.enabled is true (or set tracker.team_key)";
+    if (!q.targetState) return "query_insights.target_state is required when query_insights.enabled is true";
+    const activeLower = config.tracker.activeStates.map(s => s.toLowerCase());
+    if (!activeLower.includes(q.targetState.toLowerCase())) {
+      return `query_insights.target_state (${q.targetState}) must be one of tracker.active_states, otherwise the created ticket will never be dispatched`;
+    }
+    if (!Number.isInteger(q.maxOpenTickets) || q.maxOpenTickets <= 0) return "query_insights.max_open_tickets must be a positive integer";
+    if (!Number.isInteger(q.maxTicketsPerRun) || q.maxTicketsPerRun <= 0) return "query_insights.max_tickets_per_run must be a positive integer";
+    if (!Number.isInteger(q.lookbackDays) || q.lookbackDays <= 0) return "query_insights.lookback_days must be a positive integer";
+    if (!Number.isInteger(q.minReadOps) || q.minReadOps < 0) return "query_insights.min_read_ops must be a non-negative integer";
+    if (q.runIntervalMs <= 0) return "query_insights.run_interval_ms must be > 0";
+    if (q.bqTimeoutMs <= 0) return "query_insights.bq_timeout_ms must be > 0";
+  }
   if (!config.workspace.root) return "workspace.root could not be resolved";
   if (config.agent.maxTurns <= 0) return "agent.max_turns must be > 0";
   if (config.agent.stallTimeoutMs <= 0) return "agent.stall_timeout_ms must be > 0";
