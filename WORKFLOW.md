@@ -235,6 +235,26 @@ query_insights:
   # The (relatively expensive) BigQuery scan runs about once a week.
   run_interval_ms: 604800000
   bq_timeout_ms: 60000
+posthog:
+  enabled: true
+  # host / project_id / api_key default to the $POSTHOG_HOST, $POSTHOG_PROJECT_ID
+  # and $POSTHOG_PERSONAL_API_KEY env vars (host falls back to us.posthog.com), so
+  # no secret is written into this committed file. The api key must be a *personal*
+  # key (phx_…) — a phc_ project key can't read error-tracking reports.
+  # team_key inherits from tracker.team_key (TEA); target_state defaults to the
+  # first active state (Dev in Progress) so filed tickets are picked up.
+  assignee_email: silas@teamdsc.com.au
+  # Pull active error-tracking reports from the last 30 days; ignore the very quiet
+  # ones. File up to 5 tickets per daily run, max 5 open at once.
+  status: active
+  order_by: occurrences
+  lookback_days: 30
+  min_occurrences: 1
+  max_open_tickets: 5
+  max_tickets_per_run: 5
+  # The report pull runs about once a day.
+  run_interval_ms: 86400000
+  request_timeout_ms: 30000
 ---
 
 You are the **parent agent** working autonomously on a Linear ticket for the **team-dsc** codebase — a TypeScript/React (Remix) web application with a Firebase/Firestore backend, managed as a pnpm monorepo.
@@ -512,6 +532,8 @@ These are the reusable skills agents apply during the phases above. Sub-agents a
 Dependabot triage is also orchestrator-driven, not a phase. When `dependabot` is enabled, each tick reads the repo's open GitHub Dependabot alerts and files a Linear ticket (assigned, in the active `Dev in Progress` state, tagged `dependabot`) for each new one — including a pnpm-/monorepo-aware checklist to bump the dependency, run `pnpm install`, test the affected code, and open a PR. The ticket then flows through the same phases as any other. A hidden `<!-- symphony-dependabot:owner/repo#N -->` marker dedupes so an alert is never filed twice. See `dependabot` in the front matter to configure it.
 
 Query-insights triage is the same shape, on a weekly cadence. When `query_insights` is enabled, the orchestrator runs a BigQuery scan about once a week (gated internally — a cheap no-op on every other tick) over the `query_insights.query_stats` table the team-dsc app streams Firestore execution stats into. It ranks query shapes by **absolute cost** — `SUM(readOps) × AVG(latencyMs)`, not the docs-scanned/results ratio — and files a Linear ticket (assigned, active state, tagged `query-insights`) for the worst un-ticketed ones, each carrying the read-op/latency metrics and a `.select()`/scope/index optimisation checklist. The ticket then flows through the normal phases, so a Developer agent reads the call site and reduces read volume. A hidden `<!-- symphony-query-insights:callSite|shape -->` marker dedupes so a shape is never filed twice. See `query_insights` in the front matter to configure it.
+
+PostHog triage is the same shape again, on a daily cadence. When `posthog` is enabled, the orchestrator pulls the project's error-tracking reports about once a day (gated internally — a cheap no-op on every other tick) from PostHog's query API, ranks them by occurrences, and files a Linear ticket (assigned, active state, tagged `posthog`) for the loudest un-ticketed ones — each carrying the occurrence/session/user counts, first/last-seen timestamps, a deep link back to the report, and a reproduce → fix-root-cause → add-a-test checklist. The ticket then flows through the normal phases. A hidden `<!-- symphony-posthog:<issue-id> -->` marker dedupes so a report is never filed twice. Host, project id, and the **personal** API key (`phx_…`) come from `$POSTHOG_HOST` / `$POSTHOG_PROJECT_ID` / `$POSTHOG_PERSONAL_API_KEY`, so no secret lives in this file. To pull on demand instead of waiting for the daily tick, run `npm run posthog` (`symphony-posthog`) — add `--dry-run` to list the reports without filing anything. See `posthog` in the front matter to configure it.
 
 ### Project memory
 
