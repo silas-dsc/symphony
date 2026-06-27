@@ -100,6 +100,7 @@ function buildConfig(raw: Record<string, unknown>, baseDir: string): WorkflowCon
   const mergeConflicts = ((raw.merge_conflicts ?? {}) as Record<string, unknown>);
   const dependabot = ((raw.dependabot ?? {}) as Record<string, unknown>);
   const queryInsights = ((raw.query_insights ?? {}) as Record<string, unknown>);
+  const posthog = ((raw.posthog ?? {}) as Record<string, unknown>);
 
   const apiKeyRaw = (tracker.api_key as string | undefined) ?? "$LINEAR_API_KEY";
   const apiKey = resolveEnvVar(apiKeyRaw);
@@ -256,10 +257,33 @@ function buildConfig(raw: Record<string, unknown>, baseDir: string): WorkflowCon
       runIntervalMs: (queryInsights.run_interval_ms as number | undefined) ?? 7 * 24 * 60 * 60 * 1000,
       bqTimeoutMs: (queryInsights.bq_timeout_ms as number | undefined) ?? 60000,
     },
+    posthog: {
+      enabled: (posthog.enabled as boolean | undefined) ?? false,
+      // Host/project/key default to env vars (the team-dsc .env names) so they
+      // never have to be written into WORKFLOW.md, which is committed.
+      host: resolveEnvVar((posthog.host as string | undefined) ?? "$POSTHOG_HOST").trim()
+        || "https://us.posthog.com",
+      projectId: resolveEnvVar((posthog.project_id as string | undefined) ?? "$POSTHOG_PROJECT_ID").trim(),
+      apiKey: resolveEnvVar((posthog.api_key as string | undefined) ?? "$POSTHOG_PERSONAL_API_KEY").trim(),
+      teamKey: (posthog.team_key as string | undefined) ?? trackerTeamKey ?? "",
+      // Default to the first active state so the created ticket is dispatchable by the poll loop.
+      targetState: (posthog.target_state as string | undefined) ?? activeStates[0] ?? "",
+      assigneeEmail: (posthog.assignee_email as string | undefined) ?? "",
+      label: (posthog.label as string | undefined) ?? "posthog",
+      status: ((posthog.status as string | undefined) ?? "active").toLowerCase(),
+      orderBy: ((posthog.order_by as string | undefined) ?? "occurrences").toLowerCase(),
+      lookbackDays: (posthog.lookback_days as number | undefined) ?? 30,
+      minOccurrences: (posthog.min_occurrences as number | undefined) ?? 1,
+      maxOpenTickets: (posthog.max_open_tickets as number | undefined) ?? 5,
+      maxTicketsPerRun: (posthog.max_tickets_per_run as number | undefined) ?? 5,
+      runIntervalMs: (posthog.run_interval_ms as number | undefined) ?? 24 * 60 * 60 * 1000,
+      requestTimeoutMs: (posthog.request_timeout_ms as number | undefined) ?? 30000,
+    },
   };
 }
 
 const VALID_SEVERITIES = new Set(["low", "medium", "moderate", "high", "critical"]);
+const VALID_POSTHOG_STATUSES = new Set(["active", "resolved", "suppressed", "all"]);
 
 export function validateConfig(config: WorkflowConfig): string | null {
   if (!config.tracker.kind) return "tracker.kind is required";
@@ -326,6 +350,25 @@ export function validateConfig(config: WorkflowConfig): string | null {
     if (!Number.isInteger(q.minReadOps) || q.minReadOps < 0) return "query_insights.min_read_ops must be a non-negative integer";
     if (q.runIntervalMs <= 0) return "query_insights.run_interval_ms must be > 0";
     if (q.bqTimeoutMs <= 0) return "query_insights.bq_timeout_ms must be > 0";
+  }
+  if (config.posthog.enabled) {
+    const p = config.posthog;
+    if (!p.host) return "posthog.host is required when posthog.enabled is true (set $POSTHOG_HOST or posthog.host)";
+    if (!p.projectId) return "posthog.project_id is required when posthog.enabled is true (set $POSTHOG_PROJECT_ID or posthog.project_id)";
+    if (!p.apiKey) return "posthog.api_key is required when posthog.enabled is true (set $POSTHOG_PERSONAL_API_KEY or posthog.api_key)";
+    if (!p.teamKey) return "posthog.team_key is required when posthog.enabled is true (or set tracker.team_key)";
+    if (!p.targetState) return "posthog.target_state is required when posthog.enabled is true";
+    const activeLower = config.tracker.activeStates.map(s => s.toLowerCase());
+    if (!activeLower.includes(p.targetState.toLowerCase())) {
+      return `posthog.target_state (${p.targetState}) must be one of tracker.active_states, otherwise the created ticket will never be dispatched`;
+    }
+    if (!VALID_POSTHOG_STATUSES.has(p.status)) return "posthog.status must be one of: active, resolved, suppressed, all";
+    if (!Number.isInteger(p.lookbackDays) || p.lookbackDays <= 0) return "posthog.lookback_days must be a positive integer";
+    if (!Number.isInteger(p.minOccurrences) || p.minOccurrences < 0) return "posthog.min_occurrences must be a non-negative integer";
+    if (!Number.isInteger(p.maxOpenTickets) || p.maxOpenTickets <= 0) return "posthog.max_open_tickets must be a positive integer";
+    if (!Number.isInteger(p.maxTicketsPerRun) || p.maxTicketsPerRun <= 0) return "posthog.max_tickets_per_run must be a positive integer";
+    if (p.runIntervalMs <= 0) return "posthog.run_interval_ms must be > 0";
+    if (p.requestTimeoutMs <= 0) return "posthog.request_timeout_ms must be > 0";
   }
   if (!config.workspace.root) return "workspace.root could not be resolved";
   if (config.agent.maxTurns <= 0) return "agent.max_turns must be > 0";

@@ -48,6 +48,42 @@ export interface WorkflowConfig {
   mergeConflicts: MergeConflictConfig;
   dependabot: DependabotConfig;
   queryInsights: QueryInsightsConfig;
+  posthog: PostHogConfig;
+}
+
+export interface PostHogConfig {
+  /** When true, Symphony pulls PostHog error-tracking reports ~daily and files a Linear ticket for each new one. */
+  enabled: boolean;
+  /** PostHog host, e.g. "https://us.posthog.com" (defaults to $POSTHOG_HOST, then us.posthog.com). */
+  host: string;
+  /** Numeric PostHog project id, e.g. "49303" (defaults to $POSTHOG_PROJECT_ID). */
+  projectId: string;
+  /** PostHog personal API key (phx_…) used as a Bearer token (defaults to $POSTHOG_PERSONAL_API_KEY). */
+  apiKey: string;
+  /** Linear team key the tickets are created under (defaults to tracker.team_key). */
+  teamKey: string;
+  /** Workflow state name the ticket is created in — must be one of tracker.active_states so the agent picks it up. */
+  targetState: string;
+  /** Email (or name) of the Linear user to assign the ticket to. Empty = unassigned. */
+  assigneeEmail: string;
+  /** Linear label applied to every ticket; also used to dedupe so the same report isn't filed twice. */
+  label: string;
+  /** Which PostHog issue status to pull: "active" | "resolved" | "suppressed" | "all". */
+  status: string;
+  /** ErrorTrackingQuery ordering: "occurrences" | "last_seen" | "first_seen" | "users" | "sessions". */
+  orderBy: string;
+  /** How many days back the report query spans. */
+  lookbackDays: number;
+  /** Floor on occurrences — reports below this are too quiet to ticket. */
+  minOccurrences: number;
+  /** Hard cap on how many PostHog tickets may be open (non-terminal) at once. */
+  maxOpenTickets: number;
+  /** Max tickets to file in a single run. */
+  maxTicketsPerRun: number;
+  /** How often the report pull runs, in ms. Defaults to ~1 day. */
+  runIntervalMs: number;
+  /** Timeout for the PostHog query API call, in ms. */
+  requestTimeoutMs: number;
 }
 
 export interface QueryInsightsConfig {
