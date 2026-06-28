@@ -243,6 +243,9 @@ export class HttpPostHogReportsClient implements PostHogReportsClient {
         orderBy: config.orderBy,
         orderDirection: "DESC",
         dateRange: { date_from: `-${days}d` },
+        // Number of buckets for the per-issue volume sparkline. Required by the
+        // ErrorTrackingQuery schema; 1 keeps the response small (we don't render it).
+        volumeResolution: 1,
         // PostHog uses "all" to mean "don't filter by status".
         status: config.status === "all" ? undefined : config.status,
         // Over-fetch so dedupe/threshold trimming still leaves enough to file.
