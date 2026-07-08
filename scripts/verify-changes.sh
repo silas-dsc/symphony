@@ -10,6 +10,9 @@
 #   6. Firestore rules tests when firestore.rules was touched.
 #   7. Bundle-size budget (against `.bundle-budget.json` if present).
 #   8. Forbidden-token scan on the diff (debug noise, casts, skipped tests).
+#  8b. team-dsc pattern guards on the diff — path-aware checks that encode
+#      repeated production misses (server import in a universal entry,
+#      unbounded Firestore reads, unhandled async IIFEs). See lessons.jsonl.
 #   9. Secret scan on the diff.
 #  10. Untracked-leftover scan inside source trees (*.tmp, *.bak, ...).
 #  11. Tracked-artefact scan on the diff — flags accidental additions to
@@ -50,14 +53,15 @@ fail() { FAILURES+=("$1"); log "[verify] FAIL: $1"; }
 skip() { SKIPS+=("$1");    log "[verify] SKIP: $1"; }
 pass() { log "[verify] OK:   $1"; }
 
-# Comma-separated skip list → bash assoc lookup.
-declare -A SKIP_SET=()
-IFS=',' read -ra _skip_list <<< "${VERIFY_SKIP:-}"
-for s in "${_skip_list[@]}"; do
-  s="${s// /}"
-  [ -n "$s" ] && SKIP_SET["$s"]=1
-done
-is_skipped() { [ -n "${SKIP_SET[$1]:-}" ]; }
+# Comma-separated skip list → bash 3.2 compat (no assoc arrays).
+_skip_list="${VERIFY_SKIP:-}"
+is_skipped() {
+  local check="$1"
+  case ",$_skip_list," in
+    *,"$check",*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
 
 # ── 0. Sanity checks ────────────────────────────────────────────────────────
 if ! command -v git >/dev/null 2>&1; then
@@ -398,6 +402,73 @@ check_token ".skip("            '\.skip\('
 check_token "xit/xdescribe"     '\b(xit|xdescribe)\('
 check_token "TODO/FIXME/XXX"    '(^|[^a-zA-Z_])(TODO|FIXME|XXX)([^a-zA-Z_]|:|$)'
 
+# ── 3b. team-dsc pattern guards (path-aware, from lessons.jsonl) ─────────────
+# Each guard encodes a repeated production miss so it cannot recur silently —
+# the mechanical enforcement the retrospectives kept re-writing as prose in
+# docs/AGENT_MEMORY.md. Guards are conservative: they scan only ADDED lines in
+# files whose path matches, so pre-existing debt never trips them.
+
+# Emit "path<TAB>addedline" for every added source line in the diff.
+added_with_path() {
+  { git diff "$BASE_REF...HEAD" -- "${DIFF_PATHSPEC[@]}" 2>/dev/null
+    git diff                    -- "${DIFF_PATHSPEC[@]}" 2>/dev/null; } \
+  | awk '
+      /^\+\+\+ b\// { path=substr($0,7); next }
+      /^\+\+\+ /     { path="";           next }
+      /^\+/ && path!="" { print path "\t" substr($0,2) }
+    '
+}
+
+# guard <label> <path-ERE> <line-ERE> <hint>
+# Fails if any ADDED line in a file matching <path-ERE> matches <line-ERE>.
+# Path filtering uses awk (field-aware on the leading path); the line match uses
+# grep -E so backslash-escapes in <line-ERE> (e.g. `getDocs\(`) survive intact —
+# awk's `-v` would collapse `\(` to a literal group-open and break the pattern.
+guard() {
+  local label="$1" path_re="$2" line_re="$3" hint="$4"
+  local hits
+  hits="$(added_with_path \
+    | awk -F'\t' -v p="$path_re" '$1 ~ p { print }' \
+    | while IFS="$(printf '\t')" read -r fp ln; do
+        printf '%s\n' "$ln" | grep -qE "$line_re" && printf '%s: %s\n' "$fp" "$ln"
+      done)"
+  if [ -n "$hits" ]; then
+    fail "guard:$label"
+    printf '%s\n' "$hits" | sed 's/^/    /' >&2
+    [ -n "$hint" ] && log "    → $hint"
+  else
+    pass "guard:$label"
+  fi
+}
+
+# TEA-4404, TEA-4178: root.tsx / entry.client are universal (also run on the
+# client). Importing a server-only module (`*.server`) there ships server code
+# to the browser or clobbers the server loader. Belongs in root.server.ts.
+guard "server-import-in-universal-entry" \
+  '(^|/)(root|entry\.client)\.tsx$' \
+  "from[[:space:]]+['\"][^'\"]*\.server['\"]" \
+  "Universal entry importing a *.server module (TEA-4404/4178). Move it into root.server.ts or a loader."
+
+# AGENT_MEMORY → Firestore, query-insights theme (TEA-4399): getDocs(collection(…))
+# with no query()/where()/limit() scans the whole collection — tens of thousands
+# of reads on submissions/users. A constrained read reads getDocs(query(…)).
+guard "firestore-unbounded-read" \
+  '\.(ts|tsx)$' \
+  "getDocs\([[:space:]]*collection\(" \
+  "getDocs(collection(...)) is an unbounded scan (AGENT_MEMORY → Firestore). Wrap in query() with where()/limit()."
+
+# TEA-4405: fire-and-forget async IIFE with no error handler. The `void (async
+# () => { … })()` form swallows rejections. Flag the opener; the developer adds
+# a .catch() or awaits it. (Enable @typescript-eslint/no-floating-promises in
+# team-dsc for full coverage — this guard is the pre-push backstop.)
+# Precise: matches a single-line IIFE that ENDS in `)()` (optionally `;`) with no
+# trailing `.catch` — the unhandled form. `…)().catch(…)` and multi-line openers
+# (`void (async () => {`) do not end in `)()`, so they don't trip.
+guard "unhandled-async-iife" \
+  '\.(ts|tsx)$' \
+  "void[[:space:]]*\([[:space:]]*async.*\)[[:space:]]*\([[:space:]]*\)[[:space:]]*;?[[:space:]]*$" \
+  "Unhandled fire-and-forget async IIFE (TEA-4405). Add .catch() (or await it) so rejections aren't swallowed."
+
 # ── 4. Secret scan on the diff ──────────────────────────────────────────────
 secret_hits=""
 secret_hits+="$(printf '%s\n' "$ADDED" | grep -nE -- '-----BEGIN [A-Z ]+PRIVATE KEY-----' || true)"
@@ -473,7 +544,7 @@ else
 fi
 
 # ── 7. Verdict ──────────────────────────────────────────────────────────────
-TOTAL_RUN=$(( ${#JOB_NAMES[@]} + 12 ))   # parallel jobs + synchronous checks
+TOTAL_RUN=$(( ${#JOB_NAMES[@]} + 15 ))   # parallel jobs + synchronous checks (incl. 3 pattern guards)
 SKIP_COUNT="${#SKIPS[@]}"
 if [ "${#FAILURES[@]}" -eq 0 ]; then
   echo "VERIFY: pass (sha=$HEAD_SHA, packages=${#TOUCHED_PACKAGES[@]}, files=${#CHANGED[@]}, ran=$((TOTAL_RUN - SKIP_COUNT)), skipped=$SKIP_COUNT)"

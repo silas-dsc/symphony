@@ -93,6 +93,13 @@ Don't invent synonyms. If the ticket says "students", confirm whether it means "
 
 ## Common pitfalls
 
+> **Some of these are now mechanically enforced** by `scripts/verify-changes.sh` → section 3b pattern guards (`guard:*`), so they fail the pre-push gate instead of relying on memory:
+> - `guard:server-import-in-universal-entry` — `*.server` import in `root.tsx`/`entry.client.tsx` (TEA-4404/4178).
+> - `guard:firestore-unbounded-read` — `getDocs(collection(...))` with no `query()`/`where()`/`limit()`.
+> - `guard:unhandled-async-iife` — single-line fire-and-forget `void (async …)()` with no `.catch()` (TEA-4405).
+>
+> Prefer adding a **guard or an eslint rule** over a new prose bullet here when a pitfall is mechanically detectable. For floating promises generally, enable `@typescript-eslint/no-floating-promises` in team-dsc's eslint config — it supersedes the IIFE guard. Keep this file for judgement rules a linter can't express.
+
 ### Firestore
 
 - `getDocs(collection(...))` without a `where` or `limit` will scan the whole collection. On `submissions` or `users`, that's tens of thousands of reads. **Always** constrain.

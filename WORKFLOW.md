@@ -319,7 +319,7 @@ The shape of that body is fixed in `{{ symphony.root }}/prompts/DELIVERY_COMMENT
 
 Every other agent artefact — intent brief, plan, test matrix, QA results, accessibility results, code review findings, meta-review, workpad, original description, Figma BA artefacts — lives in the per-ticket workspace under `.claude/` (gitignored). Do **not** post any of it to Linear or to the PR. If two agents need to coordinate, they coordinate through files in `.claude/`.
 
-The Refiner is the one exception: it still updates the Linear issue **description** (the spec — Context / AC / Technical Approach / Test Plan / Out of Scope). The description is the spec, not a comment.
+The Refiner is the one exception: it updates the Linear issue **description** (the spec — Context / AC / Technical Approach / Test Plan / Out of Scope). The description is the spec, not a comment. **It appends, it does not replace:** the refined structure goes on top, and the user's original request is preserved *verbatim* below it under `## Original request` and remains the source of truth. Where a refined AC and the original wording conflict, the original wins — that is a signal the Refiner misread the ask, not a licence to overwrite intent. This is deliberate: the largest recurring failure class was the front-end (Intent → Refiner) silently reframing the ask so every downstream phase built against a drifted spec.
 
 ### Mandatory AI-comment marker
 
@@ -482,12 +482,19 @@ The Self-review pass (`prompts/SELF_REVIEW.md`) and Phase 4.5 Code Reviewer both
 
 ## Phases
 
+There are **two lanes**. Phase 0 routes each ticket to one of them:
+
+- **Fast path** — small, well-specified tickets (one-line fixes, precise asks with exact files/classes/repro, Dependabot bumps). Skip Phase 1 (Intent/Refine) and Phase 2 (Architect); the **raw ticket text is the spec** and goes straight to the Developer. Run `Phase 0 → 3 → 4 → (4A) → 4.5 → 5`. This mirrors running `claude` directly on the ticket text — no reinterpretation layer to drift through — and the data shows precisely-scoped tickets ship cleanest.
+- **Full path** — vague, large, multi-file, design-driven, or ambiguous tickets. Run every phase below. The Intent/Refine/Architect front-end earns its cost only when the ask genuinely needs disambiguation or up-front design.
+
+When unsure, prefer the fast path for anything a competent engineer could start coding immediately, and the full path only when you'd need to ask clarifying questions first.
+
 ```
-Phase 0  State check        (quick gate, no sub-agent)
-Phase 1  Intent & Refine    Sub-agent A — prompts/INTENT.md            (Intent Analyst, reads docs/AGENT_MEMORY.md)
+Phase 0  State check        (quick gate, no sub-agent) — also routes fast-path vs full-path
+Phase 1  Intent & Refine    Sub-agent A — prompts/INTENT.md            (Intent Analyst, reads docs/AGENT_MEMORY.md)   ← full path only
                             Sub-agent B — prompts/REFINE_TICKET.md     (Refiner)
                             Sub-agent C — prompts/FIGMA_BA.md          ← if Figma URL present (skip otherwise)
-Phase 2  Architect          Sub-agent  — prompts/ARCHITECT.md          (Plan + Tests-to-add + Test Matrix, reads docs/AGENT_MEMORY.md)
+Phase 2  Architect          Sub-agent  — prompts/ARCHITECT.md          (Plan + Tests-to-add + Test Matrix, reads docs/AGENT_MEMORY.md)   ← full path only
 Phase 3  Develop            You (parent)  — prompts/CODE_QUALITY.md, prompts/TDD.md, prompts/PERFORMANCE.md, prompts/MOBILE_UX.md
                             Skill on demand — prompts/DEBUG.md         (when stuck or Tester fails)
                             Sub-agents per screen if Figma BA produced .symphony-figma/screens/
@@ -598,12 +605,21 @@ You need Linear access. Use the Linear MCP server if configured; otherwise use `
    - `In Review` → PR attached and validated; wait for human decision. **Stop.**
    - `Done`, `Closed`, `Cancelled`, `Canceled`, `Duplicate` → terminal. **Stop.**
    - Any other state → out of scope. **Stop.**
-3. Check for an existing PR on this issue's branch. If closed or merged → treat as a fresh start; create a new branch from `origin/main` in Phase 2.
+3. Check for an existing PR on this issue's branch. If closed or merged → treat as a fresh start; create a new branch from `origin/main` in Phase 2 (full path) or Phase 3 (fast path).
 4. Ensure `.claude/` exists in the workspace (`mkdir -p .claude/screenshots`). All agent-to-agent artefacts live there; nothing intermediate gets posted to Linear or the PR.
+5. **Stale-work guard** (cheap kills before spending the pipeline). Stop and move the ticket to a terminal state with a one-line reason when:
+   - The target file/package/service no longer exists on `origin/main` (common for Dependabot tickets against removed services — check recent `origin/main` commits touching the path).
+   - An open PR or another in-flight ticket already delivers this scope (search open Linear issues + open PRs touching the same files/Figma frames). If overlap is likely, leave a workpad note and stop rather than build a duplicate.
+6. **Route the ticket** (fast path vs full path — see the two lanes above):
+   - **Fast path** when the ask is small and unambiguous: a competent engineer could open the file and start. Signals — the ticket names exact files/classes/routes, gives a clear repro, is a one-liner, or is a mechanical Dependabot/config bump. **Skip Phases 1 and 2.** Write `.claude/original-description.md` with the raw ticket body (so downstream and retries share one source of truth) and go straight to Phase 3, treating the **raw ticket text as the spec**. Do not paraphrase it into ACs — build against the words as written.
+   - **Full path** when the ask is vague, large, multi-file, design-driven, or has ≥ 1 material ambiguity. Continue to Phase 1.
+   Record the chosen lane and the one-line reason in `.claude/workpad.md`.
 
 ---
 
-## Phase 1 — Intent & Refine
+## Phase 1 — Intent & Refine — *full path only*
+
+> Skip this entire phase on the fast path (Phase 0 step 6). Go to Phase 3.
 
 ### 1A. Dispatch the Intent Analyst
 
@@ -615,12 +631,12 @@ Dispatch the Intent Analyst sub-agent with the prompt body from `{{ symphony.roo
 
 If the ticket description contains a `figma.com/design/...` URL, dispatch the Figma BA sub-agent first with `{{ symphony.root }}/prompts/FIGMA_BA.md`. **All** Figma BA artefacts (manifest, classification, flow, per-screen specs, style-map, tech-spec, gaps) stay in `.symphony-figma/` in the workspace. Do **not** post anything to Linear. The Refiner incorporates `tech-spec.md` and the sign-off items from `gaps.md` into the refined Linear description. If there's no Figma URL, skip this — the ticket needs no design intake.
 
-Then dispatch the Refiner sub-agent with `{{ symphony.root }}/prompts/REFINE_TICKET.md`. The Refiner reads `.claude/intent.md` as its source of truth for Who/Wants/So that and preserves the original ticket body in `.claude/original-description.md` before overwriting the description.
+Then dispatch the Refiner sub-agent with `{{ symphony.root }}/prompts/REFINE_TICKET.md`. The Refiner reads `.claude/intent.md` as its source of truth for Who/Wants/So that, saves the raw body to `.claude/original-description.md`, and **appends** the refined structure above the verbatim original in the Linear description — it never overwrites the user's words. The verbatim `## Original request` block stays the source of truth for every downstream phase.
 
 ### Definition of Done — Phase 1
 - [ ] `.claude/intent.md` populated with all four sections.
 - [ ] `.claude/original-description.md` populated with the raw pre-refinement body.
-- [ ] Refined Linear description has Context, AC, Technical Approach, Test Plan, Out of Scope.
+- [ ] Refined Linear description has Context, AC, Technical Approach, Test Plan, Out of Scope — **appended above** a verbatim `## Original request` block that reproduces the user's words unedited.
 - [ ] The Test Plan opens with a **Functional test plan**: one terse, click-by-click block per AC (role, steps, observable result, log lines to check).
 - [ ] AC list is consistent with `.claude/intent.md`'s Success Signals.
 - [ ] No new Linear comments were posted by this phase.
@@ -880,7 +896,7 @@ Do not flip to `In Review` for blockers — `In Review` means a reviewer can rev
 - After the second consecutive failure on the same scenario, invoke `prompts/DEBUG.md` — no more guessing.
 - Read `docs/AGENT_MEMORY.md` before investigating the codebase. The rules there are the bar.
 - **Public surfaces are limited to two: the Phase 5 Linear comment, and the PR body. They share one body.** No agent posts intermediate comments to Linear or to the PR. All inter-agent artefacts live in `.claude/` (see the layout above).
-- The Refiner still updates the Linear issue **description** with Context / AC / Technical Approach / Test Plan / Out of Scope — the description is the spec, not a comment.
+- The Refiner (full path only) updates the Linear issue **description** with Context / AC / Technical Approach / Test Plan / Out of Scope — the description is the spec, not a comment. It **appends above the verbatim `## Original request`**; it never overwrites the user's words, and the original wins any conflict with a derived AC.
 - One `## ✅ Ready for review` comment per ticket — only posted once when Phase 5 runs to completion.
 - Figma BA artefacts live in `.symphony-figma/` only — never posted to Linear or the PR. Figma BA and the accessibility audit are conditional: skip Figma BA when the ticket has no `figma.com/design/...` URL, and skip Phase 4A when the diff touches no frontend. Record the skip in `.claude/workpad.md`.
 - When the change touches the frontend, Phase 4A (accessibility) must pass before delivery — WCAG 2.2 AA across contrast, keyboard, semantics, skip-to-main, and plain language. Accessibility findings route back to the Developer like Tester findings, not into the PR.

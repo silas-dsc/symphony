@@ -25,6 +25,7 @@ Write `.claude/intent.md` with this body. Every section is mandatory.
 ```md
 # Intent brief
 
+**Verbatim ask** "<the core request quoted word-for-word from the ticket — do not paraphrase>"
 **Who** <role, e.g. learner / admin / super-admin / Cloud Function / Storyblok editor>
 **Wants** <one sentence — the behaviour they want>
 **So that** <one sentence — the outcome that matters>
@@ -46,6 +47,7 @@ Write `.claude/intent.md` with this body. Every section is mandatory.
 - **One idea per bullet.** No compound sentences.
 - **Success signals are observable from outside the system** — a UI state, a network response, a log line. Not "the function returns the right value" — what does the user see?
 - **Never invent intent.** If Who/Wants/So that can't be filled from the ticket, write your best guess and list the gap as the first Ambiguity.
+- **Quote before you interpret.** The **Verbatim ask** must be the user's own words, copied — not your reading of them. Your `Wants`/`So that` are a *derived interpretation* of that quote; if they add anything the quote doesn't say (scope, a role, "all" vs "one", manual vs automated), that addition is an Ambiguity, not a fact. This line is what stops the ask drifting as it passes downstream.
 - **Out of scope is not optional.** If you cannot identify anything material that is out of scope, write "nothing material — tightly-scoped ticket".
 - **Every Ambiguity must include the assumption you'll proceed under.** "Should X also Y? — Assuming no, X only changes when explicitly invoked." Downstream sub-agents read your assumptions as commitments.
 - **Surface multiple interpretations rather than choose silently.** When a piece of the ticket has two reasonable readings that would produce different behaviour, name both in Ambiguities before naming the assumption — e.g. "*Could mean X (admin-only) or Y (any role). Assuming X.*" Picking one silently means downstream phases never see the alternative. See `{{ symphony.root }}/WORKFLOW.md` → Think before coding.
@@ -65,6 +67,7 @@ Anything else: pick the most reasonable interpretation, list it under Ambiguitie
 ## Definition of Done
 
 - [ ] `.claude/intent.md` exists in the workspace.
+- [ ] The **Verbatim ask** quotes the ticket word-for-word (not paraphrased).
 - [ ] All four sections (Who/Wants/So that, Success signals, Out of scope, Ambiguities) are populated.
 - [ ] Brief is ≤ 30 lines.
 - [ ] Every Ambiguity has a proceeding assumption attached.

@@ -2,9 +2,17 @@
 
 Runs **after** the Intent Analyst sub-agent (Phase 1A) has written `.claude/intent.md`. You use the Intent Brief as your source of truth for Who/Wants/So that — do not re-derive it.
 
-Your output: a refined description on the Linear ticket with explicit Context, Acceptance Criteria, Technical Approach, Test Plan, and Out of Scope. The original description is preserved in a local file (`.claude/original-description.md`), not as a Linear comment.
+Your output: a refined description on the Linear ticket with explicit Context, Acceptance Criteria, Technical Approach, Test Plan, and Out of Scope — **appended above the user's original request, which stays verbatim in the description**. You never overwrite the user's words.
 
 The refined description is the only thing you write to Linear. You do not post comments.
+
+## Append, don't rewrite — the source-of-truth rule
+
+The single largest recurring failure in this workflow was the front-end (Intent → Refiner) silently reframing the ask, so every downstream phase built against a drifted spec (bulk-vs-single, automation scoped out, design ticket coded as a build, silent-vs-loud failure, …). The fix is structural:
+
+- Your refined structure goes **on top**. The user's original request is reproduced **verbatim** at the bottom under `## Original request`, unedited.
+- The verbatim original is the **source of truth**. Your Context/AC/Technical Approach are a *derived reading* of it. Downstream agents (Architect, Developer, Tester) are told: if a refined AC conflicts with the original wording, the original wins.
+- Treat your refinement as a hypothesis about intent, not a replacement for it. When you're inferring rather than restating, that inference belongs in `.claude/intent.md` Ambiguities — not silently baked into an AC that erases the original phrasing.
 
 ## Idempotency
 
@@ -71,7 +79,15 @@ Terse, numbered, click-by-click steps a human (or the Tester) follows to prove e
 
 ## Out of Scope
 - <Items deferred to follow-up backlog tickets — be explicit about what is NOT being done>
+
+---
+## Original request
+_Verbatim, unedited. This is the source of truth. If any Acceptance Criterion above conflicts with the wording here, the original wins — flag the conflict in `.claude/intent.md` Ambiguities._
+
+> <the raw pre-refinement description, reproduced exactly — every line prefixed with `> `>
 ```
+
+The `## Original request` block is **mandatory** and must reproduce `.claude/original-description.md` byte-for-byte (blockquoted). Do not summarise, tidy, or "clarify" it — that defeats the purpose.
 
 **Functional test plan rules** (the dot-point steps above):
 - One block per AC, headed `**AC<n> — <outcome>** (role: <super-admin / admin / learner>)`.
@@ -108,15 +124,27 @@ curl -s -X POST https://api.linear.app/graphql \
   | jq -r '.data.issue.description' > .claude/original-description.md
 ```
 
-**Then update the Linear description** with your refined version:
+**Then update the Linear description** — your refined sections on top, the verbatim original blockquoted below. The write composes the two so the user's words are never lost:
 ```bash
 python3 <<'PY'
 import json, os, subprocess, pathlib
-api_key = os.environ["LINEAR_API_KEY"]
-uuid    = os.environ["ISSUE_UUID"]
-refined = pathlib.Path("/tmp/refined.md").read_text()
+api_key  = os.environ["LINEAR_API_KEY"]
+uuid     = os.environ["ISSUE_UUID"]
+# Your refined sections (Context / AC / Technical Approach / Test Plan / Out of Scope)
+# WITHOUT the "## Original request" block — that is appended here from the saved raw body.
+refined  = pathlib.Path("/tmp/refined.md").read_text().rstrip()
+original = pathlib.Path(".claude/original-description.md").read_text().strip()
+# Blockquote the original verbatim — every line prefixed with "> ", blanks preserved.
+quoted   = "\n".join(("> " + ln) if ln.strip() else ">" for ln in original.splitlines())
+composite = (
+    refined
+    + "\n\n---\n## Original request\n"
+    + "_Verbatim, unedited. Source of truth — if a refined AC conflicts with the wording "
+      "here, the original wins._\n\n"
+    + quoted + "\n"
+)
 q = {"query":"mutation($id:String!,$desc:String!){issueUpdate(id:$id,input:{description:$desc}){success}}",
-     "variables":{"id":uuid,"desc":refined}}
+     "variables":{"id":uuid,"desc":composite}}
 r = subprocess.run(["curl","-s","-X","POST","https://api.linear.app/graphql",
                     "-H",f"Authorization: {api_key}","-H","Content-Type: application/json",
                     "-d",json.dumps(q)], capture_output=True, text=True)
@@ -124,13 +152,16 @@ print(r.stdout)
 PY
 ```
 
+`/tmp/refined.md` holds only your derived sections; the script appends the `## Original request` block from `.claude/original-description.md`, so the original can never be paraphrased away by accident.
+
 ## Definition of Done
 
 All of the following must be true before moving to Phase 2:
 
 - [ ] `.claude/intent.md` exists (produced by Phase 1A) and the refined description is consistent with it.
 - [ ] `.claude/original-description.md` exists with the raw pre-refinement body.
-- [ ] The Linear issue description has been replaced with the refined version (or skipped because it already met the bar — noted in `.claude/workpad.md`).
+- [ ] The Linear issue description now leads with the refined version and ends with a verbatim `## Original request` blockquote (or the whole rewrite was skipped because the ask already met the bar — noted in `.claude/workpad.md`; even then, ensure `## Original request` is present).
+- [ ] The `## Original request` block reproduces `.claude/original-description.md` byte-for-byte (blockquoted, not summarised).
 - [ ] The refined description contains all five sections: Context, Acceptance Criteria, Technical Approach, Test Plan, Out of Scope.
 - [ ] The Test Plan opens with a **Functional test plan**: one terse, numbered click-by-click block per AC, each with a **See:** line and a **Logs:** line where the AC has a server-side or async effect.
 - [ ] UNSLOP applied: no MECE overlaps, no DRY violations, no filler.
