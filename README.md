@@ -126,7 +126,7 @@ The repo ships an `agent-mcp.json` that wires up the [SuperClaude_Framework](htt
 | [`@morph-llm/morph-fast-apply`](https://morphllm.com) | Fast-apply context-aware code edits | `MORPH_API_KEY` |
 | [`tavily`](https://app.tavily.com) (via `mcp-remote`) | Web search & real-time information | `TAVILY_API_KEY` |
 
-Playwright is launched in headless + isolated + `--ignore-https-errors` mode, which is what the agent uses to verify mobile UX (`prompts/MOBILE_UX.md`): screenshots at 375px, accessibility snapshots, console-log capture, form interaction, network-request counting. The `--ignore-https-errors` flag lets the agent navigate to the workspace's `https://localhost:<port>` SSL proxy — required for Firebase Auth and other secure-context features.
+Playwright is launched in headless + isolated + `--ignore-https-errors` mode, which is what the agent uses to verify mobile UX: screenshots at 375px, accessibility snapshots, console-log capture, form interaction, network-request counting. The `--ignore-https-errors` flag lets the agent navigate to the workspace's `https://localhost:<port>` SSL proxy — required for Firebase Auth and other secure-context features.
 
 **Prerequisites:**
 - **Playwright** downloads its own Chromium build on first run. If your machine has restricted network egress, pre-install via `npx playwright install chrome` (or specify `--executable-path` in `agent-mcp.json`).
@@ -276,6 +276,8 @@ The text below the YAML front matter is a [Liquid](https://liquidjs.com/) templa
 | `issue.branchName` | string \| null | Suggested git branch name from Linear |
 | `attempt` | number \| null | Retry attempt number (`null` on first attempt) |
 | `symphony.root` | string | Absolute path to the Symphony orchestrator directory (where `WORKFLOW.md` lives) |
+| `relevant_lessons` | string | Past lessons ranked by keyword overlap with the ticket, injected as a block (empty string when none) |
+| `reassignment_instruction` | string \| null | The reviewer's rework brief when a ticket has been sent back from review (`null` otherwise) |
 
 ---
 
@@ -408,40 +410,37 @@ src/
 
 ---
 
-## Agent skills
+## The agent prompt
 
-The prompt template in `WORKFLOW.md` instructs the parent agent to coordinate four specialised sub-agents (Intent → Architect → Developer → Tester → Code Reviewer). Each sub-agent loads role-specific skills from `prompts/`:
+The text below the YAML front matter in `WORKFLOW.md` is the [Liquid](https://liquidjs.com/) template rendered into the prompt for each spawned agent. Symphony passes the ticket **description through verbatim** as the spec: the agent reads the ticket as written and implements it directly — branch, code, PR — then flips the Linear issue to your review state. There is no refine/plan/test/review pipeline in front of the agent; the ticket text *is* the spec. This keeps each attempt cheap and removes a reinterpretation layer the request could drift through.
 
-| Skill | Purpose | File |
+The rendered prompt also carries, conditionally (each renders nothing when empty):
+
+- a **continuation** note on retries, so a resumed attempt reuses its existing branch/PR instead of starting over;
+- a **reviewer rework brief** when a ticket is sent back from review;
+- a **Relevant past lessons** block (see [Per-ticket lesson retrieval](#per-ticket-lesson-retrieval) below).
+
+Edit the body of `WORKFLOW.md` to change what every agent is told — it hot-reloads on save. The agent is pointed at `docs/AGENT_MEMORY.md` for domain vocabulary, conventions, and known pitfalls, and told to keep the diff surgical, use pnpm, and keep `pnpm typecheck && pnpm lint` green before pushing.
+
+### Orchestrator-triggered prompts
+
+A few prompts under `prompts/` are run by the orchestrator itself — not by the per-ticket agent — and stay active regardless of the agent prompt:
+
+| Prompt | When | File |
 |---|---|---|
-| Intent gate | Disambiguate the ticket before refinement. | `prompts/INTENT.md` |
-| Ticket refinement | Produce Context / AC / Technical Approach / Test Plan / Out of Scope. The Test Plan opens with a terse, click-by-click functional test plan (one block per AC: role, steps, observable result, log lines). | `prompts/REFINE_TICKET.md` |
-| Figma BA | For tickets with a Figma design: import the design (requesting access with instructions if needed), produce detailed desktop **and** mobile specs (collapsing desktop→mobile where no mobile frame exists), map how the parts connect, quantise styles to the nearest existing Tailwind token, and surface/resolve gaps, assumptions, and improvements. Skipped when the ticket has no Figma URL. | `prompts/FIGMA_BA.md` |
-| Architect plan | One commit per task, plus a **Tests to add** section so developer-side tests aren't an afterthought. | `prompts/ARCHITECT.md` |
-| Code quality | Per-file walkthrough + scoped `pnpm --filter` lint/typecheck. | `prompts/CODE_QUALITY.md` |
-| Codebase shrink | Per-touch checks: delete orphans the diff creates, remove unused deps, extract duplication. Adjacent waste filed as Backlog tickets, not widened into the PR. Periodic full-repo audits use `knip` / `depcheck` / `jscpd`. | `prompts/SHRINK.md` |
-| TDD | Failing test first for every bug fix; tests alongside new logic. | `prompts/TDD.md` |
-| Performance, Mobile UX | Inline checks on hot-path code and frontend pages. | `prompts/PERFORMANCE.md`, `prompts/MOBILE_UX.md` |
-| Structured debugging | Reproduce → isolate → hypothesise → minimum change → verify. Used when a test fails twice or behaviour disagrees with mental model. | `prompts/DEBUG.md` |
-| Verify (pre-push gate) | One scripted command (`scripts/verify-changes.sh`) runs in parallel: scoped lint/typecheck, diff-aware unit tests (`vitest --changed` / `jest --changedSince`), `pnpm audit`, SAST via `semgrep`, architectural boundaries via `dependency-cruiser`, orphan/dead-code detection via `knip`, Firestore rules tests when `firestore.rules` was modified, bundle-size budget against `.bundle-budget.json`. Plus synchronous forbidden-token, secret, and untracked-leftover scans. Each parallel check skips gracefully when its tool/config isn't present, so the gate works against repos at any stage of tooling adoption. The agent pastes `VERIFY: pass` into its workpad before pushing. | `prompts/VERIFY.md`, `scripts/verify-changes.sh` |
-| Install VERIFY tooling | Detects, installs (npm packages), and scaffolds starter configs for `dependency-cruiser`, `knip`, `@firebase/rules-unit-testing`, `.bundle-budget.json`. Also merges Symphony agent-artefact patterns into the workspace `.gitignore` idempotently. Prints install instructions for `semgrep` (Python tool). `--audit-tracked` mode is a read-only scan of `git ls-files` for stray build/coverage/test-output files, OS junk, oversized binaries — prints `git rm --cached` commands for the operator to triage. Default mode is `--check` (no writes); operators opt in via `--install` / `--scaffold` / `--all`. | `scripts/install-verify-tools.sh` |
-| Self-review | Developer-side diff re-read against the five checklists immediately before push. | `prompts/SELF_REVIEW.md` |
-| Tester | Independent E2E verification against the Architect's Functional Test Matrix; element-scoped screenshots only; also re-checks VERIFY. | `prompts/TESTER.md` |
-| Accessibility audit | For frontend changes: independent WCAG 2.2 AA audit (contrast, keyboard navigation, semantic labels, skip-to-main-content, plain language, status messages) via axe-core + manual checks; barriers route back to the Developer. Skipped when the diff touches no frontend. | `prompts/ACCESSIBILITY.md` |
-| Code review | Independent senior-engineer review of the diff, with explicit gates on test coverage, VERIFY freshness, and `docs/AGENT_MEMORY.md` rule compliance. | `prompts/CODE_REVIEW.md` |
-| Delivery | One Linear comment + matching PR body. | `prompts/DELIVERY_COMMENT.md` |
-| Clear writing | Sentence- and word-level style applied to every prose artefact an agent produces — briefs, plans, ticket descriptions, comments, retros. | `prompts/CLEAR_WRITING.md` |
-| Resolve merge conflicts | Orchestrator-triggered (not a phase). For any open PR GitHub reports as conflicting: merge the base branch into the PR branch, resolve so both sides' intent survives (latest/better outcome wins on true contradictions), and push to the PR branch. Never merges the PR. | `prompts/RESOLVE_CONFLICTS.md` |
+| Retrospective | After a tracked ticket reaches a terminal state — appends one structured lesson line. | `prompts/RETROSPECTIVE.md` |
+| Resolve merge conflicts | Orchestrator-triggered for any open PR GitHub reports as conflicting (when `merge_conflicts.enabled`): merges the base branch into the PR branch, resolves so both sides' intent survives, and pushes to the PR branch. Never merges the PR. | `prompts/RESOLVE_CONFLICTS.md` |
+| Meta-improvement / meta-review | `npm run meta-improve` reads accumulated lessons and proposes narrow prompt edits on branches, each with an independent meta-review comment. | `prompts/META_IMPROVE.md`, `prompts/META_REVIEW.md` |
 
 ### Project memory — `docs/AGENT_MEMORY.md`
 
-A persistent, gitable knowledge base every relevant sub-agent reads before investigating the codebase. Records domain vocabulary, roles, architectural decisions, file and naming conventions, common pitfalls, and "things that look like bugs but aren't". The meta-improve pass can append to this file when a retrospective's root cause is "agent didn't know about <rule>" — so the next ticket starts with the rule already known.
+A persistent, gitable knowledge base the agent reads before investigating the codebase. Records domain vocabulary, roles, architectural decisions, file and naming conventions, common pitfalls, and "things that look like bugs but aren't". The meta-improve pass can append to this file when a retrospective's root cause is "agent didn't know about <rule>" — so the next ticket starts with the rule already known.
 
 Rules the meta-improve pass adds carry an invisible marker comment with a stable id and a `confidence` counter (e.g. `<!-- mem:firestore-loader-limit added=2026-05-01 sources=TEA-4181 confidence=2 -->`). Each retrospective scores the marked rules relevant to its ticket (`reinforced` / `violated` / `stale` via the `memory_feedback` field), and the meta-improve pass uses those tallies to **promote** proven rules, **strengthen** ones agents keep missing, and **retire** stale ones — so memory self-corrects instead of only growing. Markers carry no meaning for an agent acting on the rule; they exist only for this loop.
 
 ### Per-ticket lesson retrieval
 
-Before dispatching an agent, Symphony reads `lessons/lessons.jsonl`, ranks past lessons by keyword overlap with the ticket (deterministic token matching — no vector store; the corpus is small enough that it isn't worth one), and injects the most relevant *instructive* misses into the prompt as a **Relevant past lessons** block (`src/lessons.ts`). The parent passes that block to the Architect, so a mistake a related ticket already paid for is on the table at planning time — rather than waiting weeks for the batch meta-improve pass to fold it into a prompt. The agent treats each lesson as a warning to confirm, not a rule to obey blindly. Retrieval is best-effort: a missing or empty lessons file simply omits the block.
+Before dispatching an agent, Symphony reads `lessons/lessons.jsonl`, ranks past lessons by keyword overlap with the ticket (deterministic token matching — no vector store; the corpus is small enough that it isn't worth one), and injects the most relevant *instructive* misses into the agent's prompt as a **Relevant past lessons** block (`src/lessons.ts`), so a mistake a related ticket already paid for is on the table before the agent starts — rather than waiting weeks for the batch meta-improve pass to fold it into a prompt. The agent treats each lesson as a warning to confirm, not a rule to obey blindly. Retrieval is best-effort: a missing or empty lessons file simply omits the block.
 
 ## Automatic merge-conflict resolution
 
@@ -460,7 +459,7 @@ Resolutions run in the background (up to `merge_conflicts.max_concurrent` at onc
 
 ## Automatic Dependabot triage
 
-When `dependabot.enabled` is `true`, every orchestrator tick reads the configured repo's **open GitHub Dependabot alerts** (`gh api repos/<owner>/<repo>/dependabot/alerts?state=open`) and files a Linear ticket for the most severe *new* alert. It does **not** spawn its own fix agent — it hands the work to Symphony's existing pipeline by creating the ticket directly in an active state, so the normal poll loop dispatches the Intent → Architect → Developer → Tester → Reviewer flow that bumps the dependency, runs `pnpm install`, tests the affected code, fixes any breakage, and opens a PR.
+When `dependabot.enabled` is `true`, every orchestrator tick reads the configured repo's **open GitHub Dependabot alerts** (`gh api repos/<owner>/<repo>/dependabot/alerts?state=open`) and files a Linear ticket for the most severe *new* alert. It does **not** spawn its own fix agent — it hands the work to Symphony's existing pipeline by creating the ticket directly in an active state, so the normal poll loop dispatches an agent that bumps the dependency, runs `pnpm install`, tests the affected code, fixes any breakage, and opens a PR.
 
 **Only `dependabot.max_open_tickets` Dependabot tickets are ever open at once (default 1).** Each tick the watcher counts Dependabot-labelled tickets in a non-terminal state; once that cap is reached it files nothing, so the next alert isn't picked up until the current ticket reaches a terminal state (Done/Cancelled). This serializes dependency bumps instead of opening a PR per alert simultaneously. Eligible alerts are sorted worst-first, so the single open ticket always targets the highest-severity vulnerability.
 
