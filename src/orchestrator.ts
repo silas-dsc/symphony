@@ -82,6 +82,7 @@ export class Orchestrator {
       trackedIssues: new Map(),
       knownTerminalIssueIds: new Set(),
       claimed: new Set(),
+      pickedUpPrLinked: new Set(),
       retryAttempts: new Map(),
       pendingSlackNotifications: [],
       totalInputTokens: 0,
@@ -370,6 +371,7 @@ export class Orchestrator {
 
     await this.reconcileTrackedStates(activeIds);
     await this.reconcileTerminalIssues();
+    this.backfillPickedUpPrLinks();
 
     const sorted = this.sortForDispatch(candidates);
     for (const issue of sorted) {
@@ -395,7 +397,7 @@ export class Orchestrator {
     linear.hasPickedUpComment(this.config.tracker, issue.id)
       .then(hasComment => {
         if (!hasComment) {
-          return linear.addPickedUpComment(this.config.tracker, issue.id, issue.description ?? "");
+          return linear.addPickedUpComment(this.config.tracker, issue.id);
         }
       })
       .catch(e => {
@@ -404,6 +406,34 @@ export class Orchestrator {
           issue_identifier: issue.identifier,
         });
       });
+  }
+
+  /**
+   * Rule 1 (cont.): backfill the PR link onto each running ticket's picked-up
+   * comment once GitHub attaches the PR to the Linear issue. Runs async per tick;
+   * once linked, the issue is skipped. Best-effort — failures are logged, not fatal.
+   */
+  private backfillPickedUpPrLinks(): void {
+    // Bound the "done" set to currently-running issues so it can't grow forever.
+    for (const id of this.state.pickedUpPrLinked) {
+      if (!this.state.running.has(id)) this.state.pickedUpPrLinked.delete(id);
+    }
+
+    for (const entry of this.state.running.values()) {
+      const issue = entry.issue;
+      if (this.state.pickedUpPrLinked.has(issue.id)) continue;
+
+      linear.backfillPickedUpPrLink(this.config.tracker, issue.id)
+        .then(linked => {
+          if (linked) this.state.pickedUpPrLinked.add(issue.id);
+        })
+        .catch(e => {
+          this.log.warn(`Failed to backfill PR link on picked-up comment: ${fmtErr(e)}`, {
+            issue_id: issue.id,
+            issue_identifier: issue.identifier,
+          });
+        });
+    }
   }
 
   // ─── Dispatch ──────────────────────────────────────────────────────────────

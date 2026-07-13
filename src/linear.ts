@@ -536,26 +536,111 @@ export async function hasPickedUpComment(
   return false;
 }
 
-/** Add a "picked up" comment with the original description (rule 1). */
+// The picked-up comment body. Posted at dispatch (before any PR exists); the PR
+// link is backfilled by `backfillPickedUpPrLink` once GitHub attaches the PR to
+// the Linear issue. Kept short on purpose — it no longer duplicates the ticket
+// description (that reproduced the whole body for no reader benefit).
+const PICKED_UP_COMMENT_BODY = `${PICKED_UP_COMMENT_MARKER}\n🎼 Symphony picked this up and is working on it.`;
+
+// Matches a GitHub pull-request URL, e.g. https://github.com/team-dsc/team-dsc/pull/1244
+const GITHUB_PR_URL_RE = /https:\/\/github\.com\/[^\s)]+\/pull\/\d+/;
+
+/** Add a "picked up" comment when Symphony first dispatches a ticket (rule 1). */
 export async function addPickedUpComment(
   config: TrackerConfig,
   issueId: string,
-  description: string,
 ): Promise<void> {
-  const body = description.trim()
-    ? `${PICKED_UP_COMMENT_MARKER}\n${description}`
-    : `${PICKED_UP_COMMENT_MARKER}`;
-
   const data = await graphql<CommentCreatePayload>(
     config.endpoint,
     config.apiKey,
     COMMENT_CREATE_MUTATION,
-    { issueId, body },
+    { issueId, body: PICKED_UP_COMMENT_BODY },
   );
 
   if (!data.commentCreate?.success) {
     throw new LinearError("linear_unknown_payload", "Linear commentCreate did not report success for picked-up comment");
   }
+}
+
+const ISSUE_ATTACHMENTS_QUERY = `
+  query IssueAttachments($issueId: String!) {
+    issue(id: $issueId) {
+      attachments(first: 50) { nodes { url } }
+    }
+  }
+`;
+
+interface IssueAttachmentsPayload {
+  issue: {
+    attachments: { nodes: Array<{ url: string | null }> };
+  } | null;
+}
+
+/** Return the GitHub PR URL attached to the issue (via Linear's GitHub integration), or null. */
+export async function fetchIssuePrUrl(
+  config: TrackerConfig,
+  issueId: string,
+): Promise<string | null> {
+  const data = await graphql<IssueAttachmentsPayload>(
+    config.endpoint,
+    config.apiKey,
+    ISSUE_ATTACHMENTS_QUERY,
+    { issueId },
+  );
+  const nodes = data.issue?.attachments?.nodes ?? [];
+  for (const node of nodes) {
+    const match = node.url?.match(GITHUB_PR_URL_RE);
+    if (match) return match[0];
+  }
+  return null;
+}
+
+const COMMENT_UPDATE_MUTATION = `
+  mutation CommentUpdate($id: String!, $body: String!) {
+    commentUpdate(id: $id, input: { body: $body }) { success }
+  }
+`;
+
+interface CommentUpdatePayload {
+  commentUpdate: { success: boolean } | null;
+}
+
+export async function updateComment(
+  config: TrackerConfig,
+  commentId: string,
+  body: string,
+): Promise<void> {
+  const data = await graphql<CommentUpdatePayload>(
+    config.endpoint,
+    config.apiKey,
+    COMMENT_UPDATE_MUTATION,
+    { id: commentId, body },
+  );
+  if (!data.commentUpdate?.success) {
+    throw new LinearError("linear_unknown_payload", "Linear commentUpdate did not report success");
+  }
+}
+
+/**
+ * Backfill the PR link onto the picked-up comment once GitHub has attached the PR
+ * to the issue. Returns true when the comment carries the link (already present or
+ * just added), false when there is nothing to link yet (no PR attached, or no
+ * picked-up comment found) so the caller can retry on a later tick.
+ */
+export async function backfillPickedUpPrLink(
+  config: TrackerConfig,
+  issueId: string,
+): Promise<boolean> {
+  const comments = await fetchIssueCommentsDetail(config, issueId);
+  const pickedUp = comments.find(c => c.body.includes(PICKED_UP_COMMENT_MARKER));
+  if (!pickedUp) return false;
+  if (GITHUB_PR_URL_RE.test(pickedUp.body)) return true;
+
+  const prUrl = await fetchIssuePrUrl(config, issueId);
+  if (!prUrl) return false;
+
+  await updateComment(config, pickedUp.id, `${pickedUp.body}\n\nPR: ${prUrl}`);
+  return true;
 }
 
 /** Fetch the latest comment from a reassignment (rule 3). Returns null if no reassignment exists. */

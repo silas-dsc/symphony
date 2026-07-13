@@ -340,6 +340,8 @@ export interface OrchestratorState {
   trackedIssues: Map<string, TrackedIssueEntry>;
   knownTerminalIssueIds: Set<string>;
   claimed: Set<string>;
+  /** Issue ids whose picked-up comment already carries the backfilled PR link. */
+  pickedUpPrLinked: Set<string>;
   retryAttempts: Map<string, RetryEntry>;
   pendingSlackNotifications: PendingSlackNotification[];
   totalInputTokens: number;
