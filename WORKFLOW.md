@@ -255,6 +255,27 @@ posthog:
   # The report pull runs about once a day.
   run_interval_ms: 86400000
   request_timeout_ms: 30000
+firebase_logs:
+  enabled: true
+  # Scans Firebase (Cloud) function logs for error-severity entries via the
+  # `gcloud logging read` CLI (which must be authenticated with Logs Viewer
+  # access to the project). Groups them into distinct signatures, drops the
+  # transient/infra noise (deadline/timeout, UNAVAILABLE, rate limits, socket
+  # churn), and files a Linear ticket for each new *fixable* application error.
+  # project_id defaults to query_insights.project_id (team-dsc-au), then
+  # $GCLOUD_PROJECT / $FIREBASE_PROJECT_ID.
+  # team_key inherits from tracker.team_key (TEA); target_state defaults to the
+  # first active state (Dev in Progress) so filed tickets are picked up.
+  assignee_email: silas@teamdsc.com.au
+  # Scan ERROR+ over the last 24h; file up to 5 tickets per run, max 5 open at once.
+  min_severity: ERROR
+  lookback_hours: 24
+  min_occurrences: 1
+  max_open_tickets: 5
+  max_tickets_per_run: 5
+  # The log scan runs about every 6 hours.
+  run_interval_ms: 21600000
+  gcloud_timeout_ms: 60000
 ---
 
 You are an autonomous engineer working on a single Linear ticket for the **team-dsc** codebase — a TypeScript/React (Remix) web app with a Firebase/Firestore backend, managed as a pnpm monorepo.

@@ -258,6 +258,20 @@ You are an autonomous coding agent working on {{ issue.identifier }}: {{ issue.t
 | `dependabot.min_severity` | `low` | Only file tickets for alerts at or above this severity: `low`, `medium`, `high`, `critical` |
 | `dependabot.max_open_tickets` | `1` | Hard cap on how many Dependabot tickets may be open (in a non-terminal state) at once. The default keeps dependency bumps serialized — the next alert isn't filed until the current ticket is Done/Cancelled |
 | `dependabot.request_timeout_ms` | `30000` | Timeout for the `gh api` call that lists Dependabot alerts |
+| `firebase_logs.enabled` | `false` | When true, Symphony scans Firebase function logs for errors every `run_interval_ms` (via the `gcloud` CLI) and files a Linear ticket for each new *fixable* error signature, then lets the normal poll loop dispatch an agent to fix it |
+| `firebase_logs.project_id` | `query_insights.project_id`, then `$GCLOUD_PROJECT` / `$FIREBASE_PROJECT_ID` | GCP / Firebase project id whose function logs are scanned |
+| `firebase_logs.team_key` | `tracker.team_key` | Linear team key the tickets are created under |
+| `firebase_logs.target_state` | first `tracker.active_states` entry | Workflow state the ticket is created in — must be one of `tracker.active_states` so the agent picks it up |
+| `firebase_logs.assignee_email` | — | Email (or name) of the Linear user to assign each ticket to; empty leaves it unassigned |
+| `firebase_logs.label` | `firebase-logs` | Linear label applied to every ticket; also the dedupe key carrier so the same error isn't filed twice |
+| `firebase_logs.min_severity` | `ERROR` | Minimum Cloud Logging severity to pull: `WARNING`, `ERROR`, `CRITICAL`, `ALERT`, `EMERGENCY` |
+| `firebase_logs.lookback_hours` | `24` | How many hours of logs each scan spans |
+| `firebase_logs.min_occurrences` | `1` | Floor on occurrences — error signatures seen fewer times than this in the window are too quiet to ticket |
+| `firebase_logs.max_log_entries` | `1000` | Hard cap on how many log entries `gcloud logging read` returns per scan |
+| `firebase_logs.max_open_tickets` | `5` | Hard cap on how many firebase-logs tickets may be open (in a non-terminal state) at once |
+| `firebase_logs.max_tickets_per_run` | `5` | Max tickets filed in a single scan |
+| `firebase_logs.run_interval_ms` | `21600000` | How often the log scan runs (~6 hours). Internally gated, so it's a cheap no-op on every other tick |
+| `firebase_logs.gcloud_timeout_ms` | `60000` | Timeout for the `gcloud logging read` call |
 
 #### Prompt template variables
 
@@ -399,6 +413,7 @@ src/
   lessons-sync.ts   — commits + pushes lessons.jsonl after each retrospective (serialized, rebase-on-push)
   merge-conflict.ts — scans open PRs each tick; spawns a `claude` process to resolve conflicts on each conflicting PR
   dependabot.ts     — scans open Dependabot alerts each tick; files a Linear ticket per new alert for the normal poll loop to pick up
+  firebase-logs.ts  — scans Firebase function logs for errors (via `gcloud`); files a Linear ticket per new fixable error signature
   meta-improve.ts   — CLI that reads lessons.jsonl and proposes prompt edits on a branch
   linear.ts         — GraphQL client for Linear (issues, states, team URL)
   workspace.ts      — creates/removes per-ticket directories; runs hooks via bash -l
@@ -470,6 +485,19 @@ Each filed ticket:
 3. Hides a `<!-- symphony-dependabot:<owner>/<repo>#<alert-number> -->` marker in the description. Before filing anything, the watcher reads back every ticket carrying `dependabot.label` and skips alerts whose key is already present — so the same alert is never filed twice, even across orchestrator restarts. An in-process set covers the same-run fast path.
 
 Alerts below `dependabot.min_severity` are ignored. If the ticket read-back fails (Linear hiccup), the watcher files **nothing** that tick rather than risk duplicates or breaching the open cap, and retries next tick. Once the agent's PR merges, the alert flips to `fixed` on GitHub and stops being reported. Requires the `gh` CLI to be authenticated with access to the repo's Dependabot alerts (a token with `security_events` read, or `repo` scope), same as the other GitHub-backed features.
+
+## Automatic Firebase function-log triage
+
+When `firebase_logs.enabled` is `true`, Symphony periodically (default every ~6 hours) scans the project's **Firebase function logs** for error-severity entries and files a Linear ticket for each new *fixable* error — then, like the Dependabot and PostHog watchers, hands the work to the normal poll loop by creating the ticket directly in an active state (`Dev in Progress`), so an agent reproduces the error, fixes the root cause, adds a regression test, and opens a PR.
+
+Logs are read via the `gcloud logging read` CLI over both Cloud Functions generations — `resource.type="cloud_function"` (gen1) and `resource.type="cloud_run_revision"` (gen2) — at `severity>=firebase_logs.min_severity` over the last `firebase_logs.lookback_hours`. The raw entries are then:
+
+1. **Grouped into signatures.** The first line of each message is kept (the error type + message; the trailing stack varies) and volatile bits — numbers, UUIDs, hex, URLs, quoted strings — are blanked out, so the same bug from many invocations collapses to one signature, tallied by occurrence count and highest severity, per function.
+2. **Filtered to fixable errors.** Signatures that look like transient/infrastructure noise — `DEADLINE_EXCEEDED`, `UNAVAILABLE`, rate-limit/quota (`RESOURCE_EXHAUSTED`, 429/503/504), socket churn (`ECONNRESET`/`ETIMEDOUT`/`EPIPE`), gRPC `ABORTED`, and Cloud Functions execution timeouts — are dropped, because an agent editing the app can't fix them. Everything else (a `TypeError`, an unhandled rejection, a bad assertion, …) is treated as fixable. Signatures below `firebase_logs.min_occurrences` are ignored as too quiet.
+
+Each filed ticket is created in team `firebase_logs.team_key`, in state `firebase_logs.target_state` (which **must** be one of `tracker.active_states`, or config validation fails), assigned to `firebase_logs.assignee_email`, tagged with `firebase_logs.label`, and carries a deterministic description: function name, severity, occurrence count, first/last-seen timestamps, a sample log/stack, and an acceptance-criteria checklist. A hidden `<!-- symphony-firebase-logs:<hash> -->` marker (a hash of function + signature) dedupes against every **non-terminal** ticket carrying the label before anything is filed, so the same error is never double-filed across restarts — while a closed ticket can be re-filed if the function later regresses. The worst signatures (severity, then volume) are filed first, up to `firebase_logs.max_tickets_per_run` per run and `firebase_logs.max_open_tickets` open at once. If the scan or the ticket read-back fails, the watcher files nothing that run and retries on the next interval rather than risk duplicates.
+
+Requires the `gcloud` CLI to be authenticated with **Logs Viewer** access to the project (`gcloud auth login`, or a service account). Run `symphony-firebase-logs --dry-run` to print the grouped fixable errors without filing any tickets.
 
 ## Continuous self-improvement
 

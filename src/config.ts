@@ -101,6 +101,7 @@ function buildConfig(raw: Record<string, unknown>, baseDir: string): WorkflowCon
   const dependabot = ((raw.dependabot ?? {}) as Record<string, unknown>);
   const queryInsights = ((raw.query_insights ?? {}) as Record<string, unknown>);
   const posthog = ((raw.posthog ?? {}) as Record<string, unknown>);
+  const firebaseLogs = ((raw.firebase_logs ?? {}) as Record<string, unknown>);
 
   const apiKeyRaw = (tracker.api_key as string | undefined) ?? "$LINEAR_API_KEY";
   const apiKey = resolveEnvVar(apiKeyRaw);
@@ -279,11 +280,35 @@ function buildConfig(raw: Record<string, unknown>, baseDir: string): WorkflowCon
       runIntervalMs: (posthog.run_interval_ms as number | undefined) ?? 24 * 60 * 60 * 1000,
       requestTimeoutMs: (posthog.request_timeout_ms as number | undefined) ?? 30000,
     },
+    firebaseLogs: {
+      enabled: (firebaseLogs.enabled as boolean | undefined) ?? false,
+      // Default to the query_insights GCP project (same Firebase project), then the
+      // usual gcloud/Firebase env vars, so a single project id only needs declaring once.
+      projectId: (firebaseLogs.project_id as string | undefined)
+        || (queryInsights.project_id as string | undefined)
+        || resolveEnvVar("$GCLOUD_PROJECT").trim()
+        || resolveEnvVar("$FIREBASE_PROJECT_ID").trim(),
+      teamKey: (firebaseLogs.team_key as string | undefined) ?? trackerTeamKey ?? "",
+      // Default to the first active state (Dev in Progress) so filed tickets are dispatched by the poll loop.
+      targetState: (firebaseLogs.target_state as string | undefined) ?? activeStates[0] ?? "",
+      assigneeEmail: (firebaseLogs.assignee_email as string | undefined) ?? "",
+      label: (firebaseLogs.label as string | undefined) ?? "firebase-logs",
+      minSeverity: ((firebaseLogs.min_severity as string | undefined) ?? "ERROR").toUpperCase(),
+      lookbackHours: (firebaseLogs.lookback_hours as number | undefined) ?? 24,
+      minOccurrences: (firebaseLogs.min_occurrences as number | undefined) ?? 1,
+      maxLogEntries: (firebaseLogs.max_log_entries as number | undefined) ?? 1000,
+      maxOpenTickets: (firebaseLogs.max_open_tickets as number | undefined) ?? 5,
+      maxTicketsPerRun: (firebaseLogs.max_tickets_per_run as number | undefined) ?? 5,
+      runIntervalMs: (firebaseLogs.run_interval_ms as number | undefined) ?? 6 * 60 * 60 * 1000,
+      gcloudTimeoutMs: (firebaseLogs.gcloud_timeout_ms as number | undefined) ?? 60000,
+    },
   };
 }
 
 const VALID_SEVERITIES = new Set(["low", "medium", "moderate", "high", "critical"]);
 const VALID_POSTHOG_STATUSES = new Set(["active", "resolved", "suppressed", "all"]);
+// Cloud Logging severities worth scanning for actionable errors (DEFAULT/DEBUG/INFO/NOTICE are noise).
+const VALID_LOG_SEVERITIES = new Set(["WARNING", "ERROR", "CRITICAL", "ALERT", "EMERGENCY"]);
 
 export function validateConfig(config: WorkflowConfig): string | null {
   if (!config.tracker.kind) return "tracker.kind is required";
@@ -369,6 +394,24 @@ export function validateConfig(config: WorkflowConfig): string | null {
     if (!Number.isInteger(p.maxTicketsPerRun) || p.maxTicketsPerRun <= 0) return "posthog.max_tickets_per_run must be a positive integer";
     if (p.runIntervalMs <= 0) return "posthog.run_interval_ms must be > 0";
     if (p.requestTimeoutMs <= 0) return "posthog.request_timeout_ms must be > 0";
+  }
+  if (config.firebaseLogs.enabled) {
+    const f = config.firebaseLogs;
+    if (!f.projectId) return "firebase_logs.project_id is required when firebase_logs.enabled is true (set firebase_logs.project_id, query_insights.project_id, $GCLOUD_PROJECT, or $FIREBASE_PROJECT_ID)";
+    if (!f.teamKey) return "firebase_logs.team_key is required when firebase_logs.enabled is true (or set tracker.team_key)";
+    if (!f.targetState) return "firebase_logs.target_state is required when firebase_logs.enabled is true";
+    const activeLower = config.tracker.activeStates.map(s => s.toLowerCase());
+    if (!activeLower.includes(f.targetState.toLowerCase())) {
+      return `firebase_logs.target_state (${f.targetState}) must be one of tracker.active_states, otherwise the created ticket will never be dispatched`;
+    }
+    if (!VALID_LOG_SEVERITIES.has(f.minSeverity)) return "firebase_logs.min_severity must be one of: WARNING, ERROR, CRITICAL, ALERT, EMERGENCY";
+    if (!Number.isInteger(f.lookbackHours) || f.lookbackHours <= 0) return "firebase_logs.lookback_hours must be a positive integer";
+    if (!Number.isInteger(f.minOccurrences) || f.minOccurrences < 0) return "firebase_logs.min_occurrences must be a non-negative integer";
+    if (!Number.isInteger(f.maxLogEntries) || f.maxLogEntries <= 0) return "firebase_logs.max_log_entries must be a positive integer";
+    if (!Number.isInteger(f.maxOpenTickets) || f.maxOpenTickets <= 0) return "firebase_logs.max_open_tickets must be a positive integer";
+    if (!Number.isInteger(f.maxTicketsPerRun) || f.maxTicketsPerRun <= 0) return "firebase_logs.max_tickets_per_run must be a positive integer";
+    if (f.runIntervalMs <= 0) return "firebase_logs.run_interval_ms must be > 0";
+    if (f.gcloudTimeoutMs <= 0) return "firebase_logs.gcloud_timeout_ms must be > 0";
   }
   if (!config.workspace.root) return "workspace.root could not be resolved";
   if (config.agent.maxTurns <= 0) return "agent.max_turns must be > 0";

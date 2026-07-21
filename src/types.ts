@@ -49,6 +49,38 @@ export interface WorkflowConfig {
   dependabot: DependabotConfig;
   queryInsights: QueryInsightsConfig;
   posthog: PostHogConfig;
+  firebaseLogs: FirebaseLogsConfig;
+}
+
+export interface FirebaseLogsConfig {
+  /** When true, Symphony scans Firebase (Cloud) function logs ~hourly and files a Linear ticket for each new fixable error signature. */
+  enabled: boolean;
+  /** GCP / Firebase project id whose function logs are scanned (defaults to query_insights.project_id, then $GCLOUD_PROJECT / $FIREBASE_PROJECT_ID). */
+  projectId: string;
+  /** Linear team key the tickets are created under (defaults to tracker.team_key). */
+  teamKey: string;
+  /** Workflow state name the ticket is created in — must be one of tracker.active_states so the agent picks it up (i.e. "Dev in Progress"). */
+  targetState: string;
+  /** Email (or name) of the Linear user to assign the ticket to. Empty = unassigned. */
+  assigneeEmail: string;
+  /** Linear label applied to every ticket; also used to dedupe so the same error signature isn't filed twice. */
+  label: string;
+  /** Minimum Cloud Logging severity to pull: WARNING | ERROR | CRITICAL | ALERT | EMERGENCY. */
+  minSeverity: string;
+  /** How many hours back the log scan spans. */
+  lookbackHours: number;
+  /** Floor on occurrences — error signatures seen fewer times than this are too quiet to ticket. */
+  minOccurrences: number;
+  /** Hard cap on how many log entries to pull from gcloud in a single scan. */
+  maxLogEntries: number;
+  /** Hard cap on how many firebase-logs tickets may be open (non-terminal) at once. */
+  maxOpenTickets: number;
+  /** Max tickets to file in a single run. */
+  maxTicketsPerRun: number;
+  /** How often the log scan runs, in ms. Defaults to ~6 hours. */
+  runIntervalMs: number;
+  /** Timeout for the `gcloud logging read` call, in ms. */
+  gcloudTimeoutMs: number;
 }
 
 export interface PostHogConfig {
