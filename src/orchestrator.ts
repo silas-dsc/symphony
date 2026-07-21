@@ -18,6 +18,7 @@ import { MergeConflictResolver } from "./merge-conflict.js";
 import { DependabotWatcher } from "./dependabot.js";
 import { QueryInsightsWatcher } from "./query-insights.js";
 import { PostHogWatcher } from "./posthog.js";
+import { FirebaseLogsWatcher } from "./firebase-logs.js";
 import * as linear from "./linear.js";
 import { isCompletionState, sendBatchedSlackNotification } from "./notifications.js";
 import { getWorkspacePath, removeWorkspace } from "./workspace.js";
@@ -57,6 +58,7 @@ export class Orchestrator {
   private dependabotWatcher: DependabotWatcher | null = null;
   private queryInsightsWatcher: QueryInsightsWatcher | null = null;
   private posthogWatcher: PostHogWatcher | null = null;
+  private firebaseLogsWatcher: FirebaseLogsWatcher | null = null;
   private log: Logger;
 
   constructor(workflowPath: string, logger: Logger) {
@@ -74,6 +76,7 @@ export class Orchestrator {
     this.dependabotWatcher = this.createDependabotWatcher();
     this.queryInsightsWatcher = this.createQueryInsightsWatcher();
     this.posthogWatcher = this.createPostHogWatcher();
+    this.firebaseLogsWatcher = this.createFirebaseLogsWatcher();
 
     this.state = {
       pollIntervalMs: this.config.polling.intervalMs,
@@ -297,6 +300,7 @@ export class Orchestrator {
     this.dependabotWatcher = this.createDependabotWatcher();
     this.queryInsightsWatcher = this.createQueryInsightsWatcher();
     this.posthogWatcher = this.createPostHogWatcher();
+    this.firebaseLogsWatcher = this.createFirebaseLogsWatcher();
     this.state.pollIntervalMs = this.config.polling.intervalMs;
     this.state.maxConcurrentAgents = this.config.agent.maxConcurrentAgents;
     this.log.info("WORKFLOW.md reloaded");
@@ -335,6 +339,11 @@ export class Orchestrator {
     if (this.posthogWatcher) {
       // Internally gated to run ~daily; cheap no-op on every other tick.
       await this.posthogWatcher.reconcile();
+    }
+
+    if (this.firebaseLogsWatcher) {
+      // Internally gated to run every few hours; cheap no-op on every other tick.
+      await this.firebaseLogsWatcher.reconcile();
     }
 
     const validationError = validateConfig(this.config);
@@ -1077,6 +1086,15 @@ export class Orchestrator {
     if (!this.config.posthog.enabled) return null;
     return new PostHogWatcher({
       config: this.config.posthog,
+      tracker: this.config.tracker,
+      logger: this.log,
+    });
+  }
+
+  private createFirebaseLogsWatcher(): FirebaseLogsWatcher | null {
+    if (!this.config.firebaseLogs.enabled) return null;
+    return new FirebaseLogsWatcher({
+      config: this.config.firebaseLogs,
       tracker: this.config.tracker,
       logger: this.log,
     });

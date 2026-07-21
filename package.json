@@ -10,6 +10,7 @@
     "symphony": "./dist/index.js",
     "symphony-status": "./dist/status.js",
     "symphony-posthog": "./dist/posthog-report.js",
+    "symphony-firebase-logs": "./dist/firebase-logs-report.js",
     "symphony-meta-improve": "./dist/meta-improve.js",
     "symphony-supervisor": "./bin/symphony-supervisor.sh"
   },
@@ -21,6 +22,7 @@
     "start:watch": "./bin/symphony-supervisor.sh",
     "status": "node dist/status.js",
     "posthog": "node dist/posthog-report.js",
+    "firebase-logs": "node dist/firebase-logs-report.js",
     "meta-improve": "node dist/meta-improve.js",
     "test": "vitest run",
     "test:watch": "vitest"
