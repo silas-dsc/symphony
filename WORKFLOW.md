@@ -29,7 +29,9 @@ keep_alive:
   request_timeout_ms: 30000
 notifications:
   slack:
-    webhook_url: $SLACK_COMPLETION_WEBHOOK_URL
+    bot_token: $SLACK_BOT_TOKEN
+    # #dsc-website-notifs (posted via chat.postMessage; the bot must be a member)
+    channel: C0BL3E3JENA
     user_map:
       erin@teamdsc.com.au: U0ARLN893PW
       augustopini@gmail.com: U0APSQ0J23G

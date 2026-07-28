@@ -5,18 +5,18 @@ import { afterEach, describe, expect, it } from "vitest";
 import { loadWorkflow } from "../config.js";
 
 describe("loadWorkflow notifications", () => {
-  const originalWebhook = process.env.TEST_SLACK_WEBHOOK_URL;
+  const originalToken = process.env.TEST_SLACK_BOT_TOKEN;
 
   afterEach(() => {
-    if (originalWebhook === undefined) {
-      delete process.env.TEST_SLACK_WEBHOOK_URL;
+    if (originalToken === undefined) {
+      delete process.env.TEST_SLACK_BOT_TOKEN;
     } else {
-      process.env.TEST_SLACK_WEBHOOK_URL = originalWebhook;
+      process.env.TEST_SLACK_BOT_TOKEN = originalToken;
     }
   });
 
-  it("resolves Slack webhook env vars and user maps", () => {
-    process.env.TEST_SLACK_WEBHOOK_URL = "https://hooks.slack.test/services/ABC";
+  it("resolves Slack bot token env vars and user maps", () => {
+    process.env.TEST_SLACK_BOT_TOKEN = "xoxb-test-token";
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "symphony-config-"));
     const workflowPath = path.join(tmpDir, "WORKFLOW.md");
 
@@ -27,7 +27,8 @@ tracker:
   project_slug: demo
 notifications:
   slack:
-    webhook_url: $TEST_SLACK_WEBHOOK_URL
+    bot_token: $TEST_SLACK_BOT_TOKEN
+    channel: C0TESTCHAN
     user_map:
       alice@example.com: U123
       Bob Example: U456
@@ -38,7 +39,8 @@ Prompt body`, "utf8");
     const workflow = loadWorkflow(workflowPath);
 
     expect(workflow.config.notifications.slack).toEqual({
-      webhookUrl: "https://hooks.slack.test/services/ABC",
+      botToken: "xoxb-test-token",
+      channel: "C0TESTCHAN",
       userMap: {
         "alice@example.com": "U123",
         "Bob Example": "U456",

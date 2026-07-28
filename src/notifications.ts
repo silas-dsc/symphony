@@ -129,35 +129,79 @@ export function buildBatchedSlackPayload(
   };
 }
 
+const SLACK_API_URL = "https://slack.com/api/chat.postMessage";
+const SLACK_REQUEST_TIMEOUT_MS = 15_000;
+const SLACK_MAX_ATTEMPTS = 3;
+
+function sleep(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+/**
+ * POST one chat.postMessage call. Throws on transport failure, non-2xx, or a
+ * Slack logical error (`ok:false`) so the retry loop / caller can react. Note
+ * Slack returns HTTP 200 with `{ok:false, error}` for most logical errors, so
+ * the body must be inspected rather than trusting the status code alone.
+ */
+async function postToSlack(botToken: string, body: string): Promise<void> {
+  let response: Response;
+  try {
+    response = await fetch(SLACK_API_URL, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json; charset=utf-8",
+        Authorization: `Bearer ${botToken}`,
+      },
+      body,
+      signal: AbortSignal.timeout(SLACK_REQUEST_TIMEOUT_MS),
+    });
+  } catch (error) {
+    throw new Error(`Slack request failed: ${error instanceof Error ? error.message : String(error)}`);
+  }
+
+  if (!response.ok) {
+    const errBody = await response.text().catch(() => "");
+    throw new Error(`Slack API returned HTTP ${response.status}: ${errBody.slice(0, 200)}`);
+  }
+
+  const data = (await response.json().catch(() => null)) as { ok?: boolean; error?: string } | null;
+  if (!data || data.ok !== true) {
+    throw new Error(`Slack API error: ${data?.error ?? "unknown"}`);
+  }
+}
+
 export async function sendBatchedSlackNotification(
   items: PendingSlackNotification[],
   slack: SlackNotificationsConfig,
   logger: Logger,
 ): Promise<void> {
   const payload = buildBatchedSlackPayload(items, slack);
+  const body = JSON.stringify({ channel: slack.channel, ...payload });
 
   logger.info("Sending batched Slack notification", {
     count: items.length,
+    channel: slack.channel,
     identifiers: items.map(i => i.issue.identifier).join(", "),
     preview: payload.text.slice(0, 200),
   });
 
-  let response: Response;
-  try {
-    response = await fetch(slack.webhookUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-      signal: AbortSignal.timeout(10_000),
-    });
-  } catch (error) {
-    throw new Error(`Slack webhook request failed: ${error instanceof Error ? error.message : String(error)}`);
+  // Retry transient failures (timeouts, network blips, 5xx, ratelimited) with
+  // backoff. The final failure propagates so the caller can re-queue the batch.
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= SLACK_MAX_ATTEMPTS; attempt++) {
+    try {
+      await postToSlack(slack.botToken, body);
+      logger.info("Batched Slack completion notification sent", { count: items.length, attempt });
+      return;
+    } catch (error) {
+      lastError = error;
+      if (attempt < SLACK_MAX_ATTEMPTS) {
+        const backoffMs = 1_000 * 2 ** (attempt - 1);
+        logger.warn(`Slack send attempt ${attempt}/${SLACK_MAX_ATTEMPTS} failed, retrying in ${backoffMs}ms: ${error instanceof Error ? error.message : String(error)}`);
+        await sleep(backoffMs);
+      }
+    }
   }
 
-  if (!response.ok) {
-    const body = await response.text().catch(() => "");
-    throw new Error(`Slack webhook returned HTTP ${response.status}: ${body.slice(0, 200)}`);
-  }
-
-  logger.info("Batched Slack completion notification sent", { count: items.length });
+  throw new Error(`Slack send failed after ${SLACK_MAX_ATTEMPTS} attempts: ${lastError instanceof Error ? lastError.message : String(lastError)}`);
 }

@@ -46,11 +46,11 @@ describe("Orchestrator Slack completion notifications", () => {
 
   afterEach(() => {
     globalThis.fetch = originalFetch;
-    delete process.env.TEST_SLACK_WEBHOOK_URL;
+    delete process.env.TEST_SLACK_BOT_TOKEN;
   });
 
   it("posts a batched Slack message when a ticket appears directly in a terminal state", async () => {
-    process.env.TEST_SLACK_WEBHOOK_URL = "https://hooks.slack.test/services/COMPLETE";
+    process.env.TEST_SLACK_BOT_TOKEN = "xoxb-test-token";
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "symphony-orchestrator-"));
     const workflowPath = path.join(tmpDir, "WORKFLOW.md");
     fs.writeFileSync(workflowPath, `---
@@ -62,7 +62,8 @@ workspace:
   root: ${tmpDir}
 notifications:
   slack:
-    webhook_url: $TEST_SLACK_WEBHOOK_URL
+    bot_token: $TEST_SLACK_BOT_TOKEN
+    channel: C0TESTCHAN
     user_map:
       owner@example.com: UOWNER
       Reporter Example: UREPORTER
@@ -92,7 +93,7 @@ Prompt body`, "utf8");
     ]);
     vi.mocked(linear.fetchIssuesByIds).mockResolvedValue([issue]);
 
-    const fetchMock = vi.fn().mockResolvedValue(new Response("ok", { status: 200 }));
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "content-type": "application/json" } }));
     globalThis.fetch = fetchMock as typeof fetch;
 
     const orchestrator = new Orchestrator(workflowPath, makeLogger());
@@ -110,7 +111,7 @@ Prompt body`, "utf8");
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe("https://hooks.slack.test/services/COMPLETE");
+    expect(url).toBe("https://slack.com/api/chat.postMessage");
 
     const payload = JSON.parse(String(init.body)) as { text: string; blocks: Array<Record<string, unknown>> };
     expect(payload.text).toContain("DONE:");
@@ -136,7 +137,7 @@ Prompt body`, "utf8");
   });
 
   it("posts a batched Slack message when a tracked issue moves to a completion state", async () => {
-    process.env.TEST_SLACK_WEBHOOK_URL = "https://hooks.slack.test/services/COMPLETE";
+    process.env.TEST_SLACK_BOT_TOKEN = "xoxb-test-token";
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "symphony-orchestrator-"));
     const workflowPath = path.join(tmpDir, "WORKFLOW.md");
     fs.writeFileSync(workflowPath, `---
@@ -148,7 +149,8 @@ workspace:
   root: ${tmpDir}
 notifications:
   slack:
-    webhook_url: $TEST_SLACK_WEBHOOK_URL
+    bot_token: $TEST_SLACK_BOT_TOKEN
+    channel: C0TESTCHAN
     user_map:
       owner@example.com: UOWNER
       Reporter Example: UREPORTER
@@ -177,7 +179,7 @@ Prompt body`, "utf8");
       { id: issue.id, identifier: issue.identifier, state: "Done" },
     ]);
 
-    const fetchMock = vi.fn().mockResolvedValue(new Response("ok", { status: 200 }));
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "content-type": "application/json" } }));
     globalThis.fetch = fetchMock as typeof fetch;
 
     const orchestrator = new Orchestrator(workflowPath, makeLogger());
@@ -200,7 +202,7 @@ Prompt body`, "utf8");
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe("https://hooks.slack.test/services/COMPLETE");
+    expect(url).toBe("https://slack.com/api/chat.postMessage");
 
     const payload = JSON.parse(String(init.body)) as { text: string; blocks: Array<Record<string, unknown>> };
     expect(payload.text).toContain("DONE:");
@@ -227,7 +229,7 @@ Prompt body`, "utf8");
   });
 
   it("skips Slack when the Linear completion comment already exists", async () => {
-    process.env.TEST_SLACK_WEBHOOK_URL = "https://hooks.slack.test/services/COMPLETE";
+    process.env.TEST_SLACK_BOT_TOKEN = "xoxb-test-token";
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "symphony-orchestrator-"));
     const workflowPath = path.join(tmpDir, "WORKFLOW.md");
     fs.writeFileSync(workflowPath, `---
@@ -239,7 +241,8 @@ workspace:
   root: ${tmpDir}
 notifications:
   slack:
-    webhook_url: $TEST_SLACK_WEBHOOK_URL
+    bot_token: $TEST_SLACK_BOT_TOKEN
+    channel: C0TESTCHAN
     user_map:
       owner@example.com: UOWNER
 ---
@@ -264,7 +267,7 @@ Prompt body`, "utf8");
     };
 
     vi.mocked(linear.hasSlackNotificationComment).mockResolvedValue(true);
-    const fetchMock = vi.fn().mockResolvedValue(new Response("ok", { status: 200 }));
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "content-type": "application/json" } }));
     globalThis.fetch = fetchMock as typeof fetch;
 
     const orchestrator = new Orchestrator(workflowPath, makeLogger());
@@ -299,7 +302,7 @@ Prompt body`, "utf8");
   });
 
   it("still sends Slack for a terminal ticket after startup cleanup on restart", async () => {
-    process.env.TEST_SLACK_WEBHOOK_URL = "https://hooks.slack.test/services/COMPLETE";
+    process.env.TEST_SLACK_BOT_TOKEN = "xoxb-test-token";
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "symphony-orchestrator-"));
     const workflowPath = path.join(tmpDir, "WORKFLOW.md");
     fs.writeFileSync(workflowPath, `---
@@ -311,7 +314,8 @@ workspace:
   root: ${tmpDir}
 notifications:
   slack:
-    webhook_url: $TEST_SLACK_WEBHOOK_URL
+    bot_token: $TEST_SLACK_BOT_TOKEN
+    channel: C0TESTCHAN
     user_map:
       owner@example.com: UOWNER
       Reporter Example: UREPORTER
@@ -341,7 +345,7 @@ Prompt body`, "utf8");
     ]);
     vi.mocked(linear.fetchIssuesByIds).mockResolvedValue([issue]);
 
-    const fetchMock = vi.fn().mockResolvedValue(new Response("ok", { status: 200 }));
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "content-type": "application/json" } }));
     globalThis.fetch = fetchMock as typeof fetch;
 
     const orchestrator = new Orchestrator(workflowPath, makeLogger());
@@ -373,7 +377,7 @@ Prompt body`, "utf8");
   });
 
   it("batches multiple completed tickets into one Slack message", async () => {
-    process.env.TEST_SLACK_WEBHOOK_URL = "https://hooks.slack.test/services/COMPLETE";
+    process.env.TEST_SLACK_BOT_TOKEN = "xoxb-test-token";
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "symphony-orchestrator-"));
     const workflowPath = path.join(tmpDir, "WORKFLOW.md");
     fs.writeFileSync(workflowPath, `---
@@ -385,7 +389,8 @@ workspace:
   root: ${tmpDir}
 notifications:
   slack:
-    webhook_url: $TEST_SLACK_WEBHOOK_URL
+    bot_token: $TEST_SLACK_BOT_TOKEN
+    channel: C0TESTCHAN
     user_map:
       a@example.com: UA
       b@example.com: UB
@@ -413,7 +418,7 @@ Prompt body`, "utf8");
     const issueA = makeIssue("id-a", "ABC-200", "https://linear.app/example/issue/ABC-200", "a@example.com");
     const issueB = makeIssue("id-b", "ABC-201", "https://linear.app/example/issue/ABC-201", "b@example.com");
 
-    const fetchMock = vi.fn().mockResolvedValue(new Response("ok", { status: 200 }));
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "content-type": "application/json" } }));
     globalThis.fetch = fetchMock as typeof fetch;
 
     const orchestrator = new Orchestrator(workflowPath, makeLogger());
@@ -460,7 +465,7 @@ Prompt body`, "utf8");
   });
 
   it("drops tickets with updatedAt older than 24h from the batch", async () => {
-    process.env.TEST_SLACK_WEBHOOK_URL = "https://hooks.slack.test/services/COMPLETE";
+    process.env.TEST_SLACK_BOT_TOKEN = "xoxb-test-token";
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "symphony-orchestrator-"));
     const workflowPath = path.join(tmpDir, "WORKFLOW.md");
     fs.writeFileSync(workflowPath, `---
@@ -472,7 +477,8 @@ workspace:
   root: ${tmpDir}
 notifications:
   slack:
-    webhook_url: $TEST_SLACK_WEBHOOK_URL
+    bot_token: $TEST_SLACK_BOT_TOKEN
+    channel: C0TESTCHAN
     user_map: {}
 ---
 
@@ -495,7 +501,7 @@ Prompt body`, "utf8");
       updatedAt: new Date(Date.now() - 2 * 24 * 60 * 60 * 1000), // 2 days ago
     };
 
-    const fetchMock = vi.fn().mockResolvedValue(new Response("ok", { status: 200 }));
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200, headers: { "content-type": "application/json" } }));
     globalThis.fetch = fetchMock as typeof fetch;
 
     const orchestrator = new Orchestrator(workflowPath, makeLogger());

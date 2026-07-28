@@ -39,3 +39,6 @@ Desktop.ini
 
 # Meta-improve transient windowed lesson files
 .meta-improve-window-*.jsonl
+
+# Symphony runtime state (persisted pending Slack notification queue)
+.symphony-slack-queue.json

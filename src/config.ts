@@ -126,9 +126,11 @@ function buildConfig(raw: Record<string, unknown>, baseDir: string): WorkflowCon
     }
   }
 
-  const slackWebhookUrlRaw = slack.webhook_url as string | undefined;
-  const hasSlackConfig = typeof slackWebhookUrlRaw === "string";
-  const slackWebhookUrl = slackWebhookUrlRaw ? resolveEnvVar(slackWebhookUrlRaw).trim() : "";
+  const slackBotTokenRaw = slack.bot_token as string | undefined;
+  const slackChannelRaw = slack.channel as string | undefined;
+  const hasSlackConfig = typeof slackBotTokenRaw === "string" && typeof slackChannelRaw === "string";
+  const slackBotToken = slackBotTokenRaw ? resolveEnvVar(slackBotTokenRaw).trim() : "";
+  const slackChannel = slackChannelRaw ? resolveEnvVar(slackChannelRaw).trim() : "";
 
   const activeStates = (tracker.active_states as string[] | undefined) ?? ["Todo", "In Progress"];
   const trackerTeamKey = tracker.team_key as string | undefined;
@@ -185,7 +187,8 @@ function buildConfig(raw: Record<string, unknown>, baseDir: string): WorkflowCon
     notifications: {
       slack: hasSlackConfig
         ? {
-          webhookUrl: slackWebhookUrl,
+          botToken: slackBotToken,
+          channel: slackChannel,
           userMap: slackUserMap,
         }
         : null,
@@ -416,8 +419,8 @@ export function validateConfig(config: WorkflowConfig): string | null {
   if (!config.workspace.root) return "workspace.root could not be resolved";
   if (config.agent.maxTurns <= 0) return "agent.max_turns must be > 0";
   if (config.agent.stallTimeoutMs <= 0) return "agent.stall_timeout_ms must be > 0";
-  if (config.notifications.slack && !config.notifications.slack.webhookUrl) {
-    return "notifications.slack.webhook_url is required when Slack notifications are configured";
+  if (config.notifications.slack && (!config.notifications.slack.botToken || !config.notifications.slack.channel)) {
+    return "notifications.slack.bot_token and notifications.slack.channel are required when Slack notifications are configured";
   }
   return null;
 }

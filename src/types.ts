@@ -217,7 +217,10 @@ export interface NotificationsConfig {
 }
 
 export interface SlackNotificationsConfig {
-  webhookUrl: string;
+  /** Slack bot token (xoxb-…) used to authenticate chat.postMessage. */
+  botToken: string;
+  /** Target channel ID (preferred) or name the bot posts completion updates to. */
+  channel: string;
   userMap: Record<string, string>;
 }
 

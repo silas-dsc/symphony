@@ -11,6 +11,7 @@ import type {
   RateLimitSnapshot,
   RunningSnapshot,
   RetrySnapshot,
+  PendingSlackNotification,
 } from "./types.js";
 import { loadWorkflow, validateConfig } from "./config.js";
 import { GitHubPreviewWarmer, StaticUrlWarmer } from "./github-preview.js";
@@ -96,6 +97,10 @@ export class Orchestrator {
       startedAt: new Date(),
       teamUrl: null,
     };
+
+    // Restore any Slack notifications that were queued but never delivered
+    // before the last shutdown/restart, so they aren't silently lost.
+    this.loadPersistedPendingSlack();
   }
 
   async start(): Promise<void> {
@@ -158,6 +163,13 @@ export class Orchestrator {
   async shutdown(timeoutMs: number = SHUTDOWN_GRACE_MS): Promise<void> {
     const pending = Array.from(this.state.running.values()).map(e => e.done);
     this.stop();
+
+    // Drain any queued Slack notifications before exiting so a restart (e.g.
+    // the self-updater) doesn't lose them. flushSlackBatch handles its own
+    // errors and re-queues + persists on failure, so this won't throw; pass
+    // reschedule:false since we're shutting the timers down.
+    await this.flushSlackBatch({ reschedule: false });
+
     if (pending.length === 0) return;
 
     let timer: ReturnType<typeof setTimeout> | null = null;
@@ -746,6 +758,7 @@ export class Orchestrator {
           });
         } else {
           this.state.pendingSlackNotifications.push({ issueId, issue, state, completionSummary });
+          this.persistPendingSlack();
           this.log.info("Queued Slack completion notification", {
             issue_id: issueId,
             issue_identifier: issue.identifier,
@@ -838,12 +851,13 @@ export class Orchestrator {
     this.slackBatchTimer = setTimeout(() => void this.flushSlackBatch(), 15 * 60 * 1000);
   }
 
-  private async flushSlackBatch(): Promise<void> {
+  private async flushSlackBatch(opts: { reschedule?: boolean } = {}): Promise<void> {
+    const reschedule = opts.reschedule ?? true;
     this.slackBatchTimer = null;
 
     const slack = this.config.notifications.slack;
     if (!slack) {
-      this.scheduleSlackBatch();
+      if (reschedule) this.scheduleSlackBatch();
       return;
     }
 
@@ -870,11 +884,64 @@ export class Orchestrator {
           );
         }
       } catch (e) {
-        this.log.warn(`Batched Slack notification failed: ${fmtErr(e)}`);
+        // Re-queue the failed batch (in front of anything queued during the
+        // send) so the next flush retries instead of silently dropping it.
+        // The 24h filter above still expires anything genuinely stale.
+        this.state.pendingSlackNotifications.unshift(...items);
+        this.log.warn(`Batched Slack notification failed, re-queued ${items.length} for retry: ${fmtErr(e)}`);
       }
     }
 
-    this.scheduleSlackBatch();
+    // Persist whatever remains queued (empty on success, the failed batch on
+    // failure) so a restart before the next flush doesn't lose it.
+    this.persistPendingSlack();
+
+    if (reschedule) this.scheduleSlackBatch();
+  }
+
+  private slackQueuePath(): string {
+    return path.join(this.symphonyRoot, ".symphony-slack-queue.json");
+  }
+
+  /** Persist the pending Slack queue to disk (best-effort). */
+  private persistPendingSlack(): void {
+    try {
+      fs.writeFileSync(
+        this.slackQueuePath(),
+        JSON.stringify(this.state.pendingSlackNotifications),
+        "utf-8",
+      );
+    } catch (e) {
+      this.log.warn(`Failed to persist Slack queue: ${fmtErr(e)}`);
+    }
+  }
+
+  /** Reload a persisted Slack queue on startup, reviving serialized Date fields. */
+  private loadPersistedPendingSlack(): void {
+    let raw: string;
+    try {
+      raw = fs.readFileSync(this.slackQueuePath(), "utf-8");
+    } catch {
+      return; // No queue file yet — nothing to restore.
+    }
+    try {
+      const parsed = JSON.parse(raw) as PendingSlackNotification[];
+      for (const n of parsed) {
+        const updatedAt = (n.issue as { updatedAt?: unknown }).updatedAt;
+        if (typeof updatedAt === "string") {
+          (n.issue as { updatedAt?: Date }).updatedAt = new Date(updatedAt);
+        }
+      }
+      this.state.pendingSlackNotifications = parsed;
+      if (parsed.length > 0) {
+        this.log.info("Restored pending Slack notifications from disk", {
+          count: parsed.length,
+          identifiers: parsed.map(n => n.issue.identifier).join(", "),
+        });
+      }
+    } catch (e) {
+      this.log.warn(`Failed to parse persisted Slack queue, ignoring: ${fmtErr(e)}`);
+    }
   }
 
   // ─── Retry queue ───────────────────────────────────────────────────────────
