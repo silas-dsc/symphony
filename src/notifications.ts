@@ -170,6 +170,38 @@ async function postToSlack(botToken: string, body: string): Promise<void> {
   }
 }
 
+/**
+ * POST a pre-serialised chat.postMessage body, retrying transient failures
+ * (timeouts, network blips, 5xx, ratelimited) with exponential backoff. The
+ * final failure propagates so the caller can react. `label` names the message
+ * kind in the retry log. Shared by the completion notifier and other Slack
+ * senders (e.g. the ux-insights weekly report) so the retry hardening lives in
+ * one place.
+ */
+export async function postToSlackWithRetry(
+  botToken: string,
+  body: string,
+  logger: Logger,
+  label = "Slack message",
+): Promise<void> {
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= SLACK_MAX_ATTEMPTS; attempt++) {
+    try {
+      await postToSlack(botToken, body);
+      return;
+    } catch (error) {
+      lastError = error;
+      if (attempt < SLACK_MAX_ATTEMPTS) {
+        const backoffMs = 1_000 * 2 ** (attempt - 1);
+        logger.warn(`${label} send attempt ${attempt}/${SLACK_MAX_ATTEMPTS} failed, retrying in ${backoffMs}ms: ${error instanceof Error ? error.message : String(error)}`);
+        await sleep(backoffMs);
+      }
+    }
+  }
+
+  throw new Error(`Slack send failed after ${SLACK_MAX_ATTEMPTS} attempts: ${lastError instanceof Error ? lastError.message : String(lastError)}`);
+}
+
 export async function sendBatchedSlackNotification(
   items: PendingSlackNotification[],
   slack: SlackNotificationsConfig,
@@ -185,23 +217,6 @@ export async function sendBatchedSlackNotification(
     preview: payload.text.slice(0, 200),
   });
 
-  // Retry transient failures (timeouts, network blips, 5xx, ratelimited) with
-  // backoff. The final failure propagates so the caller can re-queue the batch.
-  let lastError: unknown;
-  for (let attempt = 1; attempt <= SLACK_MAX_ATTEMPTS; attempt++) {
-    try {
-      await postToSlack(slack.botToken, body);
-      logger.info("Batched Slack completion notification sent", { count: items.length, attempt });
-      return;
-    } catch (error) {
-      lastError = error;
-      if (attempt < SLACK_MAX_ATTEMPTS) {
-        const backoffMs = 1_000 * 2 ** (attempt - 1);
-        logger.warn(`Slack send attempt ${attempt}/${SLACK_MAX_ATTEMPTS} failed, retrying in ${backoffMs}ms: ${error instanceof Error ? error.message : String(error)}`);
-        await sleep(backoffMs);
-      }
-    }
-  }
-
-  throw new Error(`Slack send failed after ${SLACK_MAX_ATTEMPTS} attempts: ${lastError instanceof Error ? lastError.message : String(lastError)}`);
+  await postToSlackWithRetry(slack.botToken, body, logger, "Batched Slack completion");
+  logger.info("Batched Slack completion notification sent", { count: items.length });
 }
