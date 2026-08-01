@@ -257,6 +257,42 @@ posthog:
   # The report pull runs about once a day.
   run_interval_ms: 86400000
   request_timeout_ms: 30000
+ux_insights:
+  # UX / product-research agent (TEA-4562). Unlike the posthog error watcher, this
+  # mines *behavioural* data — on-site searches, content→conversion referrers,
+  # drop-off (page-leave) pages, and rage/dead-click confusion signals — asks Claude
+  # to synthesise actionable insights, posts the weekly write-up to Slack, and files
+  # a Linear ticket for the high-confidence actionable ones (closing the loop).
+  #
+  # Start disabled: run `pnpm ux-insights --dry-run` against live data first to tune
+  # the query pack (event/property names below depend on the app's tracking) and eyeball
+  # the report before letting it post to Slack and file tickets.
+  enabled: false
+  # host / project_id / api_key share the posthog watcher's $POSTHOG_* env defaults.
+  # slack_channel / slack_bot_token default to notifications.slack.* below.
+  # team_key inherits from tracker.team_key (TEA); target_state defaults to the
+  # first active state (Dev in Progress) so filed tickets are picked up.
+  assignee_email: silas@teamdsc.com.au
+  # Analyse the last 7 days.
+  lookback_days: 7
+  # Event/property names the query pack keys off — tune these to the app's tracking.
+  search_event_name: search
+  search_query_property: query
+  conversion_events:
+    - signed_up
+    - subscribed
+    - purchased
+  # Cap rows per lens fed to the synthesiser (bounds token cost).
+  max_signals_per_category: 20
+  # Only high-confidence actionable insights are auto-filed; the Slack report shows all.
+  min_confidence_to_ticket: high
+  max_open_tickets: 3
+  max_tickets_per_run: 3
+  # The pull + synthesis runs about once a week.
+  run_interval_ms: 604800000
+  request_timeout_ms: 30000
+  synthesis_max_turns: 20
+  synthesis_timeout_ms: 600000
 firebase_logs:
   enabled: true
   # Scans Firebase (Cloud) function logs for error-severity entries via the

@@ -49,7 +49,55 @@ export interface WorkflowConfig {
   dependabot: DependabotConfig;
   queryInsights: QueryInsightsConfig;
   posthog: PostHogConfig;
+  uxInsights: UxInsightsConfig;
   firebaseLogs: FirebaseLogsConfig;
+}
+
+export interface UxInsightsConfig {
+  /** When true, Symphony pulls PostHog behavioural data ~weekly, synthesises UX/product insights, posts them to Slack, and files a Linear ticket for the high-confidence actionable ones. */
+  enabled: boolean;
+  /** PostHog host, e.g. "https://us.posthog.com" (defaults to $POSTHOG_HOST, then us.posthog.com). Shared with the posthog error watcher. */
+  host: string;
+  /** Numeric PostHog project id (defaults to $POSTHOG_PROJECT_ID). */
+  projectId: string;
+  /** PostHog personal API key (phx_…) used as a Bearer token (defaults to $POSTHOG_PERSONAL_API_KEY). */
+  apiKey: string;
+  /** Slack channel id (or name) the weekly report is posted to (defaults to notifications.slack.channel). */
+  slackChannel: string;
+  /** Slack bot token (xoxb-…) used to post the report (defaults to notifications.slack.bot_token / $SLACK_BOT_TOKEN). */
+  slackBotToken: string;
+  /** Linear team key auto-filed tickets are created under (defaults to tracker.team_key). */
+  teamKey: string;
+  /** Workflow state auto-filed tickets are created in — must be one of tracker.active_states so the agent picks it up. */
+  targetState: string;
+  /** Email (or name) of the Linear user to assign auto-filed tickets to. Empty = unassigned. */
+  assigneeEmail: string;
+  /** Linear label applied to every auto-filed ticket; also used to dedupe so the same insight isn't filed twice. */
+  label: string;
+  /** How many days of behavioural data each weekly pull spans. */
+  lookbackDays: number;
+  /** PostHog event name that records an on-site search (its query captured on the `search` property). */
+  searchEventName: string;
+  /** PostHog event property on the search event holding the query string. */
+  searchQueryProperty: string;
+  /** Event names that count as a conversion (course / tool / membership signup). Paths leading to these are analysed. */
+  conversionEvents: string[];
+  /** Per-category cap on how many rows are pulled from PostHog and fed to the synthesiser, to bound token cost. */
+  maxSignalsPerCategory: number;
+  /** Only insights at or above this confidence get auto-filed as tickets: "low" | "medium" | "high". Report always includes all. */
+  minConfidenceToTicket: string;
+  /** Hard cap on how many ux-insights tickets may be open (non-terminal) at once. */
+  maxOpenTickets: number;
+  /** Max tickets to file in a single weekly run. */
+  maxTicketsPerRun: number;
+  /** How often the pull + synthesis runs, in ms. Defaults to ~7 days. */
+  runIntervalMs: number;
+  /** Timeout for each PostHog query API call, in ms. */
+  requestTimeoutMs: number;
+  /** Max turns the synthesis Claude session is allowed before aborting. */
+  synthesisMaxTurns: number;
+  /** Hard timeout for the synthesis Claude session, in ms. */
+  synthesisTimeoutMs: number;
 }
 
 export interface FirebaseLogsConfig {

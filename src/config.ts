@@ -101,6 +101,7 @@ function buildConfig(raw: Record<string, unknown>, baseDir: string): WorkflowCon
   const dependabot = ((raw.dependabot ?? {}) as Record<string, unknown>);
   const queryInsights = ((raw.query_insights ?? {}) as Record<string, unknown>);
   const posthog = ((raw.posthog ?? {}) as Record<string, unknown>);
+  const uxInsights = ((raw.ux_insights ?? {}) as Record<string, unknown>);
   const firebaseLogs = ((raw.firebase_logs ?? {}) as Record<string, unknown>);
 
   const apiKeyRaw = (tracker.api_key as string | undefined) ?? "$LINEAR_API_KEY";
@@ -283,6 +284,37 @@ function buildConfig(raw: Record<string, unknown>, baseDir: string): WorkflowCon
       runIntervalMs: (posthog.run_interval_ms as number | undefined) ?? 24 * 60 * 60 * 1000,
       requestTimeoutMs: (posthog.request_timeout_ms as number | undefined) ?? 30000,
     },
+    uxInsights: {
+      enabled: (uxInsights.enabled as boolean | undefined) ?? false,
+      // Host/project/key share the posthog error watcher's env-backed defaults so
+      // no secret is written into the committed WORKFLOW.md.
+      host: resolveEnvVar((uxInsights.host as string | undefined) ?? "$POSTHOG_HOST").trim()
+        || "https://us.posthog.com",
+      projectId: resolveEnvVar((uxInsights.project_id as string | undefined) ?? "$POSTHOG_PROJECT_ID").trim(),
+      apiKey: resolveEnvVar((uxInsights.api_key as string | undefined) ?? "$POSTHOG_PERSONAL_API_KEY").trim(),
+      // Slack delivery reuses the notifications.slack credentials by default.
+      slackChannel: resolveEnvVar((uxInsights.slack_channel as string | undefined) ?? "").trim() || slackChannel,
+      slackBotToken: resolveEnvVar((uxInsights.slack_bot_token as string | undefined) ?? "").trim() || slackBotToken,
+      teamKey: (uxInsights.team_key as string | undefined) ?? trackerTeamKey ?? "",
+      // Default to the first active state so auto-filed tickets are dispatchable by the poll loop.
+      targetState: (uxInsights.target_state as string | undefined) ?? activeStates[0] ?? "",
+      assigneeEmail: (uxInsights.assignee_email as string | undefined) ?? "",
+      label: (uxInsights.label as string | undefined) ?? "ux-insights",
+      lookbackDays: (uxInsights.lookback_days as number | undefined) ?? 7,
+      searchEventName: (uxInsights.search_event_name as string | undefined) ?? "search",
+      searchQueryProperty: (uxInsights.search_query_property as string | undefined) ?? "query",
+      conversionEvents: (uxInsights.conversion_events as string[] | undefined) ?? [
+        "signed_up", "subscribed", "purchased",
+      ],
+      maxSignalsPerCategory: (uxInsights.max_signals_per_category as number | undefined) ?? 20,
+      minConfidenceToTicket: ((uxInsights.min_confidence_to_ticket as string | undefined) ?? "high").toLowerCase(),
+      maxOpenTickets: (uxInsights.max_open_tickets as number | undefined) ?? 3,
+      maxTicketsPerRun: (uxInsights.max_tickets_per_run as number | undefined) ?? 3,
+      runIntervalMs: (uxInsights.run_interval_ms as number | undefined) ?? 7 * 24 * 60 * 60 * 1000,
+      requestTimeoutMs: (uxInsights.request_timeout_ms as number | undefined) ?? 30000,
+      synthesisMaxTurns: (uxInsights.synthesis_max_turns as number | undefined) ?? 20,
+      synthesisTimeoutMs: (uxInsights.synthesis_timeout_ms as number | undefined) ?? 600000,
+    },
     firebaseLogs: {
       enabled: (firebaseLogs.enabled as boolean | undefined) ?? false,
       // Default to the query_insights GCP project (same Firebase project), then the
@@ -310,6 +342,7 @@ function buildConfig(raw: Record<string, unknown>, baseDir: string): WorkflowCon
 
 const VALID_SEVERITIES = new Set(["low", "medium", "moderate", "high", "critical"]);
 const VALID_POSTHOG_STATUSES = new Set(["active", "resolved", "suppressed", "all"]);
+const VALID_CONFIDENCES = new Set(["low", "medium", "high"]);
 // Cloud Logging severities worth scanning for actionable errors (DEFAULT/DEBUG/INFO/NOTICE are noise).
 const VALID_LOG_SEVERITIES = new Set(["WARNING", "ERROR", "CRITICAL", "ALERT", "EMERGENCY"]);
 
@@ -397,6 +430,27 @@ export function validateConfig(config: WorkflowConfig): string | null {
     if (!Number.isInteger(p.maxTicketsPerRun) || p.maxTicketsPerRun <= 0) return "posthog.max_tickets_per_run must be a positive integer";
     if (p.runIntervalMs <= 0) return "posthog.run_interval_ms must be > 0";
     if (p.requestTimeoutMs <= 0) return "posthog.request_timeout_ms must be > 0";
+  }
+  if (config.uxInsights.enabled) {
+    const u = config.uxInsights;
+    if (!u.host) return "ux_insights.host is required when ux_insights.enabled is true (set $POSTHOG_HOST or ux_insights.host)";
+    if (!u.projectId) return "ux_insights.project_id is required when ux_insights.enabled is true (set $POSTHOG_PROJECT_ID or ux_insights.project_id)";
+    if (!u.apiKey) return "ux_insights.api_key is required when ux_insights.enabled is true (set $POSTHOG_PERSONAL_API_KEY or ux_insights.api_key)";
+    if (!u.teamKey) return "ux_insights.team_key is required when ux_insights.enabled is true (or set tracker.team_key)";
+    if (!u.targetState) return "ux_insights.target_state is required when ux_insights.enabled is true";
+    const activeLower = config.tracker.activeStates.map(s => s.toLowerCase());
+    if (!activeLower.includes(u.targetState.toLowerCase())) {
+      return `ux_insights.target_state (${u.targetState}) must be one of tracker.active_states, otherwise the created ticket will never be dispatched`;
+    }
+    if (!VALID_CONFIDENCES.has(u.minConfidenceToTicket)) return "ux_insights.min_confidence_to_ticket must be one of: low, medium, high";
+    if (!Number.isInteger(u.lookbackDays) || u.lookbackDays <= 0) return "ux_insights.lookback_days must be a positive integer";
+    if (!Number.isInteger(u.maxSignalsPerCategory) || u.maxSignalsPerCategory <= 0) return "ux_insights.max_signals_per_category must be a positive integer";
+    if (!Number.isInteger(u.maxOpenTickets) || u.maxOpenTickets <= 0) return "ux_insights.max_open_tickets must be a positive integer";
+    if (!Number.isInteger(u.maxTicketsPerRun) || u.maxTicketsPerRun <= 0) return "ux_insights.max_tickets_per_run must be a positive integer";
+    if (u.runIntervalMs <= 0) return "ux_insights.run_interval_ms must be > 0";
+    if (u.requestTimeoutMs <= 0) return "ux_insights.request_timeout_ms must be > 0";
+    if (u.synthesisMaxTurns <= 0) return "ux_insights.synthesis_max_turns must be > 0";
+    if (u.synthesisTimeoutMs <= 0) return "ux_insights.synthesis_timeout_ms must be > 0";
   }
   if (config.firebaseLogs.enabled) {
     const f = config.firebaseLogs;
