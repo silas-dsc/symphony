@@ -267,7 +267,7 @@ ux_insights:
   # Start disabled: run `pnpm ux-insights --dry-run` against live data first to tune
   # the query pack (event/property names below depend on the app's tracking) and eyeball
   # the report before letting it post to Slack and file tickets.
-  enabled: false
+  enabled: true
   # host / project_id / api_key share the posthog watcher's $POSTHOG_* env defaults.
   # slack_channel / slack_bot_token default to notifications.slack.* below.
   # team_key inherits from tracker.team_key (TEA); target_state defaults to the
