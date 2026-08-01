@@ -84,6 +84,25 @@ function resolvePath(value: string, baseDir: string): string {
   return v;
 }
 
+/**
+ * Resolve the ux_insights Slack target channels. Merges a `slack_channels` list
+ * with a single `slack_channel` (back-compat), resolves $ENV refs, trims, dedupes,
+ * and falls back to the shared notifications channel when neither is configured.
+ */
+function resolveUxSlackChannels(uxInsights: Record<string, unknown>, fallbackChannel: string): string[] {
+  const raw: unknown[] = [
+    ...(Array.isArray(uxInsights.slack_channels) ? uxInsights.slack_channels : []),
+    ...(uxInsights.slack_channel !== undefined ? [uxInsights.slack_channel] : []),
+  ];
+  const resolved = raw
+    .filter((c): c is string => typeof c === "string")
+    .map(c => resolveEnvVar(c).trim())
+    .filter(Boolean);
+  const deduped = [...new Set(resolved)];
+  if (deduped.length > 0) return deduped;
+  return fallbackChannel ? [fallbackChannel] : [];
+}
+
 function buildConfig(raw: Record<string, unknown>, baseDir: string): WorkflowConfig {
   const tracker = ((raw.tracker ?? {}) as Record<string, unknown>);
   const polling = ((raw.polling ?? {}) as Record<string, unknown>);
@@ -293,7 +312,9 @@ function buildConfig(raw: Record<string, unknown>, baseDir: string): WorkflowCon
       projectId: resolveEnvVar((uxInsights.project_id as string | undefined) ?? "$POSTHOG_PROJECT_ID").trim(),
       apiKey: resolveEnvVar((uxInsights.api_key as string | undefined) ?? "$POSTHOG_PERSONAL_API_KEY").trim(),
       // Slack delivery reuses the notifications.slack credentials by default.
-      slackChannel: resolveEnvVar((uxInsights.slack_channel as string | undefined) ?? "").trim() || slackChannel,
+      // Accepts a `slack_channels` list and/or a single `slack_channel` (back-compat);
+      // they're merged + deduped, falling back to the notifications channel when neither is set.
+      slackChannels: resolveUxSlackChannels(uxInsights, slackChannel),
       slackBotToken: resolveEnvVar((uxInsights.slack_bot_token as string | undefined) ?? "").trim() || slackBotToken,
       teamKey: (uxInsights.team_key as string | undefined) ?? trackerTeamKey ?? "",
       // Default to the first active state so auto-filed tickets are dispatchable by the poll loop.

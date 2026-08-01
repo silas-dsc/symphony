@@ -62,8 +62,8 @@ export interface UxInsightsConfig {
   projectId: string;
   /** PostHog personal API key (phx_…) used as a Bearer token (defaults to $POSTHOG_PERSONAL_API_KEY). */
   apiKey: string;
-  /** Slack channel id (or name) the weekly report is posted to (defaults to notifications.slack.channel). */
-  slackChannel: string;
+  /** Slack channel ids (or names) the weekly report is posted to (defaults to [notifications.slack.channel]). */
+  slackChannels: string[];
   /** Slack bot token (xoxb-…) used to post the report (defaults to notifications.slack.bot_token / $SLACK_BOT_TOKEN). */
   slackBotToken: string;
   /** Linear team key auto-filed tickets are created under (defaults to tracker.team_key). */

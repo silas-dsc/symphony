@@ -59,7 +59,7 @@ function makeConfig(overrides?: Partial<UxInsightsConfig>): UxInsightsConfig {
     host: "https://us.posthog.com",
     projectId: "49303",
     apiKey: "phx_test",
-    slackChannel: "C123",
+    slackChannels: ["C123"],
     slackBotToken: "xoxb-test",
     teamKey: "TEA",
     targetState: "Dev in Progress",
@@ -221,7 +221,8 @@ prompt body`);
     expect(u.projectId).toBe("777");
     expect(u.apiKey).toBe("phx_envkey");
     expect(u.slackBotToken).toBe("xoxb-abc");
-    expect(u.slackChannel).toBe("C999");
+    // No ux_insights channel set → falls back to the notifications channel.
+    expect(u.slackChannels).toEqual(["C999"]);
     expect(u.teamKey).toBe("TEA");
     expect(u.targetState).toBe("Dev in Progress");
     expect(u.label).toBe("ux-insights");
@@ -245,11 +246,55 @@ ux_insights:
 prompt body`);
     const { config } = loadWorkflow(workflowPath);
     expect(config.uxInsights.host).toBe("https://us.posthog.com");
-    expect(config.uxInsights.slackChannel).toBe("C-explicit");
+    expect(config.uxInsights.slackChannels).toEqual(["C-explicit"]);
     expect(config.uxInsights.slackBotToken).toBe("xoxb-explicit");
     expect(config.uxInsights.lookbackDays).toBe(14);
     expect(config.uxInsights.minConfidenceToTicket).toBe("medium");
     expect(config.uxInsights.conversionEvents).toEqual(["bought"]);
+  });
+
+  it("merges slack_channels + slack_channel, dedupes, and drops non-strings", () => {
+    const workflowPath = writeWorkflow(`---
+${BASE_TRACKER}
+notifications:
+  slack:
+    bot_token: xoxb-abc
+    channel: C-fallback
+ux_insights:
+  slack_channels:
+    - C-ux
+    - C-notifs
+    - C-ux
+    - 12345
+  slack_channel: C-single
+---
+
+prompt body`);
+    // Order preserved, duplicates removed, the numeric entry dropped, single appended.
+    expect(loadWorkflow(workflowPath).config.uxInsights.slackChannels)
+      .toEqual(["C-ux", "C-notifs", "C-single"]);
+  });
+
+  it("falls back to the notifications channel when no ux_insights channel is set", () => {
+    const workflowPath = writeWorkflow(`---
+${BASE_TRACKER}
+notifications:
+  slack:
+    bot_token: xoxb-abc
+    channel: C-fallback
+---
+
+prompt body`);
+    expect(loadWorkflow(workflowPath).config.uxInsights.slackChannels).toEqual(["C-fallback"]);
+  });
+
+  it("yields no channels when neither ux_insights nor notifications configure one", () => {
+    const workflowPath = writeWorkflow(`---
+${BASE_TRACKER}
+---
+
+prompt body`);
+    expect(loadWorkflow(workflowPath).config.uxInsights.slackChannels).toEqual([]);
   });
 
   it("rejects an enabled config missing the project id", () => {
@@ -868,41 +913,65 @@ describe("HttpHogQlClient", () => {
 describe("HttpUxSlackReporter", () => {
   afterEach(() => { vi.restoreAllMocks(); vi.useRealTimers(); });
 
-  it("skips the post when Slack is not configured", async () => {
+  it("skips the post when the bot token is missing", async () => {
     const spy = vi.spyOn(globalThis, "fetch");
     await new HttpUxSlackReporter(makeLogger()).post(makeReport(), makeConfig({ slackBotToken: "" }));
     expect(spy).not.toHaveBeenCalled();
   });
 
-  it("posts to chat.postMessage on the configured channel", async () => {
-    const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse({ ok: true }));
-    await new HttpUxSlackReporter(makeLogger()).post(makeReport(), makeConfig());
-    const [url, init] = spy.mock.calls[0];
-    expect(url).toBe("https://slack.com/api/chat.postMessage");
-    expect(JSON.parse((init as RequestInit).body as string).channel).toBe("C123");
+  it("skips the post when no channels are configured", async () => {
+    const spy = vi.spyOn(globalThis, "fetch");
+    await new HttpUxSlackReporter(makeLogger()).post(makeReport(), makeConfig({ slackChannels: [] }));
+    expect(spy).not.toHaveBeenCalled();
   });
 
-  // The shared sender retries transient failures with backoff, so failures reject only
-  // after SLACK_MAX_ATTEMPTS; fake timers flush the backoff sleeps without real delay.
-  async function expectPostRejects(fetchImpl: Response, re: RegExp): Promise<void> {
+  it("posts to every configured channel", async () => {
+    const spy = vi.spyOn(globalThis, "fetch").mockResolvedValue(jsonResponse({ ok: true }));
+    await new HttpUxSlackReporter(makeLogger()).post(makeReport(), makeConfig({ slackChannels: ["C-ux", "C-notifs"] }));
+    const channels = spy.mock.calls.map(([url, init]) => {
+      expect(url).toBe("https://slack.com/api/chat.postMessage");
+      return JSON.parse((init as RequestInit).body as string).channel;
+    });
+    expect(channels).toEqual(["C-ux", "C-notifs"]);
+  });
+
+  it("still resolves when one of several channels fails", async () => {
     vi.useFakeTimers();
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_url, init) => {
+      const channel = JSON.parse((init as RequestInit).body as string).channel;
+      return channel === "C-bad" ? jsonResponse({ ok: false, error: "not_in_channel" }) : jsonResponse({ ok: true });
+    });
+    const p = new HttpUxSlackReporter(makeLogger())
+      .post(makeReport(), makeConfig({ slackChannels: ["C-bad", "C-good"] }));
+    await vi.advanceTimersByTimeAsync(5000); // flush the failed channel's retry backoff
+    await expect(p).resolves.toBeUndefined();
+  });
+
+  // A single-channel config means "all channels failed", so post() throws a generic
+  // aggregate error while logging the specific reason. The shared sender retries with
+  // backoff, so fake timers flush the sleeps without real delay.
+  async function expectAllChannelsFail(fetchImpl: Response, reasonRe: RegExp): Promise<void> {
+    vi.useFakeTimers();
+    const warns: string[] = [];
+    const logger: Logger = { info: () => undefined, warn: m => { warns.push(m); }, error: () => undefined };
     vi.spyOn(globalThis, "fetch").mockResolvedValue(fetchImpl);
-    const p = new HttpUxSlackReporter(makeLogger()).post(makeReport(), makeConfig());
-    const assertion = expect(p).rejects.toThrow(re);
+    const p = new HttpUxSlackReporter(logger).post(makeReport(), makeConfig());
+    const assertion = expect(p).rejects.toThrow(/failed for all 1 channel/);
     await vi.advanceTimersByTimeAsync(5000);
     await assertion;
+    expect(warns.some(w => reasonRe.test(w))).toBe(true);
   }
 
-  it("rejects (after retries) on a non-2xx response", async () => {
-    await expectPostRejects(jsonResponse("nope", false, 500), /HTTP 500/);
+  it("throws and logs the reason on a non-2xx response", async () => {
+    await expectAllChannelsFail(jsonResponse("nope", false, 500), /HTTP 500/);
   });
 
-  it("rejects (after retries) when Slack replies ok:false", async () => {
-    await expectPostRejects(jsonResponse({ ok: false, error: "channel_not_found" }), /channel_not_found/);
+  it("throws and logs the reason when Slack replies ok:false", async () => {
+    await expectAllChannelsFail(jsonResponse({ ok: false, error: "channel_not_found" }), /channel_not_found/);
   });
 
-  it("reports 'unknown' when Slack replies ok:false with no error", async () => {
-    await expectPostRejects(jsonResponse({ ok: false }), /unknown/);
+  it("logs 'unknown' when Slack replies ok:false with no error", async () => {
+    await expectAllChannelsFail(jsonResponse({ ok: false }), /unknown/);
   });
 });
 

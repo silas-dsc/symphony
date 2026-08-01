@@ -733,13 +733,28 @@ export class HttpUxSlackReporter implements UxSlackReporter {
   constructor(private readonly log: Logger) {}
 
   async post(report: UxReport, config: UxInsightsConfig): Promise<void> {
-    if (!config.slackBotToken || !config.slackChannel) {
-      this.log.warn("UX insights: Slack not configured (bot token / channel missing); skipping report post");
+    if (!config.slackBotToken || config.slackChannels.length === 0) {
+      this.log.warn("UX insights: Slack not configured (bot token / channels missing); skipping report post");
       return;
     }
     const payload = buildSlackReport(report, config.minConfidenceToTicket);
-    const body = JSON.stringify({ channel: config.slackChannel, ...payload });
-    await postToSlackWithRetry(config.slackBotToken, body, this.log, "UX insights report");
+
+    // Post to every configured channel. One channel failing (e.g. the bot isn't a
+    // member) must not stop the others, so failures are collected; we only throw if
+    // every channel failed, so the watcher's non-fatal catch logs a real outage.
+    const failures: string[] = [];
+    for (const channel of config.slackChannels) {
+      const body = JSON.stringify({ channel, ...payload });
+      try {
+        await postToSlackWithRetry(config.slackBotToken, body, this.log, `UX insights report (${channel})`);
+      } catch (e) {
+        failures.push(channel);
+        this.log.warn(`UX insights: failed to post report to ${channel}: ${fmtErr(e)}`);
+      }
+    }
+    if (failures.length === config.slackChannels.length) {
+      throw new Error(`UX insights: report post failed for all ${failures.length} channel(s): ${failures.join(", ")}`);
+    }
   }
 }
 
