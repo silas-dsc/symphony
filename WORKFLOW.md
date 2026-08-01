@@ -273,6 +273,9 @@ ux_insights:
   # team_key inherits from tracker.team_key (TEA); target_state defaults to the
   # first active state (Dev in Progress) so filed tickets are picked up.
   assignee_email: silas@teamdsc.com.au
+  # Post the weekly report to #ux (its own channel, not the shared completion feed).
+  # The Symphony Slack bot must be a member of this channel or the post is skipped.
+  slack_channel: C0BF62QNPST
   # Analyse the last 7 days.
   lookback_days: 7
   # Event/property names the query pack keys off — tune these to the app's tracking.
