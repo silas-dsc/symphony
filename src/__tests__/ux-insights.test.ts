@@ -539,6 +539,13 @@ describe("buildSynthesisPrompt", () => {
     expect(prompt).toContain('"search-gap"');
     expect(prompt).toContain("medium+ confidence");
   });
+
+  it("instructs plain, succinct English for a non-technical reader", () => {
+    const prompt = buildSynthesisPrompt(makeDataset(), makeConfig());
+    expect(prompt).toContain("non-technical marketing graduate");
+    expect(prompt).toContain("Plain, everyday English");
+    expect(prompt).toContain("as short as possible");
+  });
 });
 
 describe("extractJsonBlock", () => {
