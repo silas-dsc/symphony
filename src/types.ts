@@ -92,6 +92,8 @@ export interface UxInsightsConfig {
   maxTicketsPerRun: number;
   /** How often the pull + synthesis runs, in ms. Defaults to ~7 days. */
   runIntervalMs: number;
+  /** Day of week (local time) the report is allowed to run on: 0=Sunday … 6=Saturday. Defaults to 1 (Monday), so the report goes out at most once a week on Mondays even across restarts. */
+  reportDayOfWeek: number;
   /** Timeout for each PostHog query API call, in ms. */
   requestTimeoutMs: number;
   /** Max turns the synthesis Claude session is allowed before aborting. */

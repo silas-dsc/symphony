@@ -368,6 +368,12 @@ export function buildSynthesisPrompt(dataset: UxDataset, cfg: UxInsightsConfig):
     "4. Where do users look confused — repeated clicking, backtracking, refreshing?",
     "Also raise any other actionable insight that could lift conversion or improve the product.",
     "",
+    "WHO READS THIS: a non-technical marketing graduate. Write for them:",
+    "- Plain, everyday English. No jargon, no analytics/engineering terms. Spell out or avoid acronyms.",
+    "- Say what happened and why it matters in words a newcomer to the business would understand.",
+    "- Be as short as possible while keeping the meaning. Each point is one crisp bullet, not a paragraph.",
+    "- Prefer concrete numbers over vague words (\"142 people searched for X\", not \"many users\").",
+    "",
     `Data (last ${cfg.lookbackDays} days), grouped by lens:`,
     "```json",
     JSON.stringify(grouped, null, 2),
@@ -377,14 +383,14 @@ export function buildSynthesisPrompt(dataset: UxDataset, cfg: UxInsightsConfig):
     "```json",
     JSON.stringify(
       {
-        summary: "2-4 sentence narrative answering the questions above",
+        summary: "1-3 short, plain-English sentences a non-technical marketer would instantly get",
         insights: [
           {
             category: "search-gap | conversion | drop-off | confusion | opportunity",
-            title: "short, specific",
-            detail: "the why + the evidence from the data",
+            title: "one short, plain-English headline",
+            detail: "one crisp bullet: what's happening + the number that shows it, in plain English",
             confidence: "low | medium | high",
-            recommendation: "a concrete change, or null",
+            recommendation: "one short, plain-English action, or null",
             ticketable: true,
           },
         ],
@@ -483,6 +489,11 @@ export class UxInsightsWatcher {
   async reconcile(): Promise<void> {
     if (!this.cfg.enabled) return;
     if (this.cycleInFlight) return;
+    // Day-of-week gate (local time): only run on the configured day (default Monday).
+    // The nextRunAt interval below resets to 0 on every process restart, so without
+    // this anchor a service that restarts more than once a week would re-post the
+    // report on each restart. Anchoring to a weekday keeps it to once a week.
+    if (new Date(this.now()).getDay() !== this.cfg.reportDayOfWeek) return;
     if (this.now() < this.nextRunAt) return; // weekly gate
 
     this.cycleInFlight = true;

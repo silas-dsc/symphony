@@ -311,6 +311,7 @@ function buildConfig(raw: Record<string, unknown>, baseDir: string): WorkflowCon
       maxOpenTickets: (uxInsights.max_open_tickets as number | undefined) ?? 3,
       maxTicketsPerRun: (uxInsights.max_tickets_per_run as number | undefined) ?? 3,
       runIntervalMs: (uxInsights.run_interval_ms as number | undefined) ?? 7 * 24 * 60 * 60 * 1000,
+      reportDayOfWeek: (uxInsights.report_day_of_week as number | undefined) ?? 1,
       requestTimeoutMs: (uxInsights.request_timeout_ms as number | undefined) ?? 30000,
       synthesisMaxTurns: (uxInsights.synthesis_max_turns as number | undefined) ?? 20,
       synthesisTimeoutMs: (uxInsights.synthesis_timeout_ms as number | undefined) ?? 600000,
@@ -448,6 +449,7 @@ export function validateConfig(config: WorkflowConfig): string | null {
     if (!Number.isInteger(u.maxOpenTickets) || u.maxOpenTickets <= 0) return "ux_insights.max_open_tickets must be a positive integer";
     if (!Number.isInteger(u.maxTicketsPerRun) || u.maxTicketsPerRun <= 0) return "ux_insights.max_tickets_per_run must be a positive integer";
     if (u.runIntervalMs <= 0) return "ux_insights.run_interval_ms must be > 0";
+    if (!Number.isInteger(u.reportDayOfWeek) || u.reportDayOfWeek < 0 || u.reportDayOfWeek > 6) return "ux_insights.report_day_of_week must be an integer 0–6 (0=Sunday … 6=Saturday)";
     if (u.requestTimeoutMs <= 0) return "ux_insights.request_timeout_ms must be > 0";
     if (u.synthesisMaxTurns <= 0) return "ux_insights.synthesis_max_turns must be > 0";
     if (u.synthesisTimeoutMs <= 0) return "ux_insights.synthesis_timeout_ms must be > 0";

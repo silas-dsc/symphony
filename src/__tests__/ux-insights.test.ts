@@ -53,6 +53,11 @@ function makeLogger(): Logger {
   return { info: () => undefined, warn: () => undefined, error: () => undefined };
 }
 
+// Fixed clock the harness defaults to. reportDayOfWeek defaults to this clock's
+// weekday so the day-of-week gate passes by default; the other test clocks (0,
+// +7 days) land on the same weekday, so they clear the gate too.
+const FIXED_NOW_MS = 1_000_000;
+
 function makeConfig(overrides?: Partial<UxInsightsConfig>): UxInsightsConfig {
   return {
     enabled: true,
@@ -74,6 +79,7 @@ function makeConfig(overrides?: Partial<UxInsightsConfig>): UxInsightsConfig {
     maxOpenTickets: 3,
     maxTicketsPerRun: 3,
     runIntervalMs: 7 * 24 * 60 * 60 * 1000,
+    reportDayOfWeek: new Date(FIXED_NOW_MS).getDay(),
     requestTimeoutMs: 30_000,
     synthesisMaxTurns: 20,
     synthesisTimeoutMs: 600_000,
@@ -167,7 +173,7 @@ function makeWatcher(opts: {
     synthesizer,
     slackReporter,
     ticketStore,
-    now: opts.now,
+    now: opts.now ?? (() => FIXED_NOW_MS),
   });
 
   return {
@@ -533,6 +539,13 @@ describe("buildSynthesisPrompt", () => {
     expect(prompt).toContain('"search-gap"');
     expect(prompt).toContain("medium+ confidence");
   });
+
+  it("instructs plain, succinct English for a non-technical reader", () => {
+    const prompt = buildSynthesisPrompt(makeDataset(), makeConfig());
+    expect(prompt).toContain("non-technical marketing graduate");
+    expect(prompt).toContain("Plain, everyday English");
+    expect(prompt).toContain("as short as possible");
+  });
 });
 
 describe("extractJsonBlock", () => {
@@ -663,6 +676,29 @@ describe("UxInsightsWatcher", () => {
     clock += 7 * 24 * 60 * 60 * 1000 + 1;
     await h.watcher.reconcile();
     expect(h.collectCalls()).toBe(2);
+  });
+
+  it("only runs on the configured day of week", async () => {
+    // Pick any clock, then gate on its actual weekday so the test is timezone-independent.
+    const clock = 1_000_000;
+    const today = new Date(clock).getDay();
+    const otherDay = (today + 1) % 7;
+
+    const blocked = makeWatcher({
+      now: () => clock,
+      config: { reportDayOfWeek: otherDay },
+      dataset: async () => makeDataset({ metrics: [] }),
+    });
+    await blocked.watcher.reconcile();
+    expect(blocked.collectCalls()).toBe(0); // not the configured day → skipped
+
+    const allowed = makeWatcher({
+      now: () => clock,
+      config: { reportDayOfWeek: today },
+      dataset: async () => makeDataset({ metrics: [] }),
+    });
+    await allowed.watcher.reconcile();
+    expect(allowed.collectCalls()).toBe(1);
   });
 
   it("does not advance the weekly clock when the pull fails", async () => {
