@@ -291,8 +291,13 @@ ux_insights:
   min_confidence_to_ticket: high
   max_open_tickets: 3
   max_tickets_per_run: 3
-  # The pull + synthesis runs about once a week.
+  # The pull + synthesis runs about once a week. The run is also anchored to a
+  # single weekday (report_day_of_week, default 1 = Monday, local time) so it goes
+  # out at most once a week even if the service restarts more than once in a week —
+  # the run_interval_ms clock is in-memory and resets on restart.
   run_interval_ms: 604800000
+  # 0 = Sunday … 6 = Saturday. Default 1 (Monday).
+  report_day_of_week: 1
   request_timeout_ms: 30000
   synthesis_max_turns: 20
   synthesis_timeout_ms: 600000

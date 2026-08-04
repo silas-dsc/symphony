@@ -483,6 +483,11 @@ export class UxInsightsWatcher {
   async reconcile(): Promise<void> {
     if (!this.cfg.enabled) return;
     if (this.cycleInFlight) return;
+    // Day-of-week gate (local time): only run on the configured day (default Monday).
+    // The nextRunAt interval below resets to 0 on every process restart, so without
+    // this anchor a service that restarts more than once a week would re-post the
+    // report on each restart. Anchoring to a weekday keeps it to once a week.
+    if (new Date(this.now()).getDay() !== this.cfg.reportDayOfWeek) return;
     if (this.now() < this.nextRunAt) return; // weekly gate
 
     this.cycleInFlight = true;
