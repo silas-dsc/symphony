@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import * as readline from "node:readline";
+import * as fs from "node:fs";
 import type { Logger, TrackerConfig, UxInsightsConfig } from "./types.js";
 import * as linear from "./linear.js";
 import { postToSlackWithRetry } from "./notifications.js";
@@ -14,7 +15,8 @@ import { postToSlackWithRetry } from "./notifications.js";
  * the loop (e.g. "correct the common search typo `pmp` → `PMP` so users find the course").
  *
  * Shape mirrors QueryInsightsWatcher/PostHogWatcher: a `cycleInFlight` guard, a
- * `runIntervalMs` weekly gate, injectable clients (so tests never touch the
+ * `runIntervalMs` weekly gate (persisted via UxStateStore so it survives restarts)
+ * pinned to a configurable weekday, injectable clients (so tests never touch the
  * network, Claude, or Slack), marker-based ticket dedupe that survives restarts,
  * and open-ticket / per-run caps.
  */
@@ -109,6 +111,22 @@ export interface UxTicketStore {
   createTicket(insight: Insight, key: string): Promise<CreatedTicket>;
 }
 
+/** Persisted scheduler state, so the weekly gate survives process restarts. */
+export interface UxSchedulerState {
+  /** Epoch ms before which reconcile() must not run again. */
+  nextRunAt: number;
+}
+
+/**
+ * Persists the weekly gate's `nextRunAt` across restarts. Without this the clock
+ * is in-memory only, so a restart resets it to 0 and the report re-posts on the
+ * next matching weekday — see FileUxStateStore for the default disk-backed impl.
+ */
+export interface UxStateStore {
+  load(): UxSchedulerState | null;
+  save(state: UxSchedulerState): void;
+}
+
 export interface UxInsightsWatcherOptions {
   config: UxInsightsConfig;
   tracker: TrackerConfig;
@@ -117,6 +135,8 @@ export interface UxInsightsWatcherOptions {
   synthesizer?: InsightSynthesizer;
   slackReporter?: UxSlackReporter;
   ticketStore?: UxTicketStore;
+  /** Persists the weekly gate across restarts. Omit (tests) to keep it in-memory only. */
+  stateStore?: UxStateStore;
   /** Injectable clock for tests; defaults to Date.now. */
   now?: () => number;
 }
@@ -471,6 +491,7 @@ export class UxInsightsWatcher {
   private readonly slackReporter: UxSlackReporter;
   private readonly ticketStore: UxTicketStore;
   private readonly now: () => number;
+  private readonly stateStore: UxStateStore | null;
   private readonly createdKeys = new Set<string>();
   private cycleInFlight = false;
   private nextRunAt = 0; // 0 → run on first tick after startup.
@@ -479,21 +500,31 @@ export class UxInsightsWatcher {
     this.cfg = opts.config;
     this.log = opts.logger;
     this.now = opts.now ?? (() => Date.now());
+    this.stateStore = opts.stateStore ?? null;
     this.hogQlClient = opts.hogQlClient ?? new HttpHogQlClient(opts.logger);
     this.synthesizer = opts.synthesizer ?? new ClaudeInsightSynthesizer(opts.logger);
     this.slackReporter = opts.slackReporter ?? new HttpUxSlackReporter(opts.logger);
     this.ticketStore = opts.ticketStore ?? new LinearTicketStore(opts.config, opts.tracker, opts.logger);
+
+    // Restore the weekly gate from disk so a restart doesn't reset the clock to 0
+    // and re-post the report the next time the day-of-week gate is open.
+    const persisted = this.stateStore?.load();
+    if (persisted && Number.isFinite(persisted.nextRunAt)) {
+      this.nextRunAt = persisted.nextRunAt;
+      this.log.info("Restored UX insights schedule from disk", { nextRunAt: this.nextRunAt });
+    }
   }
 
   /** Periodic entry point used by the orchestrator. Gated by `enabled` and the weekly interval. */
   async reconcile(): Promise<void> {
     if (!this.cfg.enabled) return;
     if (this.cycleInFlight) return;
-    // Day-of-week gate (local time): only run on the configured day (default Monday).
-    // The nextRunAt interval below resets to 0 on every process restart, so without
-    // this anchor a service that restarts more than once a week would re-post the
-    // report on each restart. Anchoring to a weekday keeps it to once a week.
+    // Day-of-week gate (local time): only run on the configured day (default Monday),
+    // so the report always lands on the same weekday.
     if (new Date(this.now()).getDay() !== this.cfg.reportDayOfWeek) return;
+    // Interval gate: at most once per runIntervalMs. nextRunAt is persisted via the
+    // state store (see constructor), so this survives restarts — a service that
+    // restarts on the report day won't re-post while the last run is still recent.
     if (this.now() < this.nextRunAt) return; // weekly gate
 
     this.cycleInFlight = true;
@@ -506,8 +537,10 @@ export class UxInsightsWatcher {
         return; // do NOT advance nextRunAt — retry next tick.
       }
 
-      // Only advance the weekly clock once the pull itself succeeded.
+      // Only advance the weekly clock once the pull itself succeeded, and persist
+      // it so the next week's gate survives a restart.
       this.nextRunAt = this.now() + this.cfg.runIntervalMs;
+      this.stateStore?.save({ nextRunAt: this.nextRunAt });
       await this.runPipeline(dataset);
     } finally {
       this.cycleInFlight = false;
@@ -826,6 +859,44 @@ class LinearTicketStore implements UxTicketStore {
 
     this.refs = { teamId: team.id, stateId: state.id, assigneeId, labelId };
     return this.refs;
+  }
+}
+
+// ─── Default state store (JSON file on disk) ────────────────────────────────
+
+/**
+ * Persists the weekly gate to a small JSON file. Both load and save are
+ * best-effort: a missing/corrupt file (or an unwritable disk) degrades to the
+ * old in-memory behaviour rather than crashing the watcher.
+ */
+export class FileUxStateStore implements UxStateStore {
+  constructor(private readonly filePath: string, private readonly log: Logger) {}
+
+  load(): UxSchedulerState | null {
+    let raw: string;
+    try {
+      raw = fs.readFileSync(this.filePath, "utf-8");
+    } catch {
+      return null; // No state file yet — first run.
+    }
+    try {
+      const parsed = JSON.parse(raw) as Partial<UxSchedulerState>;
+      if (typeof parsed.nextRunAt === "number" && Number.isFinite(parsed.nextRunAt)) {
+        return { nextRunAt: parsed.nextRunAt };
+      }
+      return null;
+    } catch (e) {
+      this.log.warn(`Failed to parse persisted UX insights state, ignoring: ${fmtErr(e)}`);
+      return null;
+    }
+  }
+
+  save(state: UxSchedulerState): void {
+    try {
+      fs.writeFileSync(this.filePath, JSON.stringify(state), "utf-8");
+    } catch (e) {
+      this.log.warn(`Failed to persist UX insights state: ${fmtErr(e)}`);
+    }
   }
 }
 
