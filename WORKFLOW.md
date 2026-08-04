@@ -291,10 +291,11 @@ ux_insights:
   min_confidence_to_ticket: high
   max_open_tickets: 3
   max_tickets_per_run: 3
-  # The pull + synthesis runs about once a week. The run is also anchored to a
-  # single weekday (report_day_of_week, default 1 = Monday, local time) so it goes
-  # out at most once a week even if the service restarts more than once in a week —
-  # the run_interval_ms clock is in-memory and resets on restart.
+  # The pull + synthesis runs about once a week. The run_interval_ms clock is
+  # persisted to .symphony-ux-insights-state.json, so it survives restarts — the
+  # report goes out at most once per run_interval_ms even if the service restarts
+  # repeatedly. The run is also anchored to a single weekday (report_day_of_week,
+  # default 1 = Monday, local time) so it always lands on that day.
   run_interval_ms: 604800000
   # 0 = Sunday … 6 = Saturday. Default 1 (Monday).
   report_day_of_week: 1

@@ -10,6 +10,7 @@ vi.mock("node:child_process", () => ({ spawn: spawnMock }));
 import { loadWorkflow, validateConfig } from "../config.js";
 import {
   ClaudeInsightSynthesizer,
+  FileUxStateStore,
   HttpHogQlClient,
   HttpUxSlackReporter,
   UX_CATEGORIES,
@@ -32,7 +33,9 @@ import {
   type UxDataset,
   type UxInsightsConfig,
   type UxReport,
+  type UxSchedulerState,
   type UxSlackReporter,
+  type UxStateStore,
   type UxTicketSnapshot,
   type UxTicketStore,
 } from "../ux-insights.js";
@@ -140,6 +143,7 @@ function makeWatcher(opts: {
   createThrows?: boolean;
   slackThrows?: boolean;
   now?: () => number;
+  stateStore?: UxStateStore;
 }): WatcherHarness {
   let collectCalls = 0;
   let synthCalls = 0;
@@ -174,6 +178,7 @@ function makeWatcher(opts: {
     slackReporter,
     ticketStore,
     now: opts.now ?? (() => FIXED_NOW_MS),
+    stateStore: opts.stateStore,
   });
 
   return {
@@ -612,6 +617,38 @@ describe("parseSynthesisOutput", () => {
   });
 });
 
+// ─── FileUxStateStore ─────────────────────────────────────────────────────────
+
+describe("FileUxStateStore", () => {
+  let dir: string;
+  beforeEach(() => { dir = fs.mkdtempSync(path.join(os.tmpdir(), "ux-state-")); });
+  afterEach(() => { fs.rmSync(dir, { recursive: true, force: true }); });
+
+  it("round-trips the scheduler state through disk", () => {
+    const file = path.join(dir, "state.json");
+    const store = new FileUxStateStore(file, makeLogger());
+    store.save({ nextRunAt: 123456789 });
+    expect(new FileUxStateStore(file, makeLogger()).load()).toEqual({ nextRunAt: 123456789 });
+  });
+
+  it("returns null when the file does not exist yet", () => {
+    const store = new FileUxStateStore(path.join(dir, "missing.json"), makeLogger());
+    expect(store.load()).toBeNull();
+  });
+
+  it("returns null (does not throw) on a corrupt file", () => {
+    const file = path.join(dir, "corrupt.json");
+    fs.writeFileSync(file, "{not json", "utf-8");
+    expect(new FileUxStateStore(file, makeLogger()).load()).toBeNull();
+  });
+
+  it("returns null when nextRunAt is missing or not a finite number", () => {
+    const file = path.join(dir, "bad.json");
+    fs.writeFileSync(file, JSON.stringify({ nextRunAt: "soon" }), "utf-8");
+    expect(new FileUxStateStore(file, makeLogger()).load()).toBeNull();
+  });
+});
+
 // ─── extractAssistantText ────────────────────────────────────────────────────
 
 describe("extractAssistantText", () => {
@@ -699,6 +736,50 @@ describe("UxInsightsWatcher", () => {
     });
     await allowed.watcher.reconcile();
     expect(allowed.collectCalls()).toBe(1);
+  });
+
+  it("persists the weekly clock after a successful run", async () => {
+    const clock = 1_000_000;
+    const saved: UxSchedulerState[] = [];
+    const stateStore: UxStateStore = { load: () => null, save: s => { saved.push(s); } };
+    const h = makeWatcher({ now: () => clock, stateStore, dataset: async () => makeDataset({ metrics: [] }) });
+    await h.watcher.reconcile();
+    expect(saved).toEqual([{ nextRunAt: clock + 7 * 24 * 60 * 60 * 1000 }]);
+  });
+
+  it("does not persist when the pull fails (clock must not advance)", async () => {
+    const clock = 1_000_000;
+    const saved: UxSchedulerState[] = [];
+    const stateStore: UxStateStore = { load: () => null, save: s => { saved.push(s); } };
+    const h = makeWatcher({
+      now: () => clock,
+      stateStore,
+      dataset: async () => { throw new Error("posthog 500"); },
+    });
+    await h.watcher.reconcile();
+    expect(saved).toEqual([]);
+  });
+
+  it("restores the weekly clock on construction so a restart does not re-post", async () => {
+    // A restart on the configured day: the day gate is open, but the persisted
+    // clock is still in the future, so the interval gate must block the re-post.
+    // +7 days lands on the same weekday, so the day gate stays open in both cases
+    // and we isolate the interval gate — timezone-independent.
+    const clock = 1_000_000;
+    const persisted = { nextRunAt: clock + 7 * 24 * 60 * 60 * 1000 };
+    const stateStore: UxStateStore = { load: () => persisted, save: () => undefined };
+    const h = makeWatcher({ now: () => clock, stateStore, dataset: async () => makeDataset({ metrics: [] }) });
+    await h.watcher.reconcile();
+    expect(h.collectCalls()).toBe(0); // gated by the restored clock
+
+    // Once the restored clock elapses, it runs again.
+    const later = makeWatcher({
+      now: () => persisted.nextRunAt + 1,
+      stateStore: { load: () => persisted, save: () => undefined },
+      dataset: async () => makeDataset({ metrics: [] }),
+    });
+    await later.watcher.reconcile();
+    expect(later.collectCalls()).toBe(1);
   });
 
   it("does not advance the weekly clock when the pull fails", async () => {
