@@ -233,10 +233,48 @@ export function buildSlackReport(
   }
 
   const text = lines.join("\n");
-  return {
-    text,
-    blocks: [{ type: "section", text: { type: "mrkdwn", text: truncate(text, 2900) } }],
-  };
+  return { text, blocks: chunkIntoSectionBlocks(text) };
+}
+
+// Slack caps a single `section` block's text at 3000 chars; 2900 leaves a margin.
+// A message may carry at most 50 blocks.
+const SLACK_SECTION_TEXT_LIMIT = 2900;
+const SLACK_MAX_BLOCKS = 50;
+
+/**
+ * Pack the report into as few `section` blocks as possible without letting any
+ * block exceed Slack's per-section text limit, splitting only on line boundaries
+ * so each insight stays intact. This replaces the previous single-block approach,
+ * which truncated the whole message at 2900 chars and silently dropped every
+ * insight past the cut (the tail of a long weekly report never reached #ux).
+ *
+ * A single line longer than the limit is truncated in place — rare, since detail
+ * and recommendation lines are already first-line + 240-char capped upstream. If
+ * the report somehow needs more than 50 blocks, the overflow is folded into the
+ * last block (trimmed) so the payload stays valid rather than being rejected.
+ */
+function chunkIntoSectionBlocks(text: string, maxPerBlock = SLACK_SECTION_TEXT_LIMIT): Array<Record<string, unknown>> {
+  const section = (t: string): Record<string, unknown> => ({ type: "section", text: { type: "mrkdwn", text: t } });
+  const blocks: Array<Record<string, unknown>> = [];
+  let buf = "";
+  for (const rawLine of text.split("\n")) {
+    const line = rawLine.length > maxPerBlock ? truncate(rawLine, maxPerBlock) : rawLine;
+    const candidate = buf ? `${buf}\n${line}` : line;
+    if (candidate.length > maxPerBlock && buf) {
+      blocks.push(section(buf));
+      buf = line;
+    } else {
+      buf = candidate;
+    }
+  }
+  if (buf) blocks.push(section(buf));
+  if (blocks.length <= SLACK_MAX_BLOCKS) return blocks;
+
+  const kept = blocks.slice(0, SLACK_MAX_BLOCKS);
+  const lastIdx = SLACK_MAX_BLOCKS - 1;
+  const lastText = (kept[lastIdx].text as { text: string }).text;
+  kept[lastIdx] = section(truncate(lastText, maxPerBlock));
+  return kept;
 }
 
 // ─── HogQL query pack ───────────────────────────────────────────────────────

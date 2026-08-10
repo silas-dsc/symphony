@@ -455,15 +455,30 @@ describe("buildSlackReport", () => {
     expect(text).not.toContain(">");
   });
 
-  it("truncates the block text for very long reports", () => {
-    const report: UxReport = {
-      summary: "s".repeat(4000),
-      insights: [],
-    };
-    const { blocks } = buildSlackReport(report, "high");
-    const blockText = (blocks[0].text as { text: string }).text;
-    expect(blockText.length).toBeLessThanOrEqual(2900);
-    expect(blockText.endsWith("…")).toBe(true);
+  it("splits a long report across multiple blocks without dropping any insight", () => {
+    // A report far longer than one Slack section block (each capped at 2900 chars).
+    const insights = Array.from({ length: 30 }, (_, i) =>
+      makeInsight({ title: `insight number ${i}`, detail: "d".repeat(200), recommendation: "r".repeat(200) }),
+    );
+    const { text, blocks } = buildSlackReport({ summary: "Long report.", insights }, "high");
+
+    expect(blocks.length).toBeGreaterThan(1);
+    expect(blocks.length).toBeLessThanOrEqual(50);
+    for (const b of blocks) {
+      expect((b.text as { text: string }).text.length).toBeLessThanOrEqual(2900);
+    }
+    // Splitting only on line boundaries means the blocks rejoin to the full text —
+    // nothing is silently truncated away, and every insight survives.
+    const combined = blocks.map(b => (b.text as { text: string }).text).join("\n");
+    expect(combined).toBe(text);
+    for (let i = 0; i < 30; i++) expect(combined).toContain(`insight number ${i}`);
+  });
+
+  it("keeps a single over-long line within the block limit", () => {
+    const { blocks } = buildSlackReport({ summary: "s".repeat(4000), insights: [] }, "high");
+    for (const b of blocks) {
+      expect((b.text as { text: string }).text.length).toBeLessThanOrEqual(2900);
+    }
   });
 });
 
