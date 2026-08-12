@@ -42,3 +42,5 @@ Desktop.ini
 
 # Symphony runtime state (persisted pending Slack notification queue)
 .symphony-slack-queue.json
+# Symphony runtime state (persisted UX insights weekly-gate clock)
+.symphony-ux-insights-state.json

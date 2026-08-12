@@ -19,7 +19,7 @@ import { MergeConflictResolver } from "./merge-conflict.js";
 import { DependabotWatcher } from "./dependabot.js";
 import { QueryInsightsWatcher } from "./query-insights.js";
 import { PostHogWatcher } from "./posthog.js";
-import { UxInsightsWatcher } from "./ux-insights.js";
+import { UxInsightsWatcher, FileUxStateStore } from "./ux-insights.js";
 import { FirebaseLogsWatcher } from "./firebase-logs.js";
 import * as linear from "./linear.js";
 import { isCompletionState, sendBatchedSlackNotification } from "./notifications.js";
@@ -1173,6 +1173,10 @@ export class Orchestrator {
       config: this.config.uxInsights,
       tracker: this.config.tracker,
       logger: this.log,
+      stateStore: new FileUxStateStore(
+        path.join(this.symphonyRoot, ".symphony-ux-insights-state.json"),
+        this.log,
+      ),
     });
   }
 
