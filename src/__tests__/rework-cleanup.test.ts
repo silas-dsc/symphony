@@ -270,4 +270,54 @@ describe("cleanupReworkComments", () => {
     expect(result.deletedCount).toBe(1);
     expect(logger.warn).toHaveBeenCalled();
   });
+
+  const reworkComments = () => [
+    {
+      id: "ai1",
+      body: `${AI_COMMENT_MARKER}\n## ✅ Ready for review`,
+      createdAt: new Date("2026-02-01T00:00:00Z"),
+      author: null,
+    },
+    {
+      id: "h1",
+      body: "Button is the wrong colour\non mobile",
+      createdAt: new Date("2026-02-02T00:00:00Z"),
+      author: { name: "Nika", email: "n@x" },
+    },
+  ];
+
+  it("falls back to the reviewer's words when no API key is set (subscription setup)", async () => {
+    delete process.env.ANTHROPIC_API_KEY;
+    vi.mocked(linear.fetchIssueCommentsDetail).mockResolvedValue(reworkComments());
+    vi.mocked(linear.deleteComment).mockResolvedValue(undefined);
+    vi.mocked(linear.updateIssueDescription).mockResolvedValue(undefined);
+
+    const issue = makeIssue();
+    const result = await cleanupReworkComments(issue, tracker, makeLogger());
+
+    expect(result).toEqual({ deletedCount: 1, descriptionUpdated: true });
+    expect(issue.description).toContain(REWORK_NOTES_HEADING);
+    expect(issue.description).toContain("**Nika:**\n> Button is the wrong colour\n> on mobile");
+  });
+
+  it("does not nest a second Fix heading when Haiku follows its format", async () => {
+    vi.mocked(linear.fetchIssueCommentsDetail).mockResolvedValue(reworkComments());
+    vi.mocked(linear.deleteComment).mockResolvedValue(undefined);
+    vi.mocked(linear.updateIssueDescription).mockResolvedValue(undefined);
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = vi.fn().mockResolvedValue(new Response(
+      JSON.stringify({ content: [{ type: "text", text: "## Fix\n- Use brand colour on mobile button" }] }),
+      { status: 200, headers: { "content-type": "application/json" } },
+    )) as typeof fetch;
+
+    const issue = makeIssue();
+    try {
+      await cleanupReworkComments(issue, tracker, makeLogger());
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+
+    expect(issue.description!.split(REWORK_NOTES_HEADING).length - 1).toBe(1);
+    expect(issue.description).toContain("- Use brand colour on mobile button");
+  });
 });

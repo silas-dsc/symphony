@@ -26,6 +26,7 @@
     "ux-insights": "node dist/ux-insights-report.js",
     "firebase-logs": "node dist/firebase-logs-report.js",
     "meta-improve": "node dist/meta-improve.js",
+    "runs": "node dist/run-log.js",
     "test": "vitest run",
     "test:watch": "vitest"
   },

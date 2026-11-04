@@ -20,6 +20,9 @@ The Linear comment body, exactly:
 - <callout 2 — one short sentence>
 - <callout 3 — one short sentence>
 
+**Checked:** <only what was actually run or seen — typecheck + lint, tests, flows on the preview, viewports>
+**Not checked:** <what could not be verified, and why>
+
 ![<short caption>](<asset URL of the single primary screenshot>)
 
 PR: <github PR URL>
@@ -34,7 +37,8 @@ The `<!-- symphony-agent -->` marker is mandatory on every Linear comment any Sy
 ## Hard rules
 
 - **Leading `<!-- symphony-agent -->` marker on the Linear comment is mandatory.** Without it Symphony cannot clean the comment up on rework cycles. Do not place it on the PR body — only on the Linear comment.
-- **One sentence summary, three callouts, one screenshot, three links. Nothing else.** No "What changed", "How to test", "Notes", "Risk", phase mentions, sub-agent mentions, workpad references, or process scaffolding. Reviewers do not care.
+- **Checked / Not checked is mandatory.** Checked lists only what was actually run or seen, never inferred. Not checked names what the reviewer must look at themselves; write `Nothing — all acceptance points verified` only when literally true.
+- **One sentence summary, three callouts, checked / not checked, one screenshot, three links. Nothing else.** No "What changed", "How to test", "Notes", "Risk", phase mentions, sub-agent mentions, workpad references, or process scaffolding. Reviewers do not care.
 - **Three callouts, three short sentences max.** Each bullet is one short sentence about something the reviewer needs to know — user-visible behaviour change, a follow-up flagged, a deliberate trade-off. Fewer than three is fine if there is genuinely less to say; never more than three.
 - **One screenshot.** Pick the single image that best represents the change — almost always the success state of the primary changed section. Multi-state scenarios (loading / empty / error) live in `.claude/qa-results.md` for whoever wants to look; not here.
 - **Three links at the bottom, in this order: PR, Preview, Linear.** Nothing below them. If the preview comment hasn't appeared after a 5-minute wait, write `Preview: building…` and proceed.
@@ -81,7 +85,7 @@ PY
 
 - [ ] Exactly one `## ✅ Ready for review` comment on Linear, with `<!-- symphony-agent -->` as the very first line.
 - [ ] PR body matches that comment byte-for-byte **except** the `<!-- symphony-agent -->` marker line is omitted.
-- [ ] Body contains: one summary sentence, three callouts, one screenshot, three links — and nothing else.
+- [ ] Body contains: one summary sentence, three callouts, Checked / Not checked, one screenshot, three links — and nothing else.
 - [ ] PR / Preview / Linear URLs all present (or `Preview: building…` if waited 5 minutes).
 - [ ] Linear issue state = `In Review`.
 - [ ] No other Linear comments or PR comments were posted by this phase.

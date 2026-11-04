@@ -42,3 +42,6 @@ Desktop.ini
 
 # Symphony runtime state (persisted pending Slack notification queue)
 .symphony-slack-queue.json
+# Per-run cost/time log and human gate queue
+.symphony-runs.jsonl
+.symphony-gates.json

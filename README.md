@@ -292,6 +292,8 @@ The text below the YAML front matter is a [Liquid](https://liquidjs.com/) templa
 | `symphony.root` | string | Absolute path to the Symphony orchestrator directory (where `WORKFLOW.md` lives) |
 | `relevant_lessons` | string | Past lessons ranked by keyword overlap with the ticket, injected as a block (empty string when none) |
 | `reassignment_instruction` | string \| null | The reviewer's rework brief when a ticket has been sent back from review (`null` otherwise) |
+| `design.links` | string[] | Claude Design / Figma links found in the description (empty when none) |
+| `design.export_path` | string | Where the agent pins the design copy in the app repo — `design/<identifier>.html` |
 
 ---
 
