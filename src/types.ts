@@ -1,4 +1,5 @@
 import type { V2Config } from "./v2-config.js";
+import type { BreakerStatus } from "./failure-breaker.js";
 export interface BlockerRef {
   id: string | null;
   identifier: string | null;
@@ -565,6 +566,8 @@ export interface StatusSnapshot {
     throughput_tps: number;
   };
   rate_limit: RateLimitSnapshot | null;
+  /** Set while dispatch is paused after systemic agent failures (see failure-breaker.ts). */
+  dispatch_paused?: BreakerStatus | null;
   running: RunningSnapshot[];
   retrying: RetrySnapshot[];
 }
