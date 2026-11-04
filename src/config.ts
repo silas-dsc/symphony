@@ -192,6 +192,7 @@ function buildConfig(raw: Record<string, unknown>, baseDir: string): WorkflowCon
           botToken: slackBotToken,
           channel: slackChannel,
           userMap: slackUserMap,
+          completionFeed: (slack.completion_feed as boolean | undefined) ?? true,
         }
         : null,
     },

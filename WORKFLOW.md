@@ -32,6 +32,9 @@ notifications:
     bot_token: $SLACK_BOT_TOKEN
     # #dsc-website-notifs (posted via chat.postMessage; the bot must be a member)
     channel: C0BL3E3JENA
+    # Batched "DONE:" feed to the channel above. Off: v2's daily draft (Post / Skip) replaces it.
+    # The bot token / channel / user_map stay in use by the other reports.
+    completion_feed: false
     user_map:
       erin@teamdsc.com.au: U0ARLN893PW
       augustopini@gmail.com: U0APSQ0J23G
@@ -326,7 +329,7 @@ firebase_logs:
 # ── Symphony v2 (docs/ORCHESTRATOR_REDESIGN.md, setup: docs/RUNNING_V2.md) ──
 # Off until you flip `enabled`. Each sub-feature can be turned off on its own.
 v2:
-  enabled: false
+  enabled: true
   team_key: TEA
   operator: silas
   people:
