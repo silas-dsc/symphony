@@ -34,6 +34,8 @@ jobs:
       - uses: anthropics/claude-code-action@v1
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # Built-in token: no Claude GitHub App install needed; comments post as github-actions[bot].
+          github_token: ${{ secrets.GITHUB_TOKEN }}
           claude_args: >-
             --max-turns 30
             --allowedTools "Read,Glob,Grep,Bash(git diff:*),Bash(git log:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*)"
