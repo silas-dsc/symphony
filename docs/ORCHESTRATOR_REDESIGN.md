@@ -34,6 +34,12 @@ per ticket opens a PR. Merge-conflict auto-fix. Lessons → meta-improve loop. C
 
 ## 2. Where things run
 
+> **As built (2026-11-04):** no separate Render service was needed. Slack buttons use **Socket Mode** (outbound
+> websocket, no public URL) and Linear decisions are read by polling, so gates, review flow, governor, triage,
+> intake and reports all run inside the existing Symphony process; reports are deterministic (no tokens) rather
+> than cloud routines. Only PR review runs elsewhere (GitHub Action). The table below is the original plan — still
+> the path if the workers later move off the Mac. Setup: `docs/RUNNING_V2.md`.
+
 Split by job. Only the part that needs your logins stays on your Mac.
 
 | Part | Runs on | Why |
@@ -215,9 +221,21 @@ ceiling.
   design to `design/<TEA-id>.html` in the app repo and compare against it. If the link needs a login, it goes under
   *Not checked*.
 
-**Already built (carries into Phase 1):** gate model, store, card actions, Slack digest, board renderer, gate
-API — `src/gates.ts`, `src/gate-service.ts`, `src/gate-board.ts`, `src/server.ts`, `gates:` config. Typechecks clean;
-not yet wired in or tested. Needs a login before it goes on Render.
+**Phases 1–5 — built (2026-11-04), off by default (`v2.enabled`):**
+| Phase | Module(s) |
+|---|---|
+| 1 Gates | `gate-hub.ts` (Slack DM + Linear card + `waiting-on:` label, operator-first with "Ask Nika/Evie", Linear reply parsing), `gate-slack.ts`, `slack-socket.ts`, `slack-api.ts`, `gates.ts`, board in `server.ts` |
+| 1 Asks | `ask-flow.ts` — agent posts `symphony-ask:<kind>` + options → one button per option |
+| 1 Reports | `reports.ts` — daily draft (DM, Post button) + weekly roadmap with suggested next work |
+| 2 Routing + stages | `routing.ts` (labels → PLAN?/UI?/lenses), `stages.ts` (planner/verifier/reviewer subagents via `--agents`), `bin/verify-stop-hook.mjs`, `templates/github/claude-review.yml` |
+| 2 Review + deploy | `review-flow.ts` (CI/AI-review auto send-back ×2 → diff risk via `diff-risk.ts` → auto-merge or card), `github.ts`, `deploy-guard.ts` (new error signatures after merge → revert PR + card), kill switch file |
+| 3 Triage + intake | `triage.ts`, `slack-intake.ts`, `render-logs.ts`, wired in `v2-intake.ts` |
+| 4 Governor | `governor.ts` — per-person caps, Claude rate-limit signals, daily ceiling / weekly reserve from the run log |
+| 5 Roadmap | weekly report in `reports.ts` |
+Composition root: `v2.ts`; config: `v2-config.ts` + `v2:` in WORKFLOW.md.
+
+**Known limits:** deploy guard assumes merge ≈ deploy; any `package.json` change is high risk (Dependabot PRs always
+get a card); Render `level=error` tagging and Linear PR-attachment "merged" fields unverified against live data.
 
 ---
 

@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as path from "node:path";
 import * as os from "node:os";
 import yaml from "js-yaml";
+import { parseV2Config, validateV2Config } from "./v2-config.js";
 import type { WorkflowDefinition, WorkflowConfig } from "./types.js";
 
 export type WorkflowErrorCode =
@@ -62,14 +63,14 @@ export function loadWorkflow(workflowPath: string): WorkflowDefinition {
   return { config, promptTemplate, symphonyRoot: baseDir };
 }
 
-function resolveEnvVar(value: string): string {
+export function resolveEnvVar(value: string): string {
   if (value.startsWith("$")) {
     return process.env[value.slice(1)] ?? "";
   }
   return value;
 }
 
-function resolvePath(value: string, baseDir: string): string {
+export function resolvePath(value: string, baseDir: string): string {
   let v = value;
   if (v.startsWith("$")) {
     v = resolveEnvVar(v);
@@ -338,6 +339,14 @@ function buildConfig(raw: Record<string, unknown>, baseDir: string): WorkflowCon
       runIntervalMs: (firebaseLogs.run_interval_ms as number | undefined) ?? 6 * 60 * 60 * 1000,
       gcloudTimeoutMs: (firebaseLogs.gcloud_timeout_ms as number | undefined) ?? 60000,
     },
+    v2: parseV2Config((raw.v2 ?? {}) as Record<string, unknown>, {
+      baseDir,
+      fallbackBotToken: slackBotToken,
+      fallbackChannel: slackChannel,
+      fallbackTeamKey: trackerTeamKey ?? "",
+      resolveEnvVar,
+      resolvePath,
+    }),
   };
 }
 
@@ -471,6 +480,10 @@ export function validateConfig(config: WorkflowConfig): string | null {
     if (!Number.isInteger(f.maxTicketsPerRun) || f.maxTicketsPerRun <= 0) return "firebase_logs.max_tickets_per_run must be a positive integer";
     if (f.runIntervalMs <= 0) return "firebase_logs.run_interval_ms must be > 0";
     if (f.gcloudTimeoutMs <= 0) return "firebase_logs.gcloud_timeout_ms must be > 0";
+  }
+  if (config.v2.enabled) {
+    const err = validateV2Config(config.v2);
+    if (err) return err;
   }
   if (!config.workspace.root) return "workspace.root could not be resolved";
   if (config.agent.maxTurns <= 0) return "agent.max_turns must be > 0";

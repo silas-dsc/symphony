@@ -45,3 +45,6 @@ Desktop.ini
 # Per-run cost/time log and human gate queue
 .symphony-runs.jsonl
 .symphony-gates.json
+# Symphony v2 runtime state and auto-deploy kill switch
+.symphony-state/
+.symphony-autodeploy-off

@@ -1,3 +1,4 @@
+import type { V2Config } from "./v2-config.js";
 export interface BlockerRef {
   id: string | null;
   identifier: string | null;
@@ -51,6 +52,103 @@ export interface WorkflowConfig {
   posthog: PostHogConfig;
   uxInsights: UxInsightsConfig;
   firebaseLogs: FirebaseLogsConfig;
+  /** Symphony v2: gates, review flow, governor, triage/intake, reports (see v2-config.ts). */
+  v2: V2Config;
+}
+
+// ─── Human gate queue ────────────────────────────────────────────────────────
+
+/** The kinds of decision Symphony can route to a human, each rendered as a one-click card. */
+export type GateKind =
+  | "approve_approach"
+  | "visual_signoff"
+  | "code_review"
+  | "merge_deploy"
+  | "login_credential"
+  | "product_decision"
+  | "triage_decision";
+
+export type GateStatus = "open" | "resolved" | "dismissed";
+
+/** Semantics of a button so the resolution handler knows what the click means. */
+export type GateActionKind = "approve" | "reject" | "neutral";
+
+export interface GateAction {
+  /** Stable id used in the POST body, e.g. "approve", "request_change", "merge", "send_back". */
+  id: string;
+  /** Button text shown on the card. */
+  label: string;
+  kind: GateActionKind;
+  /** Rendered as the primary (recommended) button when true. */
+  primary?: boolean;
+}
+
+export interface GateLink {
+  label: string;
+  url: string;
+}
+
+/** A pair of images rendered side by side on a visual-signoff card. */
+export interface GateImage {
+  label: string;
+  /** Path served by the board (e.g. "/gate-assets/<id>/live-desktop.png") or an absolute URL. */
+  url: string;
+}
+
+export interface GateDecision {
+  actionId: string;
+  actionKind: GateActionKind;
+  note: string | null;
+  at: string;
+  /** Who clicked (Slack name, "board", or "linear:<name>"). */
+  by?: string | null;
+}
+
+export interface Gate {
+  id: string;
+  kind: GateKind;
+  createdAt: string;
+  resolvedAt: string | null;
+  status: GateStatus;
+  issueId: string | null;
+  issueIdentifier: string | null;
+  /** Card headline. */
+  title: string;
+  /** The 2-3 sentence context the human needs to decide, on one screen. */
+  summary: string;
+  /** The single open question, when the card asks one. */
+  question: string | null;
+  links: GateLink[];
+  images: GateImage[];
+  actions: GateAction[];
+  decision: GateDecision | null;
+  /** Rough minutes to review — fed to the capacity governor. */
+  estimateMinutes: number;
+  /** Person key (see v2 `people`) the gate is for; defaults to the operator. */
+  assignee: string | null;
+  /** Person key offered as "Ask <name>" — the operator checks first, forwards only if needed. */
+  forwardTo?: string | null;
+  /** Flow-specific data (e.g. prUrl, previous assignee). */
+  meta?: Record<string, string>;
+  /** Where the Slack card lives, so it can be updated when resolved. */
+  slackRef?: { channel: string; ts: string } | null;
+}
+
+/** Input to open a gate — everything except the server-assigned bookkeeping fields. */
+export interface GateInput {
+  kind: GateKind;
+  issueId?: string | null;
+  issueIdentifier?: string | null;
+  title: string;
+  summary: string;
+  question?: string | null;
+  links?: GateLink[];
+  images?: GateImage[];
+  actions?: GateAction[];
+  estimateMinutes?: number;
+  assignee?: string | null;
+  forwardTo?: string | null;
+  meta?: Record<string, string>;
 }
 
 export interface UxInsightsConfig {
