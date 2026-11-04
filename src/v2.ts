@@ -10,6 +10,12 @@ import { allowDispatch, assess, formatGovernor, type DispatchCandidate, type Gov
 import { ReviewFlow } from "./review-flow.js";
 import { ReportScheduler, fetchDailyActivity, fetchRoadmap, formatDailyDraft, formatWeeklyRoadmap } from "./reports.js";
 import { defaultRunLogPath, readRunRecords } from "./run-log.js";
+import { addComment } from "./linear.js";
+import { setIssueState } from "./linear-ops.js";
+import {
+  assessRoadmap, fetchLinkedIssues, formatEntry, loadRoadmap, parseRoadmapConfig, pickNext, rankOf,
+  type RoadmapConfig, type RoadmapEntry,
+} from "./roadmap.js";
 import { openDm, postMessage } from "./slack-api.js";
 import { SlackSocket } from "./slack-socket.js";
 import type { Logger, RateLimitInfo, WorkflowConfig } from "./types.js";
@@ -34,6 +40,10 @@ export class SymphonyV2 {
   private readonly intake: Reconcilable[];
   private readout: GovernorReadout | null = null;
   private drafts = new Map<string, string>();
+  private readonly roadmapCfg: RoadmapConfig;
+  private roadmap: RoadmapEntry[] = [];
+  private roadmapAt = 0;
+  private roadmapMissingLogged = false;
 
   constructor(cfg: WorkflowConfig, symphonyRoot: string, log: Logger) {
     this.cfg = cfg;
@@ -89,6 +99,7 @@ export class SymphonyV2 {
         })
       : null;
     this.intake = createIntakeWatchers(cfg, this.hub, state, log);
+    this.roadmapCfg = parseRoadmapConfig(v2.roadmap, symphonyRoot);
   }
 
   async start(): Promise<void> {
@@ -115,6 +126,7 @@ export class SymphonyV2 {
       ["review", () => this.review?.reconcile() ?? Promise.resolve()],
       ["deploy guard", () => this.guard?.reconcile() ?? Promise.resolve()],
       ["reports", () => this.reports?.reconcile() ?? Promise.resolve()],
+      ["roadmap", () => this.reconcileRoadmap()],
       ...this.intake.map(w => [w.name, () => w.reconcile()] as [string, () => Promise<void>]),
     ];
     for (const [name, step] of steps) {
@@ -145,7 +157,68 @@ export class SymphonyV2 {
       open_gates: this.hub.store.openGates().map(g => ({ id: g.id, kind: g.kind, issue: g.issueIdentifier, for: g.assignee, since: g.createdAt })),
       deploy_watches: this.guard?.pending() ?? 0,
       auto_deploy: this.review ? (this.review.killSwitchOn() ? "off (kill switch)" : this.cfg.v2.review.autoMerge ? "on" : "off") : "off",
+      roadmap: this.roadmapCfg.enabled ? this.roadmap.filter(e => e.verdict !== "done").map(formatEntry) : null,
     };
+  }
+
+  /** Position on the product roadmap (1 = top), for the issue or its parent; null when not on it. */
+  roadmapRank(identifier: string, parentIdentifier?: string | null): number | null {
+    return this.roadmapCfg.enabled ? rankOf(this.roadmap, identifier, parentIdentifier) : null;
+  }
+
+  // ─── roadmap ─────────────────────────────────────────────────────────────
+
+  /**
+   * Re-read the roadmap snapshot, check each linked ticket in Linear, and start
+   * the first ready item if we're under the in-flight cap. Items waiting on a
+   * person are flagged (in /status and in the "starting" DM) and skipped.
+   */
+  private async reconcileRoadmap(): Promise<void> {
+    const rc = this.roadmapCfg;
+    if (!rc.enabled || Date.now() - this.roadmapAt < rc.refreshMs) return;
+    this.roadmapAt = Date.now();
+    const file = loadRoadmap(rc.file);
+    if (!file) {
+      if (!this.roadmapMissingLogged) this.log.warn("v2 roadmap: snapshot file not found; dispatch order unchanged", { file: rc.file });
+      this.roadmapMissingLogged = true;
+      this.roadmap = [];
+      return;
+    }
+    this.roadmapMissingLogged = false;
+    const ids = file.items.map(i => i.identifier).filter((x): x is string => !!x);
+    const issues = await fetchLinkedIssues(this.cfg.tracker, this.cfg.v2.teamKey, ids);
+    const devState = this.cfg.tracker.activeStates[0] ?? "Dev in Progress";
+    const name = (key: string | null) => (key ? this.hub.person(key)?.name ?? key : null);
+    this.roadmap = assessRoadmap(file.items, issues, {
+      teamKey: this.cfg.v2.teamKey,
+      devState,
+      pullFromStates: rc.pullFromStates,
+      designPerson: name(this.cfg.v2.designPerson),
+      productPerson: name(this.cfg.v2.productPerson),
+      openGateFor: id => {
+        const g = this.hub.store.openGates().find(x => x.issueId === id);
+        return g ? name(g.assignee ?? this.cfg.v2.operatorKey) : null;
+      },
+    });
+    if (!rc.pullReady) return;
+
+    const { next, skipped } = pickNext(this.roadmap, rc.maxInFlight);
+    if (!next?.issueId) return;
+    const moved = await setIssueState(this.cfg.tracker, next.issueId, devState);
+    if (!moved) return;
+    next.verdict = "building";
+    this.log.info("v2 roadmap: starting next item", { rank: next.rank, issue: next.identifier, skipped: skipped.length });
+
+    const skippedLines = skipped.map(e => `• ${formatEntry(e)}`);
+    const where = file.source ? ` <${file.source}|roadmap>` : " roadmap";
+    const dm = [`▶️ Starting #${next.rank} on the${where}: *${next.title}* (${next.identifier}).`]
+      .concat(skippedLines.length ? ["Skipped, waiting on people:", ...skippedLines] : [])
+      .join("\n");
+    await this.notifyOperator(dm).catch(e => this.log.warn("v2 roadmap: DM failed", { error: errMsg(e) }));
+    const comment = [`Symphony started this: it's #${next.rank} on the product roadmap and the first item ready for dev.`]
+      .concat(skipped.length ? ["", "Skipped higher items that are waiting on people:", ...skipped.map(e => `- ${formatEntry(e)}`)] : [])
+      .join("\n");
+    await addComment(this.cfg.tracker, next.issueId, comment).catch(e => this.log.warn("v2 roadmap: comment failed", { error: errMsg(e) }));
   }
 
   // ─── governor ────────────────────────────────────────────────────────────

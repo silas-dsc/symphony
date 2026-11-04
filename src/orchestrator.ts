@@ -496,8 +496,19 @@ export class Orchestrator {
 
   // ─── Dispatch ──────────────────────────────────────────────────────────────
 
+  /**
+   * Urgent tickets first (Linear priority 1, e.g. critical security fixes), then
+   * the product roadmap's order, then everything else by priority and age.
+   */
   private sortForDispatch(issues: Issue[]): Issue[] {
+    const rank = (i: Issue) => this.v2?.roadmapRank(i.identifier, i.parentIdentifier) ?? Infinity;
     return [...issues].sort((a, b) => {
+      const ua = a.priority === 1 ? 0 : 1;
+      const ub = b.priority === 1 ? 0 : 1;
+      if (ua !== ub) return ua - ub;
+      const ra = rank(a);
+      const rb = rank(b);
+      if (ra !== rb) return ra - rb;
       const pa = a.priority ?? 999;
       const pb = b.priority ?? 999;
       if (pa !== pb) return pa - pb;

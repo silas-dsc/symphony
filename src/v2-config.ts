@@ -49,6 +49,8 @@ export interface V2Config {
   triage: Record<string, unknown>;
   slackIntake: Record<string, unknown>;
   renderLogs: Record<string, unknown>;
+  /** Raw `v2.roadmap` block, parsed by roadmap.ts. */
+  roadmap: Record<string, unknown>;
 }
 
 export interface V2ParseContext {
@@ -128,6 +130,7 @@ export function parseV2Config(raw: Raw, ctx: V2ParseContext): V2Config {
     triage: obj(raw.triage),
     slackIntake: obj(raw.slack_intake),
     renderLogs: obj(raw.render_logs),
+    roadmap: obj(raw.roadmap),
   };
 }
 
