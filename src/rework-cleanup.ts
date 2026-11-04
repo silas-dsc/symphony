@@ -114,6 +114,27 @@ async function summariseWithHaiku(commentBodies: string[]): Promise<string | nul
   }
 }
 
+/**
+ * The summary prompt asks Haiku to start with `## Fix`, but `upsertReworkNotes`
+ * adds that heading itself — keeping both would nest a second `## Fix` that
+ * the next rework cycle can't replace. Returns null for empty input.
+ */
+export function stripLeadingFixHeading(summary: string | null): string | null {
+  if (!summary) return null;
+  const stripped = summary.replace(/^\s*##\s+Fix\s*\n/, "").trim();
+  return stripped || null;
+}
+
+/** Reviewer comments as-is, one quoted block per comment, for when no summary is available. */
+export function rawReworkBrief(comments: LinearComment[]): string {
+  return comments
+    .map(c => {
+      const who = c.author?.name ? `**${c.author.name}:**\n` : "";
+      return `${who}> ${c.body.trim().replace(/\n/g, "\n> ")}`;
+    })
+    .join("\n\n");
+}
+
 export interface ReworkCleanupResult {
   /** Number of AI-generated comments deleted. */
   deletedCount: number;
@@ -168,23 +189,27 @@ export async function cleanupReworkComments(
 
   let descriptionUpdated = false;
   if (humanReworkComments.length > 0) {
-    const summary = await summariseWithHaiku(humanReworkComments.map(c => c.body));
-    if (summary) {
-      try {
-        const nextDescription = upsertReworkNotes(issue.description, summary);
-        await updateIssueDescription(config, issue.id, nextDescription);
-        descriptionUpdated = true;
-        // Mutate the issue object in place so the dispatched agent reads the
-        // updated description in the same tick.
-        issue.description = nextDescription;
-      } catch (e) {
-        logger.warn(`Rework cleanup: description update failed: ${e instanceof Error ? e.message : String(e)}`, {
-          issue_id: issue.id,
-          issue_identifier: issue.identifier,
-        });
-      }
-    } else {
-      logger.warn("Rework cleanup: Haiku summary unavailable, skipping description update", {
+    // Without a summary (no ANTHROPIC_API_KEY on a subscription setup, or the
+    // call failed) fall back to the reviewer's own words — the AI comments are
+    // about to be deleted, so dropping the brief here would leave the agent
+    // with no idea why the ticket came back.
+    let summary = stripLeadingFixHeading(await summariseWithHaiku(humanReworkComments.map(c => c.body)));
+    if (!summary) {
+      logger.warn("Rework cleanup: Haiku summary unavailable, using reviewer comments verbatim", {
+        issue_id: issue.id,
+        issue_identifier: issue.identifier,
+      });
+      summary = rawReworkBrief(humanReworkComments);
+    }
+    try {
+      const nextDescription = upsertReworkNotes(issue.description, summary);
+      await updateIssueDescription(config, issue.id, nextDescription);
+      descriptionUpdated = true;
+      // Mutate the issue object in place so the dispatched agent reads the
+      // updated description in the same tick.
+      issue.description = nextDescription;
+    } catch (e) {
+      logger.warn(`Rework cleanup: description update failed: ${e instanceof Error ? e.message : String(e)}`, {
         issue_id: issue.id,
         issue_identifier: issue.identifier,
       });

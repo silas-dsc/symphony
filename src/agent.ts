@@ -6,6 +6,8 @@ import { Liquid } from "liquidjs";
 import type { Issue, AgentResult, WorkflowConfig, RateLimitInfo, AgentEvent, AgentEventCallback, Logger } from "./types.js";
 import { ensureWorkspace, runHook } from "./workspace.js";
 import { relevantLessonsForIssue } from "./lessons.js";
+import { appendRunRecord, defaultRunLogPath } from "./run-log.js";
+import { designExportPath, extractDesignLinks } from "./design-links.js";
 import { getLatestReassignmentComment } from "./linear.js";
 import {
   selectClaudeModel,
@@ -48,6 +50,10 @@ export function renderPrompt(
     symphony: { root: symphonyRoot },
     relevant_lessons: relevantLessons,
     reassignment_instruction: reassignmentInstruction,
+    design: {
+      links: extractDesignLinks(issue.description),
+      export_path: designExportPath(issue.identifier),
+    },
   });
 }
 
@@ -76,6 +82,7 @@ interface ClaudeStreamEvent {
   num_turns?: number;
   is_error?: boolean;
   usage?: { input_tokens?: number; output_tokens?: number };
+  total_cost_usd?: number;
   rate_limit_info?: ClaudeRateLimitInfo;
 }
 
@@ -131,6 +138,9 @@ export async function runAgentAttempt(
   let turnCount = 0;
   let success = false;
   let errorMsg: string | undefined;
+  let costUsd: number | undefined;
+  let provider = "none";
+  const startedAt = Date.now();
 
   const selectedModel = isClaudeBlocked()
     ? undefined
@@ -152,6 +162,8 @@ export async function runAgentAttempt(
     inputTokens = result.inputTokens;
     outputTokens = result.outputTokens;
     turnCount = result.turnCount;
+    costUsd = result.costUsd;
+    provider = result.provider ?? "unknown";
   } catch (e) {
     if (!abortController.signal.aborted) {
       errorMsg = e instanceof Error ? e.message : String(e);
@@ -164,6 +176,22 @@ export async function runAgentAttempt(
         logger?.warn(`after_run hook failed`, { identifier: issue.identifier, error: e instanceof Error ? e.message : String(e) });
       }
     }
+    appendRunRecord(defaultRunLogPath(symphonyRoot), {
+      at: new Date().toISOString(),
+      issue: issue.identifier,
+      labels: issue.labels,
+      attempt,
+      rework: /^## Fix\s*$/m.test(issue.description ?? ""),
+      provider,
+      model: provider === "claude" ? selectedModel ?? null : null,
+      success,
+      error: errorMsg ?? null,
+      durationMs: Date.now() - startedAt,
+      turns: turnCount,
+      inputTokens,
+      outputTokens,
+      costUsd: costUsd ?? null,
+    });
   }
 
   return {
@@ -173,6 +201,8 @@ export async function runAgentAttempt(
     outputTokens,
     totalTokens: inputTokens + outputTokens,
     turnCount,
+    costUsd,
+    provider,
   };
 }
 
@@ -226,11 +256,11 @@ async function spawnWithFailover(
         : "Codex fallback";
     onEvent({ type: "notification", message: `[symphony] Trying ${fallbackLabel}`, provider: providerLabel });
     const localResult = await spawnCodexAgent(prompt, cwd, abortController, onEvent, localProvider);
-    if (localResult.success) return localResult;
+    if (localResult.success) return { ...localResult, provider: providerLabel };
 
     onEvent({ type: "notification", message: "[symphony] Codex failed — trying Ollama Claude fallback (qwen3.5)", provider: "ollama/claude" });
     const ollamaResult = await spawnOllamaClaudeAgent(prompt, cwd, abortController, onEvent);
-    if (ollamaResult.success) return ollamaResult;
+    if (ollamaResult.success) return { ...ollamaResult, provider: "ollama/claude" };
 
     return {
       success: false,
@@ -401,6 +431,7 @@ async function spawnClaude(
     let resultError: string | undefined;
     let isRateLimited = false;
     let completionSummary: string | undefined;
+    let costUsd: number | undefined;
     const stderrBuf: string[] = [];
 
     proc.stderr.on("data", (chunk: Buffer) => {
@@ -474,6 +505,7 @@ async function spawnClaude(
 
       if (event.type === "result") {
         turnCount = event.num_turns ?? turnCount;
+        if (typeof event.total_cost_usd === "number") costUsd = event.total_cost_usd;
 
         // Aggregate token totals from final result if present
         const u = event.usage;
@@ -524,12 +556,12 @@ async function spawnClaude(
       rl.close();
 
       if (abortController.signal.aborted) {
-        resolve({ success: false, error: "aborted", inputTokens, outputTokens, totalTokens: inputTokens + outputTokens, turnCount, completionSummary });
+        resolve({ success: false, error: "aborted", inputTokens, outputTokens, totalTokens: inputTokens + outputTokens, turnCount, completionSummary, costUsd, provider: "claude" });
         return;
       }
 
       if (success) {
-        resolve({ success: true, inputTokens, outputTokens, totalTokens: inputTokens + outputTokens, turnCount, completionSummary });
+        resolve({ success: true, inputTokens, outputTokens, totalTokens: inputTokens + outputTokens, turnCount, completionSummary, costUsd, provider: "claude" });
       } else {
         // Check stderr for rate-limit signals even if not detected via events.
         const stderrJoined = stderrBuf.join(" ");
@@ -538,12 +570,12 @@ async function spawnClaude(
         }
 
         if (isRateLimited) {
-          resolve({ success: false, error: ERR_RATE_LIMITED, inputTokens, outputTokens, totalTokens: inputTokens + outputTokens, turnCount, completionSummary });
+          resolve({ success: false, error: ERR_RATE_LIMITED, inputTokens, outputTokens, totalTokens: inputTokens + outputTokens, turnCount, completionSummary, costUsd, provider: "claude" });
           return;
         }
 
         const errDetail = resultError ?? (stderrBuf.length ? stderrBuf.join("; ") : `exit code ${code}`);
-        resolve({ success: false, error: errDetail, inputTokens, outputTokens, totalTokens: inputTokens + outputTokens, turnCount, completionSummary });
+        resolve({ success: false, error: errDetail, inputTokens, outputTokens, totalTokens: inputTokens + outputTokens, turnCount, completionSummary, costUsd, provider: "claude" });
       }
     });
 

@@ -354,6 +354,14 @@ The ticket description **is the spec**. Read it as written and implement exactly
 No description provided. Implement the smallest change consistent with the ticket title.
 {% endif %}
 
+{% if design.links.size > 0 %}
+---
+**Design reference:** {% for link in design.links %}{{ link }}{% unless forloop.last %} · {% endunless %}{% endfor %}
+
+Before building, pin the design: if `{{ design.export_path }}` is not already on your branch or `origin/main`, open the first link with the Playwright or chrome-devtools MCP and save the design's own HTML (for a Claude Design artifact, the rendered artifact frame — not the claude.ai page around it) to `{{ design.export_path }}` and commit it with the change. Build against that file and compare your result to it on the preview, desktop and mobile.
+If the link needs a login you don't have, don't stop: build from the description and put `Visual match vs design (design link needs login)` under **Not checked**.
+{% endif %}
+
 {% if relevant_lessons != "" %}
 ---
 **Relevant past lessons** (retrieved from `lessons/lessons.jsonl` by keyword overlap — treat each as a warning to confirm, not a rule to obey blindly; the codebase may have moved on):
@@ -376,8 +384,21 @@ This is an unattended session. Never ask a human to do anything. Work only insid
 3. **Keep the change surgical and simple.** Touch only what the ticket needs. No speculative features, no refactors outside the change path, no abstractions for single-use code. Match the style of the file you're editing.
 4. **Use pnpm** (never npm/yarn), scoped per package: `pnpm --filter app ...`, `pnpm --filter functions ...`, `pnpm --filter functional-tests ...`.
 5. **Before pushing**, make sure the CI gate passes — `pnpm typecheck && pnpm lint` must be clean. Never use `--no-verify`; never disable a rule to silence an error. Commit in small, focused commits following the existing `git log` style.
-6. **Open a PR** against `origin/main` labelled `symphony`, with a short body summarising the change and linking the ticket ({{ issue.url }}).
-7. **Flip the Linear issue to `In Review`** once the PR is open and the change is complete.
+6. **Open a PR** against `origin/main` labelled `symphony`, with a short body summarising the change and linking the ticket ({{ issue.url }}). Include the same **Checked / Not checked** lines as step 7.
+7. **Post one delivery comment** on the Linear issue, in exactly this shape (the first line is an invisible marker — keep it, it lets Symphony tidy the comment up if the ticket comes back):
+   ```md
+   <!-- symphony-agent -->
+   ## ✅ Ready for review
+
+   <one sentence: what the user sees now that they didn't before>
+
+   **Checked:** <only what you actually ran or looked at — e.g. typecheck + lint, unit tests for X, admin flow on the preview, mobile layout>
+   **Not checked:** <what you could not verify, and why — e.g. learner sign-in (no learner test account)>
+
+   PR: <PR URL>
+   ```
+   **Not checked** is mandatory. It tells the reviewer exactly where to look. Write `Nothing — all acceptance points verified` only when that is literally true. Never list something under **Checked** that you inferred rather than ran or saw.
+8. **Flip the Linear issue to `In Review`** once the PR is open and the comment is posted.
 
 You have Linear access via the Linear MCP server, or `curl` with `$LINEAR_API_KEY` as a fallback.
 

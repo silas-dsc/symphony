@@ -350,6 +350,10 @@ export interface AgentResult {
   totalTokens: number;
   turnCount: number;
   completionSummary?: string;
+  /** Claude's `total_cost_usd` (API-equivalent estimate on a subscription). */
+  costUsd?: number;
+  /** Which provider actually ran: "claude", "codex", a local provider, or "ollama/claude". */
+  provider?: string;
 }
 
 export interface RateLimitInfo {
