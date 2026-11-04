@@ -193,6 +193,16 @@ export class SymphonyV2 {
     await this.sendDraft("weekly", formatWeeklyRoadmap(roadmap, { shippedThisWeek: week.done.length }));
   }
 
+  /** Plain DM to the operator (alerts). Returns false when Slack isn't configured. */
+  async notifyOperator(text: string): Promise<boolean> {
+    const operator = this.hub.person(this.cfg.v2.operatorKey);
+    const token = this.cfg.v2.slack.botToken;
+    if (!token || !operator?.slackUserId) return false;
+    const dm = await openDm(token, operator.slackUserId);
+    await postMessage(token, dm, text);
+    return true;
+  }
+
   /** DM the operator a draft with Post / Skip buttons. */
   private async sendDraft(kind: string, text: string): Promise<void> {
     const operator = this.hub.person(this.cfg.v2.operatorKey);

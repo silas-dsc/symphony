@@ -30,6 +30,8 @@ import { runRetrospective } from "./retrospective.js";
 import { commitAndPushLessons } from "./lessons-sync.js";
 import { cleanupReworkComments } from "./rework-cleanup.js";
 import { SymphonyV2 } from "./v2.js";
+import { FailureBreaker, refreshAuthEnv, redactSecrets, type TripKind } from "./failure-breaker.js";
+import { parse as parseDotenv } from "dotenv";
 
 function fmtErr(e: unknown): string {
   if (e instanceof Error) return e.message;
@@ -64,6 +66,8 @@ export class Orchestrator {
   private uxInsightsWatcher: UxInsightsWatcher | null = null;
   private firebaseLogsWatcher: FirebaseLogsWatcher | null = null;
   private v2: SymphonyV2 | null = null;
+  /** Pauses dispatch when every run fails the same way (e.g. Claude auth). */
+  private breaker = new FailureBreaker({ isAuthError });
   private log: Logger;
 
   constructor(workflowPath: string, logger: Logger) {
@@ -273,6 +277,7 @@ export class Orchestrator {
         throughput_tps: throughput,
       },
       rate_limit: rateLimit,
+      dispatch_paused: this.breaker.status(),
       running,
       retrying,
     };
@@ -418,6 +423,8 @@ export class Orchestrator {
     await this.reconcileTerminalIssues();
     this.backfillPickedUpPrLinks();
 
+    if (this.breaker.readyForTrial()) this.refreshAuthFromDotenv();
+
     const sorted = this.sortForDispatch(candidates);
     for (const issue of sorted) {
       if (!this.hasSlots()) break;
@@ -426,6 +433,8 @@ export class Orchestrator {
         // Governor: held tickets show in /status (v2.governor); not logged every tick.
         if (!this.v2.allowDispatch(issue).ok) continue;
       }
+      // Paused after systemic failures (shows in /status as dispatch_paused).
+      if (!this.breaker.allowDispatch()) break;
       try {
         await cleanupReworkComments(issue, this.config.tracker, this.log);
       } catch (e) {
@@ -644,6 +653,10 @@ export class Orchestrator {
     this.state.running.delete(issueId);
 
     if (result.success) {
+      if (this.breaker.recordSuccess()) {
+        this.log.info("Agent runs succeeding again; dispatch resumed", { issue_identifier: entry.issueIdentifier });
+        this.alertOperator(`✅ Symphony resumed: ${entry.issueIdentifier} ran successfully, so new work is starting again.`);
+      }
       // Release the claim and let the next poll re-evaluate the issue. If it's
       // still in an active state, the next tick (≤ pollIntervalMs away) will
       // pick it up naturally — no separate "continuation retry" needed.
@@ -676,7 +689,41 @@ export class Orchestrator {
           issue_identifier: entry.issueIdentifier,
         });
       }
+      const outcome = this.breaker.recordFailure(entry.issueIdentifier, result.error ?? "unknown");
+      if (outcome.justTripped) this.onBreakerTripped();
       this.scheduleRetry(issueId, entry.issueIdentifier, nextAttempt, result.error ?? null, delay);
+    }
+  }
+
+  private onBreakerTripped(): void {
+    const status = this.breaker.status();
+    if (!status) return;
+    const minutes = Math.round((Date.parse(status.next_trial_at ?? "") - Date.now()) / 60_000);
+    this.log.error("Dispatch paused: agent runs are failing systemically", { kind: status.kind, reason: status.reason });
+    this.alertOperator(breakerAlertText(status.kind, status.reason, Number.isFinite(minutes) ? minutes : 10));
+  }
+
+  /** Best-effort Slack DM to the v2 operator; always logged. */
+  private alertOperator(text: string): void {
+    const safe = redactSecrets(text);
+    if (!this.v2) {
+      this.log.warn("Operator alert (no v2 Slack configured)", { text: safe });
+      return;
+    }
+    this.v2.notifyOperator(safe)
+      .then(sent => { if (!sent) this.log.warn("Operator alert (no Slack DM configured)", { text: safe }); })
+      .catch(e => this.log.warn(`Operator alert failed to send: ${fmtErr(e)}`, { text: safe }));
+  }
+
+  /** Pick up credentials fixed in .env since startup (dotenv only loads it once). Logs key names, never values. */
+  private refreshAuthFromDotenv(): void {
+    try {
+      const envPath = path.resolve(process.cwd(), ".env");
+      if (!fs.existsSync(envPath)) return;
+      const changed = refreshAuthEnv(parseDotenv(fs.readFileSync(envPath)));
+      if (changed.length > 0) this.log.info("Reloaded Claude credentials from .env", { keys: changed });
+    } catch (e) {
+      this.log.warn(`Could not re-read .env: ${fmtErr(e)}`);
     }
   }
 
@@ -1035,6 +1082,13 @@ export class Orchestrator {
       return;
     }
 
+    // Paused: wait without burning an attempt; the half-open trial will decide.
+    if (this.breaker.readyForTrial()) this.refreshAuthFromDotenv();
+    if (!this.breaker.allowDispatch()) {
+      this.scheduleRetry(issueId, retryEntry.identifier, retryEntry.attempt, retryEntry.error, 60_000);
+      return;
+    }
+
     this.dispatch(issue, retryEntry.attempt);
   }
 
@@ -1210,6 +1264,19 @@ export class Orchestrator {
       logger: this.log,
     });
   }
+}
+
+export function breakerAlertText(kind: TripKind, reason: string, minutesToTrial: number): string {
+  const fix = kind === "auth"
+    ? "Fix: put a working CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`) or ANTHROPIC_API_KEY in Symphony's .env. " +
+      "No restart needed: Symphony re-reads them before the next trial run."
+    : "Check the Symphony terminal for the cause. Retries are held, not lost.";
+  return [
+    `⏸️ Symphony paused new work: every agent run is failing with the same error.`,
+    `> ${reason}`,
+    fix,
+    `It will try one ticket again in ~${Math.max(1, minutesToTrial)} min and resume by itself once that succeeds. You'll get one message when it does.`,
+  ].join("\n");
 }
 
 function computeDerived(config: WorkflowConfig): DerivedConfig {
