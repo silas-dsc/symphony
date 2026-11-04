@@ -26,6 +26,8 @@ export interface Issue {
   creator: IssuePerson | null;
   createdAt: Date | null;
   updatedAt: Date | null;
+  /** Parent issue identifier (sub-issues inherit their parent's roadmap rank). */
+  parentIdentifier?: string | null;
 }
 
 export interface WorkflowDefinition {

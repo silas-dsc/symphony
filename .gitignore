@@ -48,3 +48,5 @@ Desktop.ini
 # Symphony v2 runtime state and auto-deploy kill switch
 .symphony-state/
 .symphony-autodeploy-off
+# Local snapshot of the product roadmap page (contains its share link)
+.symphony-roadmap.json

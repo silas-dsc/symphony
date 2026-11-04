@@ -128,6 +128,7 @@ function normalizeIssue(node: Record<string, unknown>): Issue {
     creator: normalizePerson(node.creator),
     createdAt: node.createdAt ? new Date(node.createdAt as string) : null,
     updatedAt: node.updatedAt ? new Date(node.updatedAt as string) : null,
+    parentIdentifier: ((node.parent as { identifier?: string } | null)?.identifier) ?? null,
   };
 }
 
@@ -147,6 +148,7 @@ const CANDIDATE_QUERY_PROJECT = `
         assignee { name email }
         creator { name email }
         branchName url
+        parent { identifier }
         labels { nodes { name } }
         inverseRelations {
           nodes {
@@ -177,6 +179,7 @@ const CANDIDATE_QUERY_TEAM = `
         assignee { name email }
         creator { name email }
         branchName url
+        parent { identifier }
         labels { nodes { name } }
         inverseRelations {
           nodes {
@@ -241,6 +244,7 @@ const ISSUES_BY_IDS_QUERY = `
         assignee { name email }
         creator { name email }
         branchName url
+        parent { identifier }
         labels { nodes { name } }
         inverseRelations {
           nodes {
