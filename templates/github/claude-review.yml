@@ -19,14 +19,16 @@ concurrency:
 
 jobs:
   review:
-    # Dependabot PRs can't read repo secrets, so skip them (Symphony treats them as high risk anyway).
-    if: github.event.pull_request.draft == false && github.actor != 'dependabot[bot]'
+    # Dependabot and fork PRs can't read repo secrets, so skip them (Symphony treats Dependabot as high risk anyway).
+    if: >-
+      github.event.pull_request.draft == false &&
+      github.actor != 'dependabot[bot]' &&
+      github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
       contents: read
       pull-requests: write
-      id-token: write
     steps:
       - uses: actions/checkout@v4
         with:
