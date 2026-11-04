@@ -116,7 +116,10 @@ async function main(): Promise<void> {
 
   // Status HTTP server (loopback only). Failure here shouldn't bring down the orchestrator.
   try {
-    statusServer = await startStatusServer(orchestrator, port, logger);
+    const v2 = orchestrator.getV2();
+    const operator = v2 ? orchestrator.getConfigSnapshot().v2.people.find(p => p.key === orchestrator.getConfigSnapshot().v2.operatorKey) : null;
+    statusServer = await startStatusServer(orchestrator, port, logger,
+      v2 ? { store: v2.hub.store, maxOpenGates: operator?.maxOpenGates ?? 10 } : null);
   } catch (e) {
     logger.warn(`Status server failed to start on port ${port}: ${fmtErr(e)}`);
   }

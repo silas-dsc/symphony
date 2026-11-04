@@ -505,6 +505,24 @@ export async function addSlackNotificationComment(
   }
 }
 
+/** Post an arbitrary markdown comment on an issue (e.g. a recorded gate decision). */
+export async function addComment(
+  config: TrackerConfig,
+  issueId: string,
+  body: string,
+): Promise<void> {
+  const data = await graphql<CommentCreatePayload>(
+    config.endpoint,
+    config.apiKey,
+    COMMENT_CREATE_MUTATION,
+    { issueId, body },
+  );
+
+  if (!data.commentCreate?.success) {
+    throw new LinearError("linear_unknown_payload", "Linear commentCreate did not report success");
+  }
+}
+
 // ─── Ticket workflow rules (rule 1, 3) ──────────────────────────────────────
 
 /** Check if a ticket has already been marked as picked up (rule 1). */

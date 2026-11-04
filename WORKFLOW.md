@@ -322,6 +322,62 @@ firebase_logs:
   # The log scan runs about every 6 hours.
   run_interval_ms: 21600000
   gcloud_timeout_ms: 60000
+
+# ── Symphony v2 (docs/ORCHESTRATOR_REDESIGN.md, setup: docs/RUNNING_V2.md) ──
+# Off until you flip `enabled`. Each sub-feature can be turned off on its own.
+v2:
+  enabled: false
+  team_key: TEA
+  operator: silas
+  people:
+    - { key: silas, name: Silas, slack_user_id: U09NHAL0Q2G, linear_user: silas@teamdsc.com.au, max_open_gates: 10, max_new_gates_per_hour: 6 }
+    # Kept low on purpose: their cards come to Silas first with an "Ask <name>" button.
+    - { key: nika, name: Nika, slack_user_id: U0AN19380DB, linear_user: Nika, max_open_gates: 2, max_new_gates_per_hour: 2 }
+    - { key: evie, name: Evie, slack_user_id: U0G6GTL1E, linear_user: evie@teamdsc.com.au, max_open_gates: 2, max_new_gates_per_hour: 2 }
+  design_person: nika
+  product_person: evie
+  slack:
+    bot_token: $SLACK_BOT_TOKEN
+    # Socket Mode app token (xapp-…) so buttons work without a public URL.
+    app_token: $SLACK_APP_TOKEN
+    # Where "Post" sends the daily update (#dsc-website).
+    report_channel: C0A07RQJXP1
+  review:
+    state: In Review
+    rework_state: Dev in Progress
+    # Leave unset to let Linear's GitHub integration move tickets on merge.
+    # merged_state: Done
+    auto_merge: true          # low-risk, green, non-UI only. Kill switch: touch .symphony-autodeploy-off
+    max_auto_send_backs: 2
+  deploy_guard:
+    watch_minutes: 30
+    min_new_occurrences: 3
+  governor:
+    # Set from `npm run runs -- --days 7` after a week (API-equivalent $/week).
+    weekly_budget_usd: null
+    daily_share: 0.2
+    reserve_share: 0.2
+  reports:
+    daily_hour: 16            # local time, weekdays → DM draft with a Post button
+    weekly_day: 1             # Monday
+    weekly_hour: 9
+  triage:
+    enabled: false
+    triage_state: Triage
+    dev_state: Dev in Progress
+    backlog_state: Backlog
+    duplicate_state: Duplicate
+  slack_intake:
+    enabled: false
+    channels: C0A07RQJXP1
+    # Optional: only these reporters (Kristen, Jessica, Evie, Nika, Wei) — comma-separated Slack ids.
+    reporter_user_ids: ""
+  render_logs:
+    enabled: false
+    api_key: $RENDER_API_KEY
+    owner_id: $RENDER_OWNER_ID
+    service_ids: $RENDER_SERVICE_IDS
+    target_state: Triage
 ---
 
 You are an autonomous engineer working on a single Linear ticket for the **team-dsc** codebase — a TypeScript/React (Remix) web app with a Firebase/Firestore backend, managed as a pnpm monorepo.
@@ -362,6 +418,23 @@ Before building, pin the design: if `{{ design.export_path }}` is not already on
 If the link needs a login you don't have, don't stop: build from the description and put `Visual match vs design (design link needs login)` under **Not checked**.
 {% endif %}
 
+---
+**Stages for this ticket** (Symphony routed it — {% if route.reasons.size > 0 %}{{ route.reasons | join: "; " }}{% else %}default route{% endif %}):
+{% if route.plan %}- **PLAN first:** run the `planner` subagent before writing code and follow its acceptance list. If it ends with `APPROACH QUESTION:`, don't guess — ask (see *Asking a human* below) and stop.
+{% endif %}- **BUILD:** make the change (below).
+- **VERIFY:** run the `verifier` subagent before opening or updating the PR{% if route.ui %} — this is a UI change, so it must screenshot the Render preview at desktop and mobile{% if design.links.size > 0 %} next to `{{ design.export_path }}`{% endif %} and upload the screenshots for the delivery comment{% endif %}. Use its `Checked:` / `Not checked:` lines in the delivery comment.
+- **REVIEW:** run the `reviewer` subagent on the finished diff{% if route.lenses.size > 0 %} with lenses {{ route.lenses | join: ", " }}{% endif %}. Fix every `BLOCKER:` and `FIX:` and re-run it (max 2 rounds) before handing over.
+- A Stop hook re-runs `pnpm typecheck && pnpm lint` when you finish; if it fails you'll be told what to fix.
+
+**Asking a human** (only for a real decision: approach choice, product question, a login or credential you need): post one Linear comment that starts with these two lines, then add the label `waiting-on:silas` to the issue and stop. Symphony turns it into a one-click card and re-dispatches you with the answer.
+```md
+<!-- symphony-agent -->
+<!-- symphony-ask:<approve_approach | product_decision | login_credential> -->
+**Question:** <one sentence>
+- **A:** <option> (recommended)
+- **B:** <option>
+```
+
 {% if relevant_lessons != "" %}
 ---
 **Relevant past lessons** (retrieved from `lessons/lessons.jsonl` by keyword overlap — treat each as a warning to confirm, not a rule to obey blindly; the codebase may have moved on):
@@ -373,7 +446,7 @@ If the link needs a login you don't have, don't stop: build from the description
 
 ## How to work
 
-This is an unattended session. Never ask a human to do anything. Work only inside the provided repository copy (the workspace is already cloned and set up — `node_modules`, `.env` files, dev server, and ports are handled by the environment hooks). Stop only for a genuine external blocker (missing credentials or an external service failing with no local fix). For anything environmental — missing modules, dev server down, missing `.env`, stale lockfile — fix it yourself and continue.
+This is an unattended session. Never ask a human to do anything except through *Asking a human* above. Work only inside the provided repository copy (the workspace is already cloned and set up — `node_modules`, `.env` files, dev server, and ports are handled by the environment hooks). Stop only for a genuine external blocker (missing credentials or an external service failing with no local fix). For anything environmental — missing modules, dev server down, missing `.env`, stale lockfile — fix it yourself and continue.
 
 1. **Understand the task** from the description above, then read the code you need to change. `docs/AGENT_MEMORY.md` records domain vocabulary, conventions, and known pitfalls — consult the relevant parts before investigating.
 2. **Make the change** on a feature branch (never commit to `main`):
@@ -414,4 +487,4 @@ You have Linear access via the Linear MCP server, or `curl` with `$LINEAR_API_KE
 - Always use pnpm, never npm or yarn.
 - `pnpm typecheck && pnpm lint` must be clean before every push. Never `--no-verify`.
 - Keep the diff scoped to the ticket. If you spot unrelated debt or out-of-scope issues, file a Linear Backlog ticket — never expand this PR.
-- If you hit a genuine external blocker, leave the issue in `Dev in Progress` (or `Blocked` if that state exists) and add a Linear comment stating exactly what failed and the precise human action needed. Do not flip to `In Review` for a blocker.
+- If you hit a genuine external blocker, leave the issue in `Dev in Progress` and ask with `symphony-ask:login_credential` (see *Asking a human*), stating exactly what failed and the precise human action needed. Do not flip to `In Review` for a blocker.

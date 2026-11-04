@@ -29,6 +29,7 @@ import { claudeBlockedUntil } from "./llm.js";
 import { runRetrospective } from "./retrospective.js";
 import { commitAndPushLessons } from "./lessons-sync.js";
 import { cleanupReworkComments } from "./rework-cleanup.js";
+import { SymphonyV2 } from "./v2.js";
 
 function fmtErr(e: unknown): string {
   if (e instanceof Error) return e.message;
@@ -62,6 +63,7 @@ export class Orchestrator {
   private posthogWatcher: PostHogWatcher | null = null;
   private uxInsightsWatcher: UxInsightsWatcher | null = null;
   private firebaseLogsWatcher: FirebaseLogsWatcher | null = null;
+  private v2: SymphonyV2 | null = null;
   private log: Logger;
 
   constructor(workflowPath: string, logger: Logger) {
@@ -81,6 +83,7 @@ export class Orchestrator {
     this.posthogWatcher = this.createPostHogWatcher();
     this.uxInsightsWatcher = this.createUxInsightsWatcher();
     this.firebaseLogsWatcher = this.createFirebaseLogsWatcher();
+    this.v2 = this.config.v2.enabled ? new SymphonyV2(this.config, this.symphonyRoot, this.log) : null;
 
     this.state = {
       pollIntervalMs: this.config.polling.intervalMs,
@@ -116,6 +119,7 @@ export class Orchestrator {
 
     this.startFileWatch();
     await this.startupCleanup();
+    await this.v2?.start();
 
     // Best-effort team URL lookup so the status UI can link out.
     linear.fetchTeamUrl(this.config.tracker)
@@ -149,6 +153,7 @@ export class Orchestrator {
       this.watcher.close();
       this.watcher = null;
     }
+    this.v2?.stop();
     for (const entry of this.state.running.values()) {
       entry.abortController.abort();
     }
@@ -186,6 +191,11 @@ export class Orchestrator {
     if (which === "timeout") {
       this.log.warn("Shutdown timed out waiting for agents", { pending: pending.length, timeout_ms: timeoutMs });
     }
+  }
+
+  /** Symphony v2 (gates, governor…) when enabled. */
+  getV2(): SymphonyV2 | null {
+    return this.v2;
   }
 
   getConfigSnapshot(): WorkflowConfig {
@@ -367,6 +377,11 @@ export class Orchestrator {
       await this.firebaseLogsWatcher.reconcile();
     }
 
+    if (this.v2) {
+      // Gates, review flow, deploy guard, triage/intake, reports, governor readout.
+      await this.v2.reconcile(this.state.latestRateLimit);
+    }
+
     const validationError = validateConfig(this.config);
     if (validationError) {
       this.log.error(`Config validation failed, skipping dispatch: ${validationError}`);
@@ -407,6 +422,10 @@ export class Orchestrator {
     for (const issue of sorted) {
       if (!this.hasSlots()) break;
       if (!this.shouldDispatch(issue)) continue;
+      if (this.v2) {
+        // Governor: held tickets show in /status (v2.governor); not logged every tick.
+        if (!this.v2.allowDispatch(issue).ok) continue;
+      }
       try {
         await cleanupReworkComments(issue, this.config.tracker, this.log);
       } catch (e) {
@@ -508,7 +527,8 @@ export class Orchestrator {
   }
 
   private hasSlots(): boolean {
-    return this.state.running.size < this.state.maxConcurrentAgents;
+    const max = this.v2 ? this.v2.maxConcurrent(this.state.maxConcurrentAgents) : this.state.maxConcurrentAgents;
+    return this.state.running.size < max;
   }
 
   private dispatch(issue: Issue, attempt: number | null): void {
@@ -995,6 +1015,12 @@ export class Orchestrator {
     if (!issue) {
       this.state.claimed.delete(issueId);
       this.log.info(`Releasing claim: issue no longer active`, { issue_identifier: retryEntry.identifier });
+      return;
+    }
+
+    // An agent that asked a human (waiting-on label) must not be retried until answered.
+    if (this.v2 && !this.v2.allowDispatch(issue).ok) {
+      this.state.claimed.delete(issueId);
       return;
     }
 

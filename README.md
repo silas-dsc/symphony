@@ -324,6 +324,8 @@ Get a key at [console.anthropic.com/settings/keys](https://console.anthropic.com
 
 ## Running Symphony
 
+> **Symphony v2** (one-click human gates, review flow with auto-merge + deploy guard, stages, governor, triage/intake, reports) is configured under `v2:` in WORKFLOW.md and off by default. Setup and daily use: [docs/RUNNING_V2.md](docs/RUNNING_V2.md). Design: [docs/ORCHESTRATOR_REDESIGN.md](docs/ORCHESTRATOR_REDESIGN.md).
+
 ```bash
 # Start the orchestrator (reads WORKFLOW.md from the current directory)
 node dist/index.js

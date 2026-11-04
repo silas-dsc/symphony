@@ -1,0 +1,49 @@
+# Symphony v2 REVIEW stage — copy to team-dsc/.github/workflows/claude-review.yml
+#
+# Reviews every PR (Symphony's and humans'), posting one summary comment that
+# ends `Verdict: approve` or `Verdict: changes`. Symphony's review flow reads
+# that line: `changes` sends a Symphony PR back for rework (BLOCKER/FIX lines
+# become the brief) before any human sees it; `approve` lets it continue.
+#
+# Setup (once): run `claude setup-token` locally, then add the token as the
+# repo secret CLAUDE_CODE_OAUTH_TOKEN (uses your Claude subscription).
+name: claude-review
+
+on:
+  pull_request:
+    types: [opened, ready_for_review, synchronize]
+
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          claude_args: "--max-turns 30"
+          prompt: |
+            Review PR #${{ github.event.pull_request.number }} in ${{ github.repository }} (`git diff origin/${{ github.base_ref }}...HEAD`).
+            This is a pnpm monorepo: packages/app (Remix, React, Tailwind), packages/functions (Firebase Cloud Functions), Firestore rules.
+
+            Look for, in order:
+            1. Bugs: wrong logic, unhandled errors, broken edge cases, security (auth checks, Firestore rules, secrets).
+            2. Hidden debt: new TODO/FIXME, skipped or deleted tests, `any`/loose types, copy-paste, logic changed without a test, dead code.
+            3. Scope creep beyond the PR's stated purpose.
+
+            Post ONE PR comment, under 250 words:
+            - `BLOCKER:` / `FIX:` / `NIT:` lines with file:line (omit NITs if there are BLOCKERs)
+            - last line exactly `Verdict: approve` or `Verdict: changes`
+            Don't restate the diff. Plain words. If nothing is wrong, say "No issues found." and approve.

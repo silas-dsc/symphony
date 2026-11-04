@@ -8,6 +8,8 @@ import { ensureWorkspace, runHook } from "./workspace.js";
 import { relevantLessonsForIssue } from "./lessons.js";
 import { appendRunRecord, defaultRunLogPath } from "./run-log.js";
 import { designExportPath, extractDesignLinks } from "./design-links.js";
+import { buildStageArgs } from "./stages.js";
+import { routeTicket } from "./routing.js";
 import { getLatestReassignmentComment } from "./linear.js";
 import {
   selectClaudeModel,
@@ -54,6 +56,7 @@ export function renderPrompt(
       links: extractDesignLinks(issue.description),
       export_path: designExportPath(issue.identifier),
     },
+    route: routeTicket(issue),
   });
 }
 
@@ -156,7 +159,7 @@ export async function runAgentAttempt(
 
   try {
     onEvent({ type: "session_started" });
-    const result = await spawnWithFailover(prompt, wsPath, config.agent.maxTurns, abortController, onEvent, selectedModel, mcpConfigPath);
+    const result = await spawnWithFailover(prompt, wsPath, config.agent.maxTurns, abortController, onEvent, selectedModel, mcpConfigPath, buildStageArgs(symphonyRoot));
     success = result.success;
     errorMsg = result.error;
     inputTokens = result.inputTokens;
@@ -218,13 +221,14 @@ async function spawnWithFailover(
   onEvent: AgentEventCallback,
   model: string | undefined,
   mcpConfigPath: string | undefined,
+  extraArgs: string[] = [],
 ): Promise<AgentResult> {
   // ── Claude ──────────────────────────────────────────────────────────────────
   // Skip Claude entirely if it is known to be rate-limited right now.
   if (!isClaudeBlocked()) {
     let claudeResult: AgentResult | undefined;
     try {
-      claudeResult = await spawnClaude(prompt, cwd, maxTurns, abortController, onEvent, model, mcpConfigPath);
+      claudeResult = await spawnClaude(prompt, cwd, maxTurns, abortController, onEvent, model, mcpConfigPath, extraArgs);
     } catch {
       claudeResult = { success: false, error: ERR_UNAVAILABLE, inputTokens: 0, outputTokens: 0, totalTokens: 0, turnCount: 0 };
     }
@@ -384,6 +388,7 @@ async function spawnClaude(
   onEvent: AgentEventCallback,
   model: string | undefined,
   mcpConfigPath: string | undefined,
+  extraArgs: string[] = [],
 ): Promise<AgentResult> {
   return new Promise((resolve, reject) => {
     // Build a clean env for the spawned `claude`. An empty `ANTHROPIC_API_KEY=""`
@@ -405,6 +410,7 @@ async function spawnClaude(
         "-p",
         ...modelArgs,
         ...mcpArgs,
+        ...extraArgs,
         "--output-format", "stream-json",
         "--verbose",
         "--dangerously-skip-permissions",
