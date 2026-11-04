@@ -776,7 +776,7 @@ export class Orchestrator {
     this.state.claimed.delete(issueId);
     this.state.trackedIssues.delete(issueId);
 
-    if (this.config.notifications.slack && issue.url && isCompletionState(state)) {
+    if (this.config.notifications.slack?.completionFeed && issue.url && isCompletionState(state)) {
       try {
         const alreadySent = await linear.hasSlackNotificationComment(this.config.tracker, issueId);
         if (alreadySent) {
@@ -885,7 +885,7 @@ export class Orchestrator {
     this.slackBatchTimer = null;
 
     const slack = this.config.notifications.slack;
-    if (!slack) {
+    if (!slack || !slack.completionFeed) {
       if (reschedule) this.scheduleSlackBatch();
       return;
     }

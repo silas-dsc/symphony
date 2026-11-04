@@ -45,6 +45,30 @@ Prompt body`, "utf8");
         "alice@example.com": "U123",
         "Bob Example": "U456",
       },
+      completionFeed: true,
     });
+  });
+
+  it("can turn the completion feed off while keeping the Slack credentials", () => {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "symphony-config-"));
+    const workflowPath = path.join(tmpDir, "WORKFLOW.md");
+    fs.writeFileSync(workflowPath, `---
+tracker:
+  kind: linear
+  api_key: test-linear-key
+  project_slug: demo
+notifications:
+  slack:
+    bot_token: xoxb-literal
+    channel: C0TESTCHAN
+    completion_feed: false
+---
+
+Prompt body`, "utf8");
+
+    const slack = loadWorkflow(workflowPath).config.notifications.slack;
+    expect(slack?.completionFeed).toBe(false);
+    expect(slack?.botToken).toBe("xoxb-literal");
+    expect(slack?.channel).toBe("C0TESTCHAN");
   });
 });

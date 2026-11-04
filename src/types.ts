@@ -370,6 +370,8 @@ export interface SlackNotificationsConfig {
   /** Target channel ID (preferred) or name the bot posts completion updates to. */
   channel: string;
   userMap: Record<string, string>;
+  /** Post the batched "DONE:" completion feed to `channel` (default true). Other reports still reuse these credentials when false. */
+  completionFeed: boolean;
 }
 
 export interface TrackerConfig {
