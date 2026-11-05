@@ -370,11 +370,14 @@ v2:
     dev_state: Dev in Progress
     backlog_state: Backlog
     duplicate_state: Duplicate
-  # Product roadmap (Evie's "Feature roadmap: What's next?" page). Symphony orders work by it,
-  # flags items waiting on people, and starts the first ready one. Refresh the local snapshot
-  # with `npm run roadmap -- <saved page .html|.json> [page url]`.
+  # Product roadmap (Evie's "Feature roadmap: What's next?", edited at teamdsc.com.au/dashboard/roadmap).
+  # Symphony orders work by it, flags items waiting on people, and starts the first ready one.
+  # It reads the live feed (bearer ROADMAP_FEED_TOKEN from .env), caching each read to `file`;
+  # if the feed is down it uses that last good copy.
   roadmap:
     enabled: true
+    url: https://teamdsc.com.au/api/roadmap
+    token: $ROADMAP_FEED_TOKEN
     file: .symphony-roadmap.json
     pull_ready: true          # start the next ready item itself (moves it to Dev in Progress)
     max_in_flight: 1          # roadmap tickets Symphony builds at once
