@@ -6,6 +6,7 @@ import * as readline from "node:readline";
 import { Liquid } from "liquidjs";
 import type { HooksConfig, Logger, MergeConflictConfig } from "./types.js";
 import { ensureWorkspace, removeWorkspace, runHook } from "./workspace.js";
+import { trackTokenProcess } from "./usage-budget.js";
 
 const execFileP = promisify(execFile);
 const liquid = new Liquid({ strictVariables: true, strictFilters: true });
@@ -480,6 +481,7 @@ function spawnResolveConflictsClaude(prompt: string, ctx: ResolveConflictsContex
         stdio: ["pipe", "pipe", "pipe"],
       }
     );
+    trackTokenProcess(proc, "merge-conflict");
 
     let settled = false;
     const settle = (fn: () => void): void => {

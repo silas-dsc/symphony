@@ -11,6 +11,7 @@ import { designExportPath, extractDesignLinks } from "./design-links.js";
 import { buildStageArgs } from "./stages.js";
 import { routeTicket } from "./routing.js";
 import { getLatestReassignmentComment } from "./linear.js";
+import { trackTokenProcess } from "./usage-budget.js";
 import {
   selectClaudeModel,
   spawnCodexAgent,
@@ -421,6 +422,7 @@ async function spawnClaude(
         stdio: ["pipe", "pipe", "pipe"],
       }
     );
+    trackTokenProcess(proc, "agent");
 
     if (proc.pid) onEvent({ type: "process_spawned", pid: proc.pid });
 

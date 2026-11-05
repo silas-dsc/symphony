@@ -570,6 +570,8 @@ export interface StatusSnapshot {
   rate_limit: RateLimitSnapshot | null;
   /** Set while dispatch is paused after systemic agent failures (see failure-breaker.ts). */
   dispatch_paused?: BreakerStatus | null;
+  /** Hourly Claude usage budget readout (see usage-budget.ts); null when off. */
+  usage_budget?: Record<string, unknown> | null;
   running: RunningSnapshot[];
   retrying: RetrySnapshot[];
 }

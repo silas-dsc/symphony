@@ -4,6 +4,7 @@ import * as path from "node:path";
 import * as readline from "node:readline";
 import { Liquid } from "liquidjs";
 import type { Issue, Logger, RetrospectiveConfig } from "./types.js";
+import { trackTokenProcess } from "./usage-budget.js";
 
 const liquid = new Liquid({ strictVariables: true, strictFilters: true });
 
@@ -142,6 +143,7 @@ function spawnRetrospectiveClaude(prompt: string, ctx: RetrospectiveContext): Pr
         stdio: ["pipe", "pipe", "pipe"],
       }
     );
+    trackTokenProcess(proc, "retrospective");
 
     let settled = false;
     const settle = (fn: () => void): void => {

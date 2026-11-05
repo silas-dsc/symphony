@@ -32,6 +32,7 @@ import { cleanupReworkComments } from "./rework-cleanup.js";
 import { SymphonyV2 } from "./v2.js";
 import { FailureBreaker, refreshAuthEnv, redactSecrets, type TripKind } from "./failure-breaker.js";
 import { parse as parseDotenv } from "dotenv";
+import { UsageBudget, parseBudgetConfig, probeUsage, tokenProcesses, type BudgetConfig } from "./usage-budget.js";
 
 function fmtErr(e: unknown): string {
   if (e instanceof Error) return e.message;
@@ -68,6 +69,13 @@ export class Orchestrator {
   private v2: SymphonyV2 | null = null;
   /** Pauses dispatch when every run fails the same way (e.g. Claude auth). */
   private breaker = new FailureBreaker({ isAuthError });
+  /** Hourly share of the Claude 5-hour limit; over it, token-using processes are suspended. */
+  private budgetCfg: BudgetConfig;
+  private budget: UsageBudget;
+  private usageTimer: ReturnType<typeof setInterval> | null = null;
+  private nextUsageCheckAt = 0;
+  private usageCheckRunning = false;
+  private usageProbeUnavailableLogged = false;
   private log: Logger;
 
   constructor(workflowPath: string, logger: Logger) {
@@ -88,6 +96,8 @@ export class Orchestrator {
     this.uxInsightsWatcher = this.createUxInsightsWatcher();
     this.firebaseLogsWatcher = this.createFirebaseLogsWatcher();
     this.v2 = this.config.v2.enabled ? new SymphonyV2(this.config, this.symphonyRoot, this.log) : null;
+    this.budgetCfg = parseBudgetConfig(this.config.v2.usageBudget ?? {});
+    this.budget = new UsageBudget(this.budgetCfg.maxPerHour);
 
     this.state = {
       pollIntervalMs: this.config.polling.intervalMs,
@@ -132,6 +142,11 @@ export class Orchestrator {
 
     this.scheduleTick(0);
     this.scheduleSlackBatch();
+    // Own timer, not the tick: a tick can be stuck awaiting a suspended process.
+    if (this.budgetCfg.enabled) {
+      void this.checkUsageBudget();
+      this.usageTimer = setInterval(() => void this.checkUsageBudget(), 60_000);
+    }
 
     this.log.info("Symphony started", {
       project: this.config.tracker.projectSlug,
@@ -157,6 +172,12 @@ export class Orchestrator {
       this.watcher.close();
       this.watcher = null;
     }
+    if (this.usageTimer) {
+      clearInterval(this.usageTimer);
+      this.usageTimer = null;
+    }
+    // Suspended processes can't handle SIGTERM; wake them so shutdown is clean.
+    tokenProcesses.resume();
     this.v2?.stop();
     for (const entry of this.state.running.values()) {
       entry.abortController.abort();
@@ -278,6 +299,7 @@ export class Orchestrator {
       },
       rate_limit: rateLimit,
       dispatch_paused: this.breaker.status(),
+      usage_budget: this.usageBudgetStatus(),
       running,
       retrying,
     };
@@ -345,6 +367,13 @@ export class Orchestrator {
 
   private async tick(): Promise<void> {
     await this.reconcile();
+
+    if (tokenProcesses.isPaused()) {
+      // Over the hourly usage budget: skip every step that can spawn Claude
+      // (conflict resolver, insight watchers, v2 triage/intake, dispatch).
+      this.scheduleTick(this.state.pollIntervalMs);
+      return;
+    }
 
     if (this.previewWarmer) {
       await this.previewWarmer.reconcile();
@@ -704,6 +733,83 @@ export class Orchestrator {
       if (outcome.justTripped) this.onBreakerTripped();
       this.scheduleRetry(issueId, entry.issueIdentifier, nextAttempt, result.error ?? null, delay);
     }
+  }
+
+  /**
+   * Every `check_minutes` (and when a pause is due to end): read the account's
+   * 5-hour usage, and suspend or resume every token-using process to keep the
+   * trailing hour under `max_share_per_hour` of the 5-hour limit.
+   */
+  private async checkUsageBudget(now = Date.now()): Promise<void> {
+    if (!this.budgetCfg.enabled || this.usageCheckRunning || now < this.nextUsageCheckAt) return;
+    const token = process.env.CLAUDE_CODE_OAUTH_TOKEN;
+    if (!token) {
+      if (!this.usageProbeUnavailableLogged) {
+        this.log.warn("Usage budget off: needs CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`) to read Claude usage");
+        this.usageProbeUnavailableLogged = true;
+      }
+      this.nextUsageCheckAt = now + this.budgetCfg.checkMs;
+      return;
+    }
+    this.usageCheckRunning = true;
+    try {
+      const sample = await probeUsage(token).catch(e => {
+        this.log.warn(`Usage check failed: ${fmtErr(e)}`);
+        return null;
+      });
+      if (!sample) {
+        // Keep the current state; try again next interval (or in 5 min while paused).
+        this.nextUsageCheckAt = now + (tokenProcesses.isPaused() ? 5 * 60_000 : this.budgetCfg.checkMs);
+        return;
+      }
+      this.budget.record(sample);
+      const resumeAt = this.budget.resumeAt(sample.at);
+      const spent = this.budget.spentLastHour(sample.at);
+      if (resumeAt) {
+        const first = !tokenProcesses.isPaused();
+        const suspended = tokenProcesses.pause(resumeAt);
+        this.nextUsageCheckAt = resumeAt;
+        if (first) {
+          this.log.warn("Usage budget exceeded: pausing token-using processes", {
+            spent_last_hour: pct(spent), budget: pct(this.budgetCfg.maxPerHour), five_hour: pct(sample.fiveHour),
+            suspended, resume_at: new Date(resumeAt).toISOString(),
+          });
+          this.alertOperator(
+            `⏸️ Symphony paused: ${pct(spent)} of the 5-hour Claude limit was used in the last hour (budget ${pct(this.budgetCfg.maxPerHour)}, all your Claude use counts). ` +
+            `5-hour window is at ${pct(sample.fiveHour)}. ${suspended.length} running process(es) suspended, nothing new will start. ` +
+            `Expected to resume around ${clock(resumeAt)}.`,
+          );
+        }
+      } else {
+        this.nextUsageCheckAt = now + this.budgetCfg.checkMs;
+        if (tokenProcesses.isPaused()) {
+          const resumed = tokenProcesses.resume();
+          // Suspended agents were silent; don't let the stall detector kill them now.
+          for (const e of this.state.running.values()) e.lastEventAt = new Date();
+          this.log.info("Usage back under budget: resuming", { resumed, spent_last_hour: pct(spent), five_hour: pct(sample.fiveHour) });
+          this.alertOperator(`▶️ Symphony resumed: last-hour Claude use is ${pct(spent)} (budget ${pct(this.budgetCfg.maxPerHour)}); 5-hour window at ${pct(sample.fiveHour)}.`);
+          this.scheduleTick(0);
+        }
+      }
+    } finally {
+      this.usageCheckRunning = false;
+    }
+  }
+
+  private usageBudgetStatus(): Record<string, unknown> | null {
+    if (!this.budgetCfg.enabled) return null;
+    const latest = this.budget.latest();
+    const pausedUntil = tokenProcesses.pausedUntil();
+    return {
+      max_share_per_hour: this.budgetCfg.maxPerHour,
+      spent_last_hour: latest ? Number(this.budget.spentLastHour(Date.now()).toFixed(3)) : null,
+      five_hour: latest?.fiveHour ?? null,
+      five_hour_resets_at: latest ? new Date(latest.fiveHourResetsAt * 1000).toISOString() : null,
+      seven_day: latest?.sevenDay ?? null,
+      checked_at: latest ? new Date(latest.at).toISOString() : null,
+      paused_until: pausedUntil ? new Date(pausedUntil).toISOString() : null,
+      token_processes: tokenProcesses.count(),
+    };
   }
 
   private onBreakerTripped(): void {
@@ -1095,7 +1201,7 @@ export class Orchestrator {
 
     // Paused: wait without burning an attempt; the half-open trial will decide.
     if (this.breaker.readyForTrial()) this.refreshAuthFromDotenv();
-    if (!this.breaker.allowDispatch()) {
+    if (tokenProcesses.isPaused() || !this.breaker.allowDispatch()) {
       this.scheduleRetry(issueId, retryEntry.identifier, retryEntry.attempt, retryEntry.error, 60_000);
       return;
     }
@@ -1111,6 +1217,8 @@ export class Orchestrator {
   }
 
   private reconcileStalled(): void {
+    // Suspended agents emit nothing; that's the budget pause, not a stall.
+    if (tokenProcesses.isPaused()) return;
     const stallMs = this.config.agent.stallTimeoutMs;
     const now = Date.now();
 
@@ -1275,6 +1383,14 @@ export class Orchestrator {
       logger: this.log,
     });
   }
+}
+
+function pct(x: number): string {
+  return `${Math.round(x * 100)}%`;
+}
+
+function clock(ms: number): string {
+  return new Date(ms).toLocaleTimeString("en-AU", { hour: "numeric", minute: "2-digit" });
 }
 
 export function breakerAlertText(kind: TripKind, reason: string, minutesToTrial: number): string {
