@@ -7,6 +7,7 @@ import { Liquid } from "liquidjs";
 import type { HooksConfig, Logger, MergeConflictConfig } from "./types.js";
 import { ensureWorkspace, removeWorkspace, runHook } from "./workspace.js";
 import { trackTokenProcess } from "./usage-budget.js";
+import { claudeEffortArgs, claudeModelArgs } from "./llm.js";
 
 const execFileP = promisify(execFile);
 const liquid = new Liquid({ strictVariables: true, strictFilters: true });
@@ -470,6 +471,7 @@ function spawnResolveConflictsClaude(prompt: string, ctx: ResolveConflictsContex
       [
         "-p",
         "--strict-mcp-config", // never load the operator's personal MCP servers
+        ...claudeModelArgs(), ...claudeEffortArgs(),
         ...mcpArgs,
         "--max-turns", String(ctx.config.maxTurns),
         "--output-format", "stream-json",

@@ -1,4 +1,5 @@
 import type { ChildProcess } from "node:child_process";
+import * as fs from "node:fs";
 
 /**
  * Hourly Claude usage budget.
@@ -61,13 +62,33 @@ export function increments(samples: UsageSample[]): Array<{ at: number; amount: 
 
 export class UsageBudget {
   private samples: UsageSample[] = [];
-  constructor(private readonly maxPerHour: number) {}
+
+  /**
+   * @param statePath where the last hour of samples is saved. Without it a
+   *   restart forgets the history, and a climb that spans restarts is never seen.
+   */
+  constructor(private readonly maxPerHour: number, private readonly statePath: string | null = null) {
+    if (!statePath) return;
+    try {
+      const saved = JSON.parse(fs.readFileSync(statePath, "utf8")) as UsageSample[];
+      if (Array.isArray(saved)) this.samples = saved.filter(x => typeof x?.at === "number" && typeof x?.fiveHour === "number");
+    } catch {
+      // nothing saved yet
+    }
+  }
 
   record(s: UsageSample): void {
     this.samples.push(s);
     // Keep the newest sample older than an hour as the baseline; drop the rest.
     const cutoff = s.at - HOUR;
     while (this.samples.length > 2 && this.samples[1].at <= cutoff) this.samples.shift();
+    if (this.statePath) {
+      try {
+        fs.writeFileSync(this.statePath, JSON.stringify(this.samples));
+      } catch {
+        // best effort
+      }
+    }
   }
 
   latest(): UsageSample | null {

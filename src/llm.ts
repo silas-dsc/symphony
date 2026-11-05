@@ -6,7 +6,23 @@ import { trackTokenProcess } from "./usage-budget.js";
 
 export const CLAUDE_HAIKU_MODEL  = process.env.CLAUDE_HAIKU_MODEL  ?? "claude-haiku-4-5";
 export const CLAUDE_SONNET_MODEL = process.env.CLAUDE_SONNET_MODEL ?? "claude-sonnet-4-5";
-export const CLAUDE_OPUS_MODEL   = process.env.CLAUDE_OPUS_MODEL   ?? "claude-opus-4-5";
+export const CLAUDE_OPUS_MODEL   = process.env.CLAUDE_OPUS_MODEL   ?? "claude-opus-5-5";
+
+/** Model every Claude run uses unless CLAUDE_MODEL says otherwise ("auto" = let Haiku pick per ticket). */
+export const DEFAULT_CLAUDE_MODEL = "claude-opus-5-5";
+const EFFORTS = new Set(["low", "medium", "high", "xhigh", "max"]);
+
+/** `--model` for one-shot Claude runs (conflicts, tests, retrospectives…): CLAUDE_MODEL, else Opus 5.5. */
+export function claudeModelArgs(): string[] {
+  const m = process.env.CLAUDE_MODEL?.trim();
+  return ["--model", m && m !== "auto" ? m : DEFAULT_CLAUDE_MODEL];
+}
+
+/** `--effort` for every Claude run: CLAUDE_EFFORT (low|medium|high|xhigh|max), default medium. */
+export function claudeEffortArgs(): string[] {
+  const e = (process.env.CLAUDE_EFFORT ?? "medium").trim().toLowerCase();
+  return ["--effort", EFFORTS.has(e) ? e : "medium"];
+}
 export const OLLAMA_CLAUDE_MODEL = process.env.OLLAMA_CLAUDE_MODEL ?? "qwen3.5";
 
 const DEFAULT_OLLAMA_CLAUDE_TIMEOUT_MS = 480_000;
@@ -150,8 +166,9 @@ Reply with exactly one word (haiku / sonnet / opus):`;
 export async function selectClaudeModel(
   issue: { title: string; description: string | null },
 ): Promise<string> {
-  const override = process.env.CLAUDE_MODEL;
-  if (override && override !== "auto") return override;
+  const override = process.env.CLAUDE_MODEL?.trim();
+  if (!override) return DEFAULT_CLAUDE_MODEL;
+  if (override !== "auto") return override;
 
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) return CLAUDE_SONNET_MODEL;  // no key → default to Sonnet

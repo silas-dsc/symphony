@@ -5,6 +5,7 @@ import * as readline from "node:readline";
 import { Liquid } from "liquidjs";
 import type { Issue, Logger, RetrospectiveConfig } from "./types.js";
 import { trackTokenProcess } from "./usage-budget.js";
+import { claudeEffortArgs, claudeModelArgs } from "./llm.js";
 
 const liquid = new Liquid({ strictVariables: true, strictFilters: true });
 
@@ -132,6 +133,7 @@ function spawnRetrospectiveClaude(prompt: string, ctx: RetrospectiveContext): Pr
       [
         "-p",
         "--strict-mcp-config", // never load the operator's personal MCP servers
+        ...claudeModelArgs(), ...claudeEffortArgs(),
         ...mcpArgs,
         "--max-turns", String(ctx.config.maxTurns),
         "--output-format", "stream-json",
