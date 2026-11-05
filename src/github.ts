@@ -209,6 +209,11 @@ export class GhCliClient implements GitHubClient {
     return url;
   }
 
+  async commentPr(prUrl: string, body: string): Promise<void> {
+    requirePrUrl(prUrl);
+    await this.gh(["pr", "comment", prUrl, "--body", body]);
+  }
+
   async listPrComments(prUrl: string, limit = 20): Promise<PrComment[]> {
     requirePrUrl(prUrl);
     const stdout = await this.gh(["pr", "view", prUrl, "--json", "comments"]);

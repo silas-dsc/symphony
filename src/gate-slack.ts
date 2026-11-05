@@ -13,6 +13,7 @@ const KIND_EMOJI: Record<GateKind, string> = {
   approve_approach: "🧭",
   visual_signoff: "🎨",
   code_review: "🔍",
+  pr_review: "👀",
   merge_deploy: "🚀",
   login_credential: "🔑",
   product_decision: "🤔",

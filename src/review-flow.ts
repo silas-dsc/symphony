@@ -175,7 +175,7 @@ export class ReviewFlow {
 
     const delivery = parseDelivery(issueComments);
     const preview = findPreviewUrl(prComments);
-    const links: GateLink[] = [{ label: "Diff", url: `${pr.url}/files` }];
+    const links: GateLink[] = [{ label: `PR #${pr.number}`, url: pr.url }, { label: "Diff", url: `${pr.url}/files` }];
     if (preview) links.push({ label: "Preview", url: preview });
     links.push({ label: issue.identifier, url: issue.url });
 
@@ -201,7 +201,7 @@ export class ReviewFlow {
       question: ui ? "Does the preview match the design?" : "Merge this?",
       links,
       images: delivery.images,
-      meta: { prUrl: pr.url, risk: risk.risk },
+      meta: { prUrl: pr.url, risk: risk.risk, ...(preview ? { previewUrl: preview } : {}) },
     });
   }
 

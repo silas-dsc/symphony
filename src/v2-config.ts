@@ -53,6 +53,10 @@ export interface V2Config {
   roadmap: Record<string, unknown>;
   /** Raw `v2.usage_budget` block, parsed by usage-budget.ts. */
   usageBudget: Record<string, unknown>;
+  /** Raw `v2.release` block (post-merge deploy watch, prod test, close/follow-up), parsed in v2.ts. */
+  release: Record<string, unknown>;
+  /** Raw `v2.review_requests` block (cards for teammates' PRs), parsed in v2.ts. */
+  reviewRequests: Record<string, unknown>;
 }
 
 export interface V2ParseContext {
@@ -134,6 +138,8 @@ export function parseV2Config(raw: Raw, ctx: V2ParseContext): V2Config {
     renderLogs: obj(raw.render_logs),
     roadmap: obj(raw.roadmap),
     usageBudget: obj(raw.usage_budget),
+    release: obj(raw.release),
+    reviewRequests: obj(raw.review_requests),
   };
 }
 

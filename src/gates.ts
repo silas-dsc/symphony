@@ -15,6 +15,13 @@ import type {
  * its own `actions`, but these keep every card to the minimum the human needs:
  * one obvious primary action plus (usually) one redirect.
  */
+/**
+ * Runs a functional test on the PR preview without closing the card (a "side
+ * action": see GateHub.onSideAction). Results go to the ticket and a DM.
+ */
+export const FUNCTIONAL_TEST_ACTION = "functional_test";
+const FUNCTIONAL_TEST_BUTTON: GateAction = { id: FUNCTIONAL_TEST_ACTION, label: "🧪 Functional test", kind: "neutral" };
+
 export function defaultActionsFor(kind: GateKind): GateAction[] {
   switch (kind) {
     case "approve_approach":
@@ -26,11 +33,19 @@ export function defaultActionsFor(kind: GateKind): GateAction[] {
       return [
         { id: "looks_good", label: "Looks good", kind: "approve", primary: true },
         { id: "request_change", label: "Request change", kind: "reject" },
+        FUNCTIONAL_TEST_BUTTON,
       ];
     case "code_review":
       return [
         { id: "merge", label: "Merge", kind: "approve", primary: true },
         { id: "send_back", label: "Send back", kind: "reject" },
+        FUNCTIONAL_TEST_BUTTON,
+      ];
+    case "pr_review":
+      return [
+        { id: "approve", label: "Approve on GitHub", kind: "approve", primary: true },
+        { id: "request_changes", label: "Request changes", kind: "reject" },
+        FUNCTIONAL_TEST_BUTTON,
       ];
     case "merge_deploy":
       return [{ id: "deploy", label: "Merge + deploy", kind: "approve", primary: true }];
@@ -59,6 +74,7 @@ function defaultEstimateFor(kind: GateKind): number {
     case "triage_decision":
       return 3;
     case "code_review":
+    case "pr_review":
       return 5;
     case "visual_signoff":
       return 4;
