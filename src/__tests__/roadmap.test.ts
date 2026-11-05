@@ -251,3 +251,24 @@ describe("live roadmap feed", () => {
   });
 });
 
+describe("finished roadmap rows", () => {
+  it("treats rows marked done or cancelled as done, linked or not, and never pulls them", () => {
+    const finished = parseRoadmap({
+      items: [
+        { title: "Shipped, no ticket", link: "", status: "done" },
+        { title: "Dropped", link: L("TEA-4725"), status: "cancelled" },
+        { title: "Next up", link: L("TEA-4727"), status: "ready" },
+      ],
+    });
+    expect(finished.items.map(i => i.status)).toEqual(["done", "cancelled", "ready"]);
+    const entries = assessRoadmap(finished.items, issues, ctx);
+    expect(entries.map(e => [e.verdict, e.why])).toEqual([
+      ["done", "Done"],
+      ["done", "Cancelled"],
+      ["next", "Backlog"],
+    ]);
+    expect(pickNext(entries, 1).next?.title).toBe("Next up");
+    expect(pickNext(entries, 1).skipped).toEqual([]);
+  });
+});
+

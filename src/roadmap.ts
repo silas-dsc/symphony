@@ -58,8 +58,8 @@ export function parseRoadmapConfig(raw: Record<string, unknown>, baseDir: string
   };
 }
 
-/** Roadmap page statuses. Only "ready" and "build" mean the product side is done. */
-export type ItemStatus = "none" | "discovery" | "design" | "ready" | "build" | "blocked";
+/** Roadmap page statuses. Only "ready" and "build" mean the product side is done; "done" and "cancelled" mean finished. */
+export type ItemStatus = "none" | "discovery" | "design" | "ready" | "build" | "blocked" | "done" | "cancelled";
 
 export interface RoadmapItem {
   rank: number;
@@ -92,7 +92,7 @@ export function parseRoadmap(json: unknown): RoadmapFile {
       title: String(o.title ?? "").trim() || "(untitled)",
       link,
       identifier: identifierFromLink(link),
-      status: ["none", "discovery", "design", "ready", "build", "blocked"].includes(status) ? status : "none",
+      status: ["none", "discovery", "design", "ready", "build", "blocked", "done", "cancelled"].includes(status) ? status : "none",
       notes: String(o.notes ?? "").trim(),
     };
   });
@@ -215,6 +215,10 @@ export function assessRoadmap(items: RoadmapItem[], issues: Map<string, LinkedIs
     if (issue) base.issueId = issue.id;
     if (issue && (issue.stateType === "completed" || issue.stateType === "canceled")) {
       return { ...base, verdict: "done", waitingOn: null, why: issue.state };
+    }
+    // Finished on the roadmap itself (shipped or dropped), whatever Linear says.
+    if (item.status === "done" || item.status === "cancelled") {
+      return { ...base, verdict: "done", waitingOn: null, why: item.status === "done" ? "Done" : "Cancelled" };
     }
     if (item.status !== "ready" && item.status !== "build") {
       const who = item.status === "design" ? ctx.designPerson : ctx.productPerson;
