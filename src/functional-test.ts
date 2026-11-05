@@ -9,6 +9,7 @@ import { classifyDiff } from "./diff-risk.js";
 import * as linear from "./linear.js";
 import { uploadToLinear } from "./linear-upload.js";
 import { trackTokenProcess } from "./usage-budget.js";
+import { claudeEffortArgs, claudeModelArgs } from "./llm.js";
 import { ensureWorkspace, runHook } from "./workspace.js";
 import type { Logger, TrackerConfig } from "./types.js";
 
@@ -183,6 +184,7 @@ export class FunctionalTester {
       const proc = spawn("claude", [
         "-p",
         ...buildMcpArgs(this.d.mcpConfigPath),
+        ...claudeModelArgs(), ...claudeEffortArgs(),
         "--max-turns", String(this.d.maxTurns ?? 60),
         "--output-format", "stream-json",
         "--verbose",

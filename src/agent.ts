@@ -12,6 +12,7 @@ import { buildStageArgs } from "./stages.js";
 import { routeTicket } from "./routing.js";
 import { getLatestReassignmentComment } from "./linear.js";
 import { trackTokenProcess } from "./usage-budget.js";
+import { claudeEffortArgs } from "./llm.js";
 import {
   selectClaudeModel,
   spawnCodexAgent,
@@ -407,7 +408,7 @@ async function spawnClaude(
       childEnv[k] = v;
     }
 
-    const modelArgs = model ? ["--model", model] : [];
+    const modelArgs = [...(model ? ["--model", model] : []), ...claudeEffortArgs()];
     const mcpArgs = buildMcpArgs(mcpConfigPath);
 
     const proc = spawn(

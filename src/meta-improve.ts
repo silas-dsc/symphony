@@ -15,6 +15,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { Liquid } from "liquidjs";
 import { trackTokenProcess } from "./usage-budget.js";
+import { claudeEffortArgs, claudeModelArgs } from "./llm.js";
 
 const liquid = new Liquid({ strictVariables: true, strictFilters: true });
 
@@ -144,6 +145,7 @@ async function spawnClaudeForMetaPass(prompt: string, dryRun: boolean): Promise<
       [
         "-p",
         "--strict-mcp-config", // never load the operator's personal MCP servers
+        ...claudeModelArgs(), ...claudeEffortArgs(),
         "--output-format", "stream-json",
         "--verbose",
         "--dangerously-skip-permissions",

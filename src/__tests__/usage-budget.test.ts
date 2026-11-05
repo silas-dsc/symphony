@@ -111,3 +111,19 @@ describe("suspending token-using processes", () => {
     }
   });
 });
+
+describe("persistence", () => {
+  it("remembers the last hour across restarts, so a climb spanning a restart still pauses", async () => {
+    const fs = await import("node:fs");
+    const os = await import("node:os");
+    const path = await import("node:path");
+    const file = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "ub-")), "usage.json");
+    const before = new UsageBudget(0.17, file);
+    before.record(s(0, 0.49));
+    before.record(s(15, 0.60));
+    const after = new UsageBudget(0.17, file); // "restart"
+    after.record(s(30, 0.74));
+    expect(after.spentLastHour(T0 + 30 * MIN)).toBeCloseTo(0.25);
+    expect(after.resumeAt(T0 + 30 * MIN)).not.toBeNull();
+  });
+});

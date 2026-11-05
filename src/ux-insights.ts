@@ -4,6 +4,7 @@ import type { Logger, TrackerConfig, UxInsightsConfig } from "./types.js";
 import * as linear from "./linear.js";
 import { postToSlackWithRetry } from "./notifications.js";
 import { trackTokenProcess } from "./usage-budget.js";
+import { claudeEffortArgs, claudeModelArgs } from "./llm.js";
 
 /**
  * The UX / product-research agent (TEA-4562). Unlike the `posthog` error watcher
@@ -707,6 +708,7 @@ export class ClaudeInsightSynthesizer implements InsightSynthesizer {
         [
           "-p",
           "--strict-mcp-config", // never load the operator's personal MCP servers
+          ...claudeModelArgs(), ...claudeEffortArgs(),
           "--max-turns", String(config.synthesisMaxTurns),
           "--output-format", "stream-json",
           "--verbose",

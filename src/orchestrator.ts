@@ -97,7 +97,7 @@ export class Orchestrator {
     this.firebaseLogsWatcher = this.createFirebaseLogsWatcher();
     this.v2 = this.config.v2.enabled ? new SymphonyV2(this.config, this.symphonyRoot, this.log) : null;
     this.budgetCfg = parseBudgetConfig(this.config.v2.usageBudget ?? {});
-    this.budget = new UsageBudget(this.budgetCfg.maxPerHour);
+    this.budget = new UsageBudget(this.budgetCfg.maxPerHour, this.config.v2.enabled ? path.join(this.config.v2.stateDir, "usage-samples.json") : null);
 
     this.state = {
       pollIntervalMs: this.config.polling.intervalMs,
