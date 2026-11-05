@@ -381,6 +381,11 @@ function resolveAgentMcpConfig(symphonyRoot: string): string | undefined {
   return fs.existsSync(defaultPath) ? defaultPath : undefined;
 }
 
+/** Strict: agents get only the servers in agent-mcp.json, never the operator's personal MCP servers. */
+export function buildMcpArgs(mcpConfigPath: string | undefined): string[] {
+  return mcpConfigPath ? ["--strict-mcp-config", "--mcp-config", mcpConfigPath] : [];
+}
+
 async function spawnClaude(
   prompt: string,
   cwd: string,
@@ -403,7 +408,7 @@ async function spawnClaude(
     }
 
     const modelArgs = model ? ["--model", model] : [];
-    const mcpArgs = mcpConfigPath ? ["--mcp-config", mcpConfigPath] : [];
+    const mcpArgs = buildMcpArgs(mcpConfigPath);
 
     const proc = spawn(
       "claude",

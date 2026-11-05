@@ -113,25 +113,15 @@ cp .env.example .env
 
 Symphony passes `--mcp-config <path>` to each spawned `claude` process so agents have a known, deterministic set of MCP tools regardless of what the cloned target repo declares. By default, Symphony looks for `agent-mcp.json` in the orchestrator directory; override with `SYMPHONY_AGENT_MCP_CONFIG=/abs/path/to/file.json`.
 
-The repo ships an `agent-mcp.json` that wires up the [SuperClaude_Framework](https://github.com/SuperClaude-Org/SuperClaude_Framework) MCP server set:
+The repo ships an `agent-mcp.json` with one server, the only MCP tool the agent prompts use:
 
 | Server | Purpose | Key required |
 |---|---|---|
-| [`@playwright/mcp`](https://github.com/microsoft/playwright-mcp) | Cross-browser automation & mobile UX verification | — |
-| [`@modelcontextprotocol/server-sequential-thinking`](https://github.com/modelcontextprotocol/servers/tree/main/src/sequentialthinking) | Multi-step structured reasoning | — |
-| [`@upstash/context7-mcp`](https://github.com/upstash/context7) | Official library documentation lookup | — |
-| [`serena`](https://github.com/oraios/serena) | Semantic code analysis & intelligent editing (LSP-backed) | — |
-| [`chrome-devtools-mcp`](https://www.npmjs.com/package/chrome-devtools-mcp) | Chrome DevTools debugging & perf analysis | — |
-| [`@21st-dev/magic`](https://21st.dev) | Modern UI component generation | `TWENTYFIRST_API_KEY` |
-| [`@morph-llm/morph-fast-apply`](https://morphllm.com) | Fast-apply context-aware code edits | `MORPH_API_KEY` |
-| [`tavily`](https://app.tavily.com) (via `mcp-remote`) | Web search & real-time information | `TAVILY_API_KEY` |
+| [`chrome-devtools-mcp`](https://www.npmjs.com/package/chrome-devtools-mcp) | Pin design files, screenshot the PR preview and local app (desktop + mobile), console and network checks | — |
 
-Playwright is launched in headless + isolated + `--ignore-https-errors` mode, which is what the agent uses to verify mobile UX: screenshots at 375px, accessibility snapshots, console-log capture, form interaction, network-request counting. The `--ignore-https-errors` flag lets the agent navigate to the workspace's `https://localhost:<port>` SSL proxy — required for Firebase Auth and other secure-context features.
+It runs `--headless --isolated --acceptInsecureCerts`: no visible windows, a throwaway profile per agent (so concurrent agents don't collide), and the workspace's `https://localhost:<port>` SSL proxy works (needed for Firebase Auth and other secure-context features).
 
-**Prerequisites:**
-- **Playwright** downloads its own Chromium build on first run. If your machine has restricted network egress, pre-install via `npx playwright install chrome` (or specify `--executable-path` in `agent-mcp.json`).
-- **Serena** is launched via [`uvx`](https://docs.astral.sh/uv/). Install `uv` (`curl -LsSf https://astral.sh/uv/install.sh | sh`) if you want Serena's semantic editing tools; without `uv` the server simply fails to start and the other servers keep working.
-- The three API-keyed servers (Magic, Morphllm, Tavily) pick up keys from your `.env` — see `.env.example`. If a key is unset, that server's tools return auth errors at call time; the rest stay available.
+Every `claude` that Symphony starts uses `--strict-mcp-config`, so agents get only this file's servers and never the operator's personal MCP servers. Each extra server adds tool definitions to every agent turn, so add one only if a prompt actually uses it.
 
 To disable an individual server: delete its entry from `agent-mcp.json`. To bypass entirely: delete `agent-mcp.json` and unset `SYMPHONY_AGENT_MCP_CONFIG`. Agents will then run with whatever MCPs are configured user-level in `~/.claude.json`.
 
