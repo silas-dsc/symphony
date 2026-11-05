@@ -143,6 +143,7 @@ async function spawnClaudeForMetaPass(prompt: string, dryRun: boolean): Promise<
       "claude",
       [
         "-p",
+        "--strict-mcp-config", // never load the operator's personal MCP servers
         "--output-format", "stream-json",
         "--verbose",
         "--dangerously-skip-permissions",

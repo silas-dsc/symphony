@@ -44,7 +44,7 @@ export function buildStageAgents(symphonyRoot: string): Record<string, StageAgen
         `Read and apply ${p(symphonyRoot, "TESTER")} and ${p(symphonyRoot, "VERIFY")}.`,
         "Always run: `pnpm typecheck && pnpm lint`, and the unit tests for touched packages.",
         "Walk every acceptance point and mark each PASS / FAIL / NOT CHECKED with the evidence (command output or what you saw).",
-        "For UI changes: use Playwright/chrome-devtools MCP on the Render PR preview (log in with the test accounts in docs/TEAM_DSC_LOGIN.md if present). Screenshot desktop (1440) and mobile (390). If design/<TEA-id>.html exists, open it at the same widths and screenshot it too; list visible differences.",
+        "For UI changes: use the chrome-devtools MCP on the Render PR preview (log in with the test accounts in docs/TEAM_DSC_LOGIN.md if present). Screenshot desktop (1440) and mobile (390). If design/<TEA-id>.html exists, open it at the same widths and screenshot it too; list visible differences.",
         "Return: the PASS/FAIL/NOT CHECKED list, screenshot file paths, and two lines ready to paste: `Checked: …` and `Not checked: …`. Never mark something checked that you inferred.",
       ].join("\n"),
     },

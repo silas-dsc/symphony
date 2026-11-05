@@ -434,7 +434,7 @@ No description provided. Implement the smallest change consistent with the ticke
 ---
 **Design reference:** {% for link in design.links %}{{ link }}{% unless forloop.last %} · {% endunless %}{% endfor %}
 
-Before building, pin the design: if `{{ design.export_path }}` is not already on your branch or `origin/main`, open the first link with the Playwright or chrome-devtools MCP and save the design's own HTML (for a Claude Design artifact, the rendered artifact frame — not the claude.ai page around it) to `{{ design.export_path }}` and commit it with the change. Build against that file and compare your result to it on the preview, desktop and mobile.
+Before building, pin the design: if `{{ design.export_path }}` is not already on your branch or `origin/main`, open the first link with the chrome-devtools MCP and save the design's own HTML (for a Claude Design artifact, the rendered artifact frame — not the claude.ai page around it) to `{{ design.export_path }}` and commit it with the change. Build against that file and compare your result to it on the preview, desktop and mobile.
 If the link needs a login you don't have, don't stop: build from the description and put `Visual match vs design (design link needs login)` under **Not checked**.
 {% endif %}
 

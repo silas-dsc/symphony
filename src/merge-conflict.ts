@@ -469,6 +469,7 @@ function spawnResolveConflictsClaude(prompt: string, ctx: ResolveConflictsContex
       "claude",
       [
         "-p",
+        "--strict-mcp-config", // never load the operator's personal MCP servers
         ...mcpArgs,
         "--max-turns", String(ctx.config.maxTurns),
         "--output-format", "stream-json",

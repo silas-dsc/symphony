@@ -706,6 +706,7 @@ export class ClaudeInsightSynthesizer implements InsightSynthesizer {
         "claude",
         [
           "-p",
+          "--strict-mcp-config", // never load the operator's personal MCP servers
           "--max-turns", String(config.synthesisMaxTurns),
           "--output-format", "stream-json",
           "--verbose",
