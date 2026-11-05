@@ -22,7 +22,7 @@ import {
   assessRoadmap, fetchLinkedIssues, formatEntry, loadRoadmapLive, parseRoadmapConfig, pickNext, rankOf,
   type RoadmapConfig, type RoadmapEntry,
 } from "./roadmap.js";
-import { openDm, postMessage } from "./slack-api.js";
+import { openDm, postMessage, updateMessage } from "./slack-api.js";
 import { SlackSocket } from "./slack-socket.js";
 import type { Logger, RateLimitInfo, WorkflowConfig } from "./types.js";
 import { createIntakeWatchers, type Reconcilable } from "./v2-intake.js";
@@ -45,7 +45,9 @@ export class SymphonyV2 {
   private readonly reports: ReportScheduler | null;
   private readonly intake: Reconcilable[];
   private readout: GovernorReadout | null = null;
-  private drafts = new Map<string, string>();
+  /** Report drafts awaiting Post/Skip, kept on disk so a restart doesn't strand the buttons. */
+  private drafts = new Map<string, { text: string; ref: { channel: string; ts: string } | null }>();
+  private draftsPath = "";
   private readonly roadmapCfg: RoadmapConfig;
   private roadmap: RoadmapEntry[] = [];
   private roadmapAt = 0;
@@ -65,6 +67,12 @@ export class SymphonyV2 {
     const v2 = cfg.v2;
     fs.mkdirSync(v2.stateDir, { recursive: true });
     const state = (name: string) => path.join(v2.stateDir, name);
+    this.draftsPath = state("drafts.json");
+    try {
+      this.drafts = new Map(Object.entries(JSON.parse(fs.readFileSync(this.draftsPath, "utf8"))));
+    } catch {
+      // none saved
+    }
 
     this.hub = new GateHub({
       operatorKey: v2.operatorKey,
@@ -422,18 +430,66 @@ export class SymphonyV2 {
       return;
     }
     const id = `${kind}-${new Date().toISOString().slice(0, 10)}`;
-    this.drafts.set(id, text);
     const dm = await openDm(token, operator.slackUserId);
     const card = buildDraftBlocks(text, id);
-    await postMessage(token, dm, card.text, card.blocks);
+    const ref = await postMessage(token, dm, card.text, card.blocks);
+    this.drafts.set(id, { text, ref });
+    this.persistDrafts();
   }
 
+  /**
+   * Post / Skip on a report draft. The draft is only dropped once it's posted
+   * (or skipped), so a failed post can be retried, and the card always says
+   * what happened instead of leaving the buttons silently unchanged.
+   */
   private async onDraft(kind: "post" | "skip", id: string, by: string): Promise<void> {
-    const text = this.drafts.get(id);
+    const token = this.cfg.v2.slack.botToken;
+    const channel = this.cfg.v2.slack.reportChannel;
+    const draft = this.drafts.get(id);
+    const settle = async (line: string) => {
+      if (draft?.ref) {
+        await updateMessage(token, draft.ref.channel, draft.ref.ts, line, [
+          { type: "section", text: { type: "mrkdwn", text: draft.text } },
+          { type: "context", elements: [{ type: "mrkdwn", text: line }] },
+        ]).catch(e => this.log.warn("v2 draft: card update failed", { error: errMsg(e) }));
+      }
+    };
+    if (!draft) {
+      await this.hub.dm("That draft has expired, so there's nothing to post. The next report will arrive as a new draft.");
+      return;
+    }
+    if (kind === "skip") {
+      this.drafts.delete(id);
+      this.persistDrafts();
+      await settle(`Skipped by ${by}`);
+      return;
+    }
+    try {
+      await postMessage(token, channel, draft.text);
+    } catch (e) {
+      const err = errMsg(e);
+      const fix = /not_in_channel|channel_not_found/.test(err)
+        ? `Symphony Notifications isn't in <#${channel}>. Type \`/invite @Symphony Notifications\` in that channel, then press Post again.`
+        : `Slack said: ${err}. Press Post again to retry.`;
+      this.log.warn("v2 draft post failed", { id, channel, error: err });
+      await this.hub.dm(`⚠️ Couldn't post the ${id.split("-")[0]} update. ${fix}`);
+      return;
+    }
     this.drafts.delete(id);
-    if (kind === "skip" || !text) return;
-    await postMessage(this.cfg.v2.slack.botToken, this.cfg.v2.slack.reportChannel, text);
+    this.persistDrafts();
+    await settle(`✅ Posted to <#${channel}> by ${by}`);
     this.log.info("v2 draft posted", { id, by });
+  }
+
+  private persistDrafts(): void {
+    try {
+      // Drafts older than a week aren't worth posting.
+      const weekAgo = new Date(Date.now() - 7 * 86_400_000).toISOString().slice(0, 10);
+      for (const id of this.drafts.keys()) if (id.slice(-10) < weekAgo) this.drafts.delete(id);
+      fs.writeFileSync(this.draftsPath, JSON.stringify(Object.fromEntries(this.drafts), null, 2));
+    } catch {
+      // best effort
+    }
   }
 
   // ─── deploy-guard error sources ──────────────────────────────────────────

@@ -343,8 +343,8 @@ v2:
     bot_token: $SLACK_BOT_TOKEN
     # Socket Mode app token (xapp-…) so buttons work without a public URL.
     app_token: $SLACK_APP_TOKEN
-    # Where "Post" sends the daily update (#dsc-website).
-    report_channel: C0A07RQJXP1
+    # Where "Post" sends the daily/weekly update (#dsc-website-notifs; the bot is already a member).
+    report_channel: C0BL3E3JENA
   review:
     state: In Review
     rework_state: Dev in Progress
