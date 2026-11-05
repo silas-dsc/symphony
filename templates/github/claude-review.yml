@@ -2,8 +2,9 @@
 # (also add `workflow_dispatch:` to the repo's unit-tests workflow so fix commits get tested).
 #
 # AI PR review (Symphony): runs Claude Code's own `/code-review --fix`, the same
-# skill you run locally, then pushes the fixes it made to the PR branch and posts
-# one comment ending "Verdict: approve|changes" (Symphony's review flow reads it).
+# skill you run locally, commits the fixes it made, and posts one comment ending
+# "Verdict: approve|changes" (Symphony's review flow reads it). A later step, not
+# the agent, pushes the fix commit.
 # Uses the CLAUDE_CODE_OAUTH_TOKEN repo secret (Claude subscription via `claude setup-token`),
 # so reviews count toward that account's Claude usage limits.
 name: claude-review
@@ -30,20 +31,28 @@ jobs:
       pull-requests: write
       actions: write # re-run Unit Tests on the fix commit
     env:
-      PR: ${{ github.event.pull_request.number }}
       BRANCH: ${{ github.head_ref }}
+      # typecheck runs out of memory on the default heap.
+      NODE_OPTIONS: --max-old-space-size=6144
     steps:
-      - uses: actions/checkout@v4
+      # No credentials left in .git/config: install scripts and the agent can't
+      # push. The "Push review fixes" step pushes with an explicit token.
+      - uses: actions/checkout@v7
         with:
           ref: ${{ github.head_ref }}
           fetch-depth: 0
+          persist-credentials: false
+
+      - name: Remember the reviewed commit
+        run: echo "REVIEWED_SHA=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
 
       # Fixes are checked with typecheck, lint and unit tests before they're
       # committed, so the review needs the same toolchain as unit-tests.yml.
+      - uses: pnpm/action-setup@v6
       - uses: actions/setup-node@v7
         with:
           node-version: "22.23.4"
-      - uses: pnpm/action-setup@v6
+          cache: pnpm
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
@@ -57,38 +66,54 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           # Built-in token: no Claude GitHub App install needed; comments post as github-actions[bot].
           github_token: ${{ secrets.GITHUB_TOKEN }}
+          # gh is limited to reading the PR and commenting: a prompt injection in a
+          # diff must not be able to merge, approve, close or call the API.
           claude_args: >-
             --model claude-opus-5-5
             --max-turns 120
-            --allowedTools "Skill,Agent,Task,TodoWrite,ReportFindings,Read,Glob,Grep,Edit,MultiEdit,Write,Bash(git:*),Bash(gh pr:*),Bash(gh api:*),Bash(pnpm:*),Bash(node:*),Bash(npx:*)"
+            --allowedTools "Skill,Agent,Task,TodoWrite,ReportFindings,Read,Glob,Grep,Edit,MultiEdit,Write,Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git status:*),Bash(git add:*),Bash(git commit:*),Bash(git checkout:*),Bash(git restore:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(gh pr comment:*),Bash(pnpm:*)"
           prompt: |
             You are reviewing PR #${{ github.event.pull_request.number }} in ${{ github.repository }}. Branch `${{ github.head_ref }}` is checked out and dependencies are installed.
             This is a pnpm monorepo: packages/app (React Router, React, Tailwind), packages/functions (Firebase Cloud Functions), Firestore rules.
 
             1. Use the Skill tool to run the `code-review` skill with arguments `medium --fix ${{ github.event.pull_request.number }}`. Follow the skill exactly, as it runs in a local Claude Code session, including applying its fixes to the working tree.
 
-            2. If the skill changed any files:
+            2. Revert any change under `.github/workflows/` (`git restore --source=HEAD -- .github/workflows`). This job can't push workflow files, so report those findings as `FIX:` lines instead.
+
+            3. If any other files changed:
                - Run `pnpm typecheck`, `pnpm lint`, and the unit tests for the files you touched (`pnpm test:unit -- <paths>`).
                - If a fix breaks any of them, repair it or revert that fix. Never skip, disable or delete a test or check.
-               - Commit with the message `Code review fixes (claude-review)` and run `git push origin HEAD:${{ github.head_ref }}`.
+               - Commit with the message `Code review fixes (claude-review)`. Don't push; the workflow pushes after you finish.
 
-            3. Post ONE comment with `gh pr comment ${{ github.event.pull_request.number }} --body "..."`, under 300 words:
-               - `Fixed:` then one line per fix, with file:line and what you changed (omit if none).
+            4. Post ONE comment with `gh pr comment ${{ github.event.pull_request.number }} --body "..."`, under 300 words:
+               - `Fixed:` then one line per committed fix, with file:line and what you changed (omit if none).
                - `BLOCKER:` or `FIX:` lines with file:line for findings you did NOT fix, and why.
                - Last line exactly `Verdict: approve` if nothing that matters is left unfixed, otherwise `Verdict: changes`.
                Plain words. Don't restate the diff.
 
-      # Pushes made with GITHUB_TOKEN don't start workflows, so the fix commit
-      # would otherwise have no test run. Dispatch Unit Tests on it explicitly.
-      - name: Re-run unit tests on the fix commit
-        if: ${{ success() }}
+      # Push only what the agent committed on top of the reviewed commit, and
+      # never workflow files (the built-in token can't push them).
+      - name: Push review fixes
+        id: push
+        if: ${{ !cancelled() }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          git fetch -q origin "$BRANCH"
-          if [ "$(git rev-parse "origin/$BRANCH")" != "${{ github.event.pull_request.head.sha }}" ]; then
-            gh workflow run unit-tests.yml --ref "$BRANCH"
-            echo "Review pushed fixes; Unit Tests dispatched on $(git rev-parse --short "origin/$BRANCH")."
-          else
-            echo "No fix commit; nothing to re-run."
+          if [ -z "$REVIEWED_SHA" ] || [ "$(git rev-parse HEAD)" = "$REVIEWED_SHA" ]; then
+            echo "No fix commit."
+            exit 0
           fi
+          if git diff --name-only "$REVIEWED_SHA" HEAD | grep -q '^\.github/workflows/'; then
+            echo "::error::The review commit touches .github/workflows; not pushing."
+            exit 1
+          fi
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git" "HEAD:${BRANCH}"
+          echo "pushed=true" >> "$GITHUB_OUTPUT"
+
+      # Pushes made with GITHUB_TOKEN don't start workflows, so the fix commit
+      # would otherwise have no test run. Dispatch Unit Tests on it explicitly.
+      - name: Re-run unit tests on the fix commit
+        if: ${{ !cancelled() && steps.push.outputs.pushed == 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh workflow run unit-tests.yml --ref "$BRANCH"
