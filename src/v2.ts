@@ -19,7 +19,7 @@ import { ReviewRequests, previewUrlFor } from "./review-requests.js";
 import type { Gate } from "./types.js";
 import { setIssueState } from "./linear-ops.js";
 import {
-  assessRoadmap, fetchLinkedIssues, formatEntry, loadRoadmap, parseRoadmapConfig, pickNext, rankOf,
+  assessRoadmap, fetchLinkedIssues, formatEntry, loadRoadmapLive, parseRoadmapConfig, pickNext, rankOf,
   type RoadmapConfig, type RoadmapEntry,
 } from "./roadmap.js";
 import { openDm, postMessage } from "./slack-api.js";
@@ -50,6 +50,7 @@ export class SymphonyV2 {
   private roadmap: RoadmapEntry[] = [];
   private roadmapAt = 0;
   private roadmapMissingLogged = false;
+  private roadmapFeedErrorLogged = false;
   private readonly gh: GhCliClient;
   private readonly tester: FunctionalTester;
   private readonly reviewRequests: ReviewRequests | null;
@@ -309,9 +310,13 @@ export class SymphonyV2 {
     const rc = this.roadmapCfg;
     if (!rc.enabled || Date.now() - this.roadmapAt < rc.refreshMs) return;
     this.roadmapAt = Date.now();
-    const file = loadRoadmap(rc.file);
+    const { roadmap: file, feedError } = await loadRoadmapLive(rc);
+    if (feedError && !this.roadmapFeedErrorLogged) {
+      this.log.warn("v2 roadmap: live feed unavailable; using the snapshot file", { url: rc.url, error: feedError, file: rc.file });
+    }
+    this.roadmapFeedErrorLogged = !!feedError;
     if (!file) {
-      if (!this.roadmapMissingLogged) this.log.warn("v2 roadmap: snapshot file not found; dispatch order unchanged", { file: rc.file });
+      if (!this.roadmapMissingLogged) this.log.warn("v2 roadmap: no feed and no snapshot file; dispatch order unchanged", { file: rc.file });
       this.roadmapMissingLogged = true;
       this.roadmap = [];
       return;

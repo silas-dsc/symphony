@@ -5,8 +5,8 @@ import { describe, expect, it, vi } from "vitest";
 import { Orchestrator } from "../orchestrator.js";
 import type { Issue } from "../types.js";
 import {
-  assessRoadmap, formatEntry, identifierFromLink, parseRoadmap, parseRoadmapConfig, pickNext, rankOf,
-  type AssessContext, type LinkedIssue,
+  assessRoadmap, fetchRoadmap, formatEntry, identifierFromLink, loadRoadmapLive, parseRoadmap, parseRoadmapConfig,
+  pickNext, rankOf, type AssessContext, type LinkedIssue, type RoadmapConfig,
 } from "../roadmap.js";
 
 const L = (n: string) => `https://linear.app/team-dsc/issue/${n}`;
@@ -161,3 +161,93 @@ describe("extractRoadmapJson", () => {
     expect(extractRoadmapJson(`{"items":[]}`)).toEqual({ items: [] });
   });
 });
+
+describe("live roadmap feed", () => {
+  const feedItems = [
+    { title: "Group Admin", link: L("TEA-4193"), status: "build", notes: "" },
+    { title: "In-house workshop catalogue", link: L("PRD-63"), status: "none", notes: "Promote mid January" },
+  ];
+  const okFetch = () =>
+    vi.fn(async () => new Response(JSON.stringify({ items: feedItems }), { status: 200 })) as unknown as typeof fetch;
+
+  const config = (overrides: Partial<RoadmapConfig> = {}): RoadmapConfig => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "roadmap-feed-"));
+    return {
+      ...parseRoadmapConfig({ enabled: true, url: "https://teamdsc.com.au/api/roadmap", token: "t0k" }, dir),
+      ...overrides,
+    };
+  };
+
+  it("reads url, token (from the environment) and the page to link to", () => {
+    process.env.ROADMAP_FEED_TOKEN_TEST = " secret ";
+    const rc = parseRoadmapConfig(
+      { enabled: true, url: "https://teamdsc.com.au/api/roadmap", token: "$ROADMAP_FEED_TOKEN_TEST" },
+      "/base",
+    );
+    delete process.env.ROADMAP_FEED_TOKEN_TEST;
+    expect(rc).toMatchObject({
+      url: "https://teamdsc.com.au/api/roadmap",
+      token: "secret",
+      pageUrl: "https://teamdsc.com.au/dashboard/roadmap",
+      file: "/base/.symphony-roadmap.json",
+    });
+    expect(parseRoadmapConfig({ enabled: true }, "/base")).toMatchObject({ url: null, token: "", pageUrl: null });
+    expect(parseRoadmapConfig({ token: "$NOT_SET_ANYWHERE" }, "/base").token).toBe("");
+  });
+
+  it("fetches the feed with the bearer token, in rank order", async () => {
+    const fetchImpl = okFetch();
+    const roadmap = await fetchRoadmap("https://teamdsc.com.au/api/roadmap", "t0k", fetchImpl);
+    expect(roadmap.items.map(i => [i.rank, i.title, i.identifier])).toEqual([
+      [1, "Group Admin", "TEA-4193"],
+      [2, "In-house workshop catalogue", "PRD-63"],
+    ]);
+    const [, init] = (fetchImpl as unknown as ReturnType<typeof vi.fn>).mock.calls[0];
+    expect((init as RequestInit).headers).toMatchObject({ Authorization: "Bearer t0k" });
+  });
+
+  it("rejects a refused or malformed answer", async () => {
+    const status = (code: number) => vi.fn(async () => new Response("{}", { status: code })) as unknown as typeof fetch;
+    await expect(fetchRoadmap("https://x/api/roadmap", "bad", status(401))).rejects.toThrow("answered 401");
+    await expect(fetchRoadmap("https://x/api/roadmap", "t", status(200))).rejects.toThrow("no items");
+  });
+
+  it("uses the feed, links to the dashboard page, and caches it to the snapshot file", async () => {
+    const rc = config();
+    const load = await loadRoadmapLive(rc, okFetch());
+    expect(load).toMatchObject({ from: "feed", feedError: null });
+    expect(load.roadmap?.source).toBe("https://teamdsc.com.au/dashboard/roadmap");
+    const cached = JSON.parse(fs.readFileSync(rc.file, "utf8"));
+    expect(cached.items).toEqual(feedItems);
+    expect(cached.source).toBe("https://teamdsc.com.au/dashboard/roadmap");
+  });
+
+  it("falls back to the last good snapshot when the feed fails", async () => {
+    const rc = config();
+    await loadRoadmapLive(rc, okFetch());
+    const down = vi.fn(async () => { throw new Error("ECONNREFUSED"); }) as unknown as typeof fetch;
+    const load = await loadRoadmapLive(rc, down);
+    expect(load).toMatchObject({ from: "snapshot", feedError: "ECONNREFUSED" });
+    expect(load.roadmap?.items.map(i => i.title)).toEqual(["Group Admin", "In-house workshop catalogue"]);
+  });
+
+  it("says so when the token is missing, and reads the snapshot without calling the feed", async () => {
+    const rc = config({ token: "" });
+    const fetchImpl = okFetch();
+    expect(await loadRoadmapLive(rc, fetchImpl)).toMatchObject({
+      roadmap: null,
+      from: "none",
+      feedError: "no token (set ROADMAP_FEED_TOKEN)",
+    });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("reads only the snapshot when no feed is configured", async () => {
+    const rc = config({ url: null, pageUrl: null });
+    fs.writeFileSync(rc.file, JSON.stringify({ source: "https://elsewhere/page", items: feedItems }));
+    const load = await loadRoadmapLive(rc, okFetch());
+    expect(load).toMatchObject({ from: "snapshot", feedError: null });
+    expect(load.roadmap?.source).toBe("https://elsewhere/page");
+  });
+});
+

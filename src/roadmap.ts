@@ -7,8 +7,10 @@ import type { TrackerConfig } from "./types.js";
 
 /**
  * Product roadmap ("Feature roadmap: What's next?"): the team's priority list,
- * kept as a ranked list of Linear tickets. Symphony reads a local snapshot of it
- * (same JSON shape as the roadmap page's embedded state) and:
+ * kept as a ranked list of Linear tickets, edited at teamdsc.com.au/dashboard/roadmap.
+ * Symphony reads it from the site's feed (`url`, bearer `token`), caching each
+ * good read to the local snapshot file and falling back to that file when the
+ * feed can't be reached, and:
  *   - ranks Dev in Progress tickets by it (sub-issues inherit their parent's rank),
  *   - walks it top to bottom: anything waiting on a person is flagged and
  *     skipped, and the first ready ticket is started (moved to Dev in Progress)
@@ -17,7 +19,13 @@ import type { TrackerConfig } from "./types.js";
 
 export interface RoadmapConfig {
   enabled: boolean;
-  /** Snapshot file: `{ "source"?: url, "items": [{ title, link, status, notes }] }`. */
+  /** Live feed: GET `{ items: [{ title, link, status, notes }] }` in rank order. Null = snapshot file only. */
+  url: string | null;
+  /** Bearer token for `url` (ROADMAP_FEED_TOKEN on the team-dsc app). */
+  token: string;
+  /** Where the roadmap is edited, linked from Symphony's DMs. */
+  pageUrl: string | null;
+  /** Snapshot file: `{ "source"?: url, "items": [{ title, link, status, notes }] }`. Cache of the feed, and the fallback. */
   file: string;
   /** Start the next ready item automatically. */
   pullReady: boolean;
@@ -28,10 +36,20 @@ export interface RoadmapConfig {
   refreshMs: number;
 }
 
+/** `$NAME` → that environment variable (as elsewhere in WORKFLOW.md), else the literal. */
+const fromEnv = (value: unknown): string => {
+  const s = typeof value === "string" ? value.trim() : "";
+  return s.startsWith("$") ? (process.env[s.slice(1)] ?? "").trim() : s;
+};
+
 export function parseRoadmapConfig(raw: Record<string, unknown>, baseDir: string): RoadmapConfig {
   const file = typeof raw.file === "string" && raw.file ? raw.file : ".symphony-roadmap.json";
+  const url = fromEnv(raw.url) || null;
   return {
     enabled: raw.enabled === true,
+    url,
+    token: fromEnv(raw.token),
+    pageUrl: fromEnv(raw.page_url) || (url ? new URL("/dashboard/roadmap", url).toString() : null),
     file: path.isAbsolute(file) ? file : path.join(baseDir, file),
     pullReady: raw.pull_ready !== false,
     maxInFlight: typeof raw.max_in_flight === "number" && raw.max_in_flight > 0 ? Math.floor(raw.max_in_flight) : 1,
@@ -84,6 +102,64 @@ export function parseRoadmap(json: unknown): RoadmapFile {
 export function loadRoadmap(file: string): RoadmapFile | null {
   if (!fs.existsSync(file)) return null;
   return parseRoadmap(JSON.parse(fs.readFileSync(file, "utf8")));
+}
+
+/** Read the live feed. Throws on anything but a 200 with an `items` array. */
+export async function fetchRoadmap(
+  url: string,
+  token: string,
+  fetchImpl: typeof fetch = fetch,
+  timeoutMs = 15_000,
+): Promise<RoadmapFile> {
+  const res = await fetchImpl(url, {
+    headers: { Authorization: `Bearer ${token}`, Accept: "application/json" },
+    signal: AbortSignal.timeout(timeoutMs),
+  });
+  if (!res.ok) throw new Error(`roadmap feed answered ${res.status}`);
+  const body = (await res.json()) as { items?: unknown };
+  if (!Array.isArray(body?.items)) throw new Error("roadmap feed returned no items");
+  return parseRoadmap(body);
+}
+
+export interface RoadmapLoad {
+  roadmap: RoadmapFile | null;
+  from: "feed" | "snapshot" | "none";
+  /** Why the feed wasn't used, when it was configured. */
+  feedError: string | null;
+}
+
+/**
+ * The roadmap as of now: the live feed when configured (cached to the snapshot
+ * file), else the snapshot. A feed failure falls back to the last good copy so a
+ * site outage never reorders or stalls work. `source` is the page to link to.
+ */
+export async function loadRoadmapLive(rc: RoadmapConfig, fetchImpl: typeof fetch = fetch): Promise<RoadmapLoad> {
+  let feedError: string | null = null;
+  if (rc.url) {
+    if (!rc.token) {
+      feedError = "no token (set ROADMAP_FEED_TOKEN)";
+    } else {
+      try {
+        const live = await fetchRoadmap(rc.url, rc.token, fetchImpl);
+        const snapshot = {
+          source: rc.pageUrl,
+          syncedAt: new Date().toISOString(),
+          items: live.items.map(({ title, link, status, notes }) => ({ title, link, status, notes })),
+        };
+        try {
+          fs.writeFileSync(rc.file, JSON.stringify(snapshot, null, 2) + "\n");
+        } catch {
+          // A read-only disk only costs the fallback copy.
+        }
+        return { roadmap: { ...live, source: rc.pageUrl }, from: "feed", feedError: null };
+      } catch (e) {
+        feedError = e instanceof Error ? e.message : String(e);
+      }
+    }
+  }
+  const snapshot = loadRoadmap(rc.file);
+  if (snapshot && rc.pageUrl) snapshot.source = rc.pageUrl;
+  return { roadmap: snapshot, from: snapshot ? "snapshot" : "none", feedError };
 }
 
 // ─── assessment ──────────────────────────────────────────────────────────────
