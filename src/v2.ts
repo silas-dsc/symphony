@@ -15,6 +15,7 @@ import { FunctionalTester, headline, type FtRequest } from "./functional-test.js
 import { FUNCTIONAL_TEST_ACTION } from "./gates.js";
 import { getIssueContext } from "./linear-ops.js";
 import { ReleaseFlow, ghReleaseDeps } from "./release-flow.js";
+import { PrReviewer, localReviewDeps } from "./pr-review.js";
 import { ReviewRequests, previewUrlFor } from "./review-requests.js";
 import type { Gate } from "./types.js";
 import { setIssueState } from "./linear-ops.js";
@@ -57,6 +58,7 @@ export class SymphonyV2 {
   private readonly tester: FunctionalTester;
   private readonly reviewRequests: ReviewRequests | null;
   private readonly release: ReleaseFlow | null;
+  private readonly prReviewer: PrReviewer | null;
   private readonly repo: string;
   private readonly previewTemplate: string | null;
 
@@ -148,6 +150,24 @@ export class SymphonyV2 {
       maxOpen: typeof rr.max_open === "number" ? rr.max_open : 6,
     }, this.hub, gh, log);
 
+    const pr = v2.prReview;
+    if (pr.enabled === true) {
+      const prCfg = {
+        repo: this.repo,
+        level: typeof pr.level === "string" ? pr.level : "high",
+        intervalMs: (typeof pr.interval_minutes === "number" ? pr.interval_minutes : 3) * 60_000,
+        maxPerPrPerDay: typeof pr.max_per_pr_per_day === "number" ? pr.max_per_pr_per_day : 6,
+        reviewExisting: pr.review_existing === true,
+        statePath: state("pr-review.json"),
+        workspaceRoot: cfg.workspace.root,
+        hooks: { afterCreate: cfg.hooks.afterCreate ?? null, beforeRun: cfg.hooks.beforeRun ?? null, timeoutMs: cfg.hooks.timeoutMs },
+        timeoutMs: (typeof pr.timeout_minutes === "number" ? pr.timeout_minutes : 45) * 60_000,
+      };
+      this.prReviewer = new PrReviewer(prCfg, localReviewDeps(prCfg, log), log);
+    } else {
+      this.prReviewer = null;
+    }
+
     const rel = v2.release;
     if (rel.enabled === true) {
       const relCfg = {
@@ -204,6 +224,8 @@ export class SymphonyV2 {
       ["roadmap", () => this.reconcileRoadmap()],
       ["review requests", () => this.reviewRequests?.reconcile() ?? Promise.resolve()],
       ["release", () => this.release?.reconcile() ?? Promise.resolve()],
+      // Not awaited: a review takes many minutes and must not hold up the tick.
+      ["pr review", () => { void this.prReviewer?.reconcile(); return Promise.resolve(); }],
       ...this.intake.map(w => [w.name, () => w.reconcile()] as [string, () => Promise<void>]),
     ];
     for (const [name, step] of steps) {

@@ -390,6 +390,15 @@ v2:
     enabled: true
     max_share_per_hour: 0.17
     check_minutes: 15
+  # Local code review (replaces the claude-review GitHub Action): every new commit on an open
+  # team-dsc PR (not drafts, forks or Dependabot) gets Claude Code's own `/code-review <level> --fix`
+  # in a workspace here. Fixes are verified, committed and pushed; one comment ends in
+  # `Verdict: approve|changes`; a `symphony/review` status shows on the commit. Paused by usage_budget.
+  pr_review:
+    enabled: true
+    level: high
+    max_per_pr_per_day: 6
+    review_existing: false    # true = also review PRs already open when this was switched on
   # PRs that ask for your review (teammates' and bots') → a Slack card with the PR, ticket, preview,
   # Approve on GitHub / Request changes, and 🧪 Functional test. Symphony never merges these.
   review_requests:
