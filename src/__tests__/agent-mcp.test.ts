@@ -9,10 +9,8 @@ describe("agent MCP servers", () => {
     expect(buildMcpArgs(undefined)).toEqual([]);
   });
 
-  it("keeps the browser server the prompts rely on and drops unused ones", () => {
+  it("gives agents only the browser server the prompts rely on", () => {
     const cfg = JSON.parse(fs.readFileSync(path.resolve(__dirname, "../../agent-mcp.json"), "utf8")) as { mcpServers: Record<string, unknown> };
-    expect(Object.keys(cfg.mcpServers)).toContain("chrome-devtools");
-    expect(Object.keys(cfg.mcpServers)).not.toEqual(expect.arrayContaining(["playwright"]));
-    expect(Object.keys(cfg.mcpServers)).not.toEqual(expect.arrayContaining(["sequential-thinking"]));
+    expect(Object.keys(cfg.mcpServers)).toEqual(["chrome-devtools"]);
   });
 });
