@@ -57,6 +57,8 @@ export interface V2Config {
   release: Record<string, unknown>;
   /** Raw `v2.review_requests` block (cards for teammates' PRs), parsed in v2.ts. */
   reviewRequests: Record<string, unknown>;
+  /** Raw `v2.pr_review` block (local /code-review --fix on every PR commit), parsed in v2.ts. */
+  prReview: Record<string, unknown>;
 }
 
 export interface V2ParseContext {
@@ -140,6 +142,7 @@ export function parseV2Config(raw: Raw, ctx: V2ParseContext): V2Config {
     usageBudget: obj(raw.usage_budget),
     release: obj(raw.release),
     reviewRequests: obj(raw.review_requests),
+    prReview: obj(raw.pr_review),
   };
 }
 

@@ -66,7 +66,7 @@ export function parseDelivery(comments: linear.LinearComment[]): DeliveryInfo {
   return { summary, checked: field("Checked"), notChecked: field("Not checked"), images };
 }
 
-/** Latest AI review verdict posted on the PR (see templates/github/claude-review.yml). */
+/** Latest AI review verdict posted on the PR (by Symphony's local review, pr-review.ts). */
 export function parseReviewVerdict(comments: Array<{ body: string }>): { verdict: "approve" | "changes"; findings: string[] } | null {
   for (let i = comments.length - 1; i >= 0; i--) {
     const m = /Verdict:\s*(approve|changes)/i.exec(comments[i].body);
