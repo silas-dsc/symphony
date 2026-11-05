@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
 import type { AgentResult, AgentEventCallback } from "./types.js";
+import { trackTokenProcess } from "./usage-budget.js";
 
 // ── Model name constants (each overridable via env) ───────────────────────────
 
@@ -309,6 +310,7 @@ export async function spawnCodexAgent(
       [...args, "-"],
       { cwd, env: childEnv, stdio: ["pipe", "pipe", "pipe"] },
     );
+    trackTokenProcess(proc, "llm");
 
     if (proc.pid) onEvent({ type: "process_spawned", pid: proc.pid, provider: providerLabel });
 
@@ -436,6 +438,7 @@ export async function spawnOllamaClaudeAgent(
       args,
       { cwd, env: childEnv, stdio: ["pipe", "pipe", "pipe"] },
     );
+    trackTokenProcess(proc, "llm");
 
     if (proc.pid) onEvent({ type: "process_spawned", pid: proc.pid, provider: providerLabel });
 

@@ -3,6 +3,7 @@ import * as readline from "node:readline";
 import type { Logger, TrackerConfig, UxInsightsConfig } from "./types.js";
 import * as linear from "./linear.js";
 import { postToSlackWithRetry } from "./notifications.js";
+import { trackTokenProcess } from "./usage-budget.js";
 
 /**
  * The UX / product-research agent (TEA-4562). Unlike the `posthog` error watcher
@@ -712,6 +713,7 @@ export class ClaudeInsightSynthesizer implements InsightSynthesizer {
         ],
         { env: process.env, stdio: ["pipe", "pipe", "pipe"] },
       );
+      trackTokenProcess(proc, "ux-insights");
 
       let settled = false;
       const settle = (fn: () => void): void => { if (!settled) { settled = true; fn(); } };

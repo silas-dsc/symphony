@@ -14,6 +14,7 @@ import * as path from "node:path";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { Liquid } from "liquidjs";
+import { trackTokenProcess } from "./usage-budget.js";
 
 const liquid = new Liquid({ strictVariables: true, strictFilters: true });
 
@@ -152,6 +153,7 @@ async function spawnClaudeForMetaPass(prompt: string, dryRun: boolean): Promise<
         stdio: ["pipe", "inherit", "inherit"],
       }
     );
+    trackTokenProcess(proc, "meta-improve");
 
     proc.stdin.write(prompt, "utf-8");
     proc.stdin.end();

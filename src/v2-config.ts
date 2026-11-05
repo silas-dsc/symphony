@@ -51,6 +51,8 @@ export interface V2Config {
   renderLogs: Record<string, unknown>;
   /** Raw `v2.roadmap` block, parsed by roadmap.ts. */
   roadmap: Record<string, unknown>;
+  /** Raw `v2.usage_budget` block, parsed by usage-budget.ts. */
+  usageBudget: Record<string, unknown>;
 }
 
 export interface V2ParseContext {
@@ -131,6 +133,7 @@ export function parseV2Config(raw: Raw, ctx: V2ParseContext): V2Config {
     slackIntake: obj(raw.slack_intake),
     renderLogs: obj(raw.render_logs),
     roadmap: obj(raw.roadmap),
+    usageBudget: obj(raw.usage_budget),
   };
 }
 

@@ -379,6 +379,14 @@ v2:
     pull_ready: true          # start the next ready item itself (moves it to Dev in Progress)
     max_in_flight: 1          # roadmap tickets Symphony builds at once
     pull_from_states: [Todo, Backlog]
+  # Hourly Claude budget. Every check, Symphony reads the account's 5-hour usage (all Claude use
+  # counts, not just Symphony's). If the last hour used more than this share of the 5-hour limit,
+  # every Claude process Symphony started is suspended and nothing new starts until it's back under.
+  # Needs CLAUDE_CODE_OAUTH_TOKEN in .env.
+  usage_budget:
+    enabled: true
+    max_share_per_hour: 0.17
+    check_minutes: 15
   slack_intake:
     enabled: false
     channels: C0A07RQJXP1
