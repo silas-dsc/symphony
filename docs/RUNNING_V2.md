@@ -10,18 +10,15 @@ v2 runs inside the normal Symphony process on your Mac. Nothing new to host: Sla
 2. *Interactivity & Shortcuts* → **On** (no request URL needed with Socket Mode).
 3. *OAuth & Permissions* → bot scopes: `chat:write`, `im:write`, `channels:history` (plus `groups:history` for
    private channels). Reinstall the app. The bot token is `SLACK_BOT_TOKEN` (`xoxb-…`).
-4. Invite the bot to `#dsc-website` (`/invite @<bot>`), needed for Slack intake and posting the daily update.
+4. Invite the bot to the report channel (`v2.slack.report_channel`, currently #dsc-website-notifs) and to any Slack intake channel.
 
 **Linear:** make sure the states `In Review`, `Dev in Progress`, `Triage`, `Duplicate` exist (they do in TEA).
 Create a saved view per person: *Label is `waiting-on:silas`* (and `waiting-on:nika`, `waiting-on:evie`) —
 that's each person's queue.
 
-**GitHub review (team-dsc repo):**
-```bash
-claude setup-token
-```
-Add the printed token as repo secret `CLAUDE_CODE_OAUTH_TOKEN` in `team-dsc/team-dsc`, then copy
-`templates/github/claude-review.yml` to `team-dsc/.github/workflows/claude-review.yml` and merge it.
+**PR review:** Symphony reviews every new commit on open team-dsc PRs itself, on this Mac, by running
+Claude Code's `/code-review high --fix` (see `v2.pr_review` in WORKFLOW.md). It uses your local `gh`
+and git credentials and your Claude login; no GitHub Action or repo secret is needed.
 
 **`.env`** in the Symphony folder (next to WORKFLOW.md):
 ```
