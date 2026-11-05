@@ -12,6 +12,7 @@ const KIND_LABEL: Record<GateKind, string> = {
   approve_approach: "Approve approach",
   visual_signoff: "Visual sign-off",
   code_review: "Code review",
+  pr_review: "PR review",
   merge_deploy: "Merge + deploy",
   login_credential: "Login / credential",
   product_decision: "Product decision",

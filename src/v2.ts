@@ -11,6 +11,12 @@ import { ReviewFlow } from "./review-flow.js";
 import { ReportScheduler, fetchDailyActivity, fetchRoadmap, formatDailyDraft, formatWeeklyRoadmap } from "./reports.js";
 import { defaultRunLogPath, readRunRecords } from "./run-log.js";
 import { addComment } from "./linear.js";
+import { FunctionalTester, headline, type FtRequest } from "./functional-test.js";
+import { FUNCTIONAL_TEST_ACTION } from "./gates.js";
+import { getIssueContext } from "./linear-ops.js";
+import { ReleaseFlow, ghReleaseDeps } from "./release-flow.js";
+import { ReviewRequests, previewUrlFor } from "./review-requests.js";
+import type { Gate } from "./types.js";
 import { setIssueState } from "./linear-ops.js";
 import {
   assessRoadmap, fetchLinkedIssues, formatEntry, loadRoadmap, parseRoadmapConfig, pickNext, rankOf,
@@ -44,6 +50,12 @@ export class SymphonyV2 {
   private roadmap: RoadmapEntry[] = [];
   private roadmapAt = 0;
   private roadmapMissingLogged = false;
+  private readonly gh: GhCliClient;
+  private readonly tester: FunctionalTester;
+  private readonly reviewRequests: ReviewRequests | null;
+  private readonly release: ReleaseFlow | null;
+  private readonly repo: string;
+  private readonly previewTemplate: string | null;
 
   constructor(cfg: WorkflowConfig, symphonyRoot: string, log: Logger) {
     this.cfg = cfg;
@@ -70,6 +82,10 @@ export class SymphonyV2 {
       : null;
 
     const gh = new GhCliClient(log);
+    this.gh = gh;
+    const gp = cfg.githubPreview;
+    this.repo = gp.repoOwner && gp.repoName ? `${gp.repoOwner}/${gp.repoName}` : "team-dsc/team-dsc";
+    this.previewTemplate = gp.urlTemplate || null;
     this.guard = v2.deployGuard.enabled
       ? new DeployGuard({ watchMinutes: v2.deployGuard.watchMinutes, minNewOccurrences: v2.deployGuard.minNewOccurrences, statePath: state("deploy-guard.json") },
           cfg.tracker, this.errorSources(), gh, this.hub, log)
@@ -100,6 +116,56 @@ export class SymphonyV2 {
       : null;
     this.intake = createIntakeWatchers(cfg, this.hub, state, log);
     this.roadmapCfg = parseRoadmapConfig(v2.roadmap, symphonyRoot);
+
+    // Functional tests (card button, re-tests after fixes, production after release).
+    const mcp = path.join(symphonyRoot, "agent-mcp.json");
+    this.tester = new FunctionalTester({
+      tracker: cfg.tracker,
+      workspaceRoot: cfg.workspace.root,
+      hooks: { afterCreate: cfg.hooks.afterCreate ?? null, beforeRun: cfg.hooks.beforeRun ?? null, timeoutMs: cfg.hooks.timeoutMs },
+      symphonyRoot,
+      mcpConfigPath: fs.existsSync(mcp) ? mcp : undefined,
+      repo: this.repo,
+      log,
+    });
+    this.hub.onSideAction(FUNCTIONAL_TEST_ACTION, (gate, by) => this.functionalTestFromCard(gate, by));
+
+    const rr = v2.reviewRequests;
+    this.reviewRequests = rr.enabled === false ? null : new ReviewRequests({
+      repo: this.repo,
+      previewTemplate: this.previewTemplate,
+      linearWorkspaceUrl: typeof rr.linear_url === "string" ? rr.linear_url : null,
+      intervalMs: (typeof rr.interval_minutes === "number" ? rr.interval_minutes : 5) * 60_000,
+      maxOpen: typeof rr.max_open === "number" ? rr.max_open : 6,
+    }, this.hub, gh, log);
+
+    const rel = v2.release;
+    if (rel.enabled === true) {
+      const relCfg = {
+        repo: this.repo,
+        workflow: typeof rel.workflow === "string" ? rel.workflow : "Deployment",
+        siteUrl: typeof rel.site_url === "string" ? rel.site_url : "https://teamdsc.com.au",
+        watchMinutes: typeof rel.watch_minutes === "number" ? rel.watch_minutes : v2.deployGuard.watchMinutes,
+        prodTest: rel.prod_test !== false,
+        doneState: typeof rel.done_state === "string" ? rel.done_state : "Done",
+        followUpState: typeof rel.follow_up_state === "string" ? rel.follow_up_state : (cfg.tracker.activeStates[0] ?? "Dev in Progress"),
+        statePath: state("release-flow.json"),
+        pollMs: 2 * 60_000,
+        deployTimeoutMs: 120 * 60_000,
+      };
+      this.release = new ReleaseFlow(relCfg, cfg.tracker, {
+        ...ghReleaseDeps(relCfg),
+        errorSources: this.errorSources(),
+        runTest: relCfg.prodTest ? req => this.tester.run(req) : null,
+        comment: async (r, issueId, body) => {
+          if (issueId) await addComment(cfg.tracker, issueId, body);
+          else await gh.commentPr(r.pr.url, body);
+        },
+        dm: text => this.hub.dm(text),
+      }, log);
+    } else {
+      this.release = null;
+    }
   }
 
   async start(): Promise<void> {
@@ -127,6 +193,8 @@ export class SymphonyV2 {
       ["deploy guard", () => this.guard?.reconcile() ?? Promise.resolve()],
       ["reports", () => this.reports?.reconcile() ?? Promise.resolve()],
       ["roadmap", () => this.reconcileRoadmap()],
+      ["review requests", () => this.reviewRequests?.reconcile() ?? Promise.resolve()],
+      ["release", () => this.release?.reconcile() ?? Promise.resolve()],
       ...this.intake.map(w => [w.name, () => w.reconcile()] as [string, () => Promise<void>]),
     ];
     for (const [name, step] of steps) {
@@ -158,7 +226,71 @@ export class SymphonyV2 {
       deploy_watches: this.guard?.pending() ?? 0,
       auto_deploy: this.review ? (this.review.killSwitchOn() ? "off (kill switch)" : this.cfg.v2.review.autoMerge ? "on" : "off") : "off",
       roadmap: this.roadmapCfg.enabled ? this.roadmap.filter(e => e.verdict !== "done").map(formatEntry) : null,
+      functional_tests_queued: this.tester.pending(),
+      releases: this.release?.active().map(r => `PR #${r.pr.number}${r.ticketKey ? ` (${r.ticketKey})` : ""}: ${r.phase}${r.problems.length ? `, ${r.problems.length} problem(s)` : ""}`) ?? null,
     };
+  }
+
+  // ─── functional tests from cards ─────────────────────────────────────────
+
+  /** 🧪 on a review card: test the PR preview, fix what's broken, re-test after the fix deploys. */
+  private async functionalTestFromCard(gate: Gate, by: string): Promise<void> {
+    const prUrl = gate.meta?.prUrl;
+    if (!prUrl) {
+      await this.hub.dm(`🧪 Can't test "${gate.title}": the card has no PR.`);
+      return;
+    }
+    const pr = await this.gh.getPr(prUrl);
+    if (pr.state !== "OPEN") {
+      await this.hub.dm(`🧪 PR #${pr.number} is ${pr.state.toLowerCase()}, so there's nothing to test on its preview.`);
+      return;
+    }
+    const baseUrl = gate.meta?.previewUrl ?? previewUrlFor(this.previewTemplate, pr.number);
+    if (!baseUrl) {
+      await this.hub.dm(`🧪 No preview URL for PR #${pr.number} (set github_preview.url_template).`);
+      return;
+    }
+    const key = gate.issueId ?? gate.meta?.ticket ?? null;
+    const ctx = key ? await getIssueContext(this.cfg.tracker, key).catch(() => null) : null;
+    const req: FtRequest = {
+      target: "preview",
+      baseUrl,
+      issue: ctx ? { id: ctx.id, identifier: ctx.identifier, title: ctx.title, description: ctx.description, url: ctx.url } : null,
+      pr: { url: pr.url, number: pr.number, branch: pr.headRefName },
+      changedFiles: pr.files,
+      mayFix: true,
+      reason: `Asked by ${by}`,
+    };
+    const queued = this.tester.pending();
+    await this.hub.dm(`🧪 Functional test ${queued ? `queued (${queued} ahead)` : "started"}: PR #${pr.number} on ${baseUrl}. Evidence goes on ${ctx ? ctx.identifier : "the PR"}.`);
+    void this.tester.run(req).then(async res => {
+      const where = ctx?.url ?? pr.url;
+      await this.hub.dm(`${headline(req, res)}: ${gate.title}\n${res.summary}\n${where}`);
+      if (res.fixedCommits.length > 0) await this.retestAfterFix(req, res.fixedCommits.at(-1)?.sha ?? "");
+    });
+  }
+
+  /** Wait until the preview serves the fix (or ~12 min if it can't say), then test once more without fixing. */
+  private async retestAfterFix(req: FtRequest, sha: string): Promise<void> {
+    const deadline = Date.now() + 30 * 60_000;
+    let readable = false;
+    while (Date.now() < deadline) {
+      await new Promise(r => setTimeout(r, 60_000));
+      try {
+        const res = await fetch(`${req.baseUrl}/api/version?ts=${Date.now()}`, { headers: { accept: "application/json" }, signal: AbortSignal.timeout(15_000) });
+        if ((res.headers.get("content-type") ?? "").includes("json")) {
+          readable = true;
+          const release = String(((await res.json()) as { release?: string }).release ?? "");
+          if (sha && release && (release.startsWith(sha) || sha.startsWith(release))) break;
+        } else if (!readable && Date.now() > deadline - 18 * 60_000) {
+          break; // can't tell which commit is live; ~12 min is usually enough for a preview
+        }
+      } catch {
+        // preview restarting
+      }
+    }
+    const res = await this.tester.run({ ...req, mayFix: false, reason: "Re-test after the fixes reached the preview" });
+    await this.hub.dm(`${headline(req, res)} (re-test after fixes): PR #${req.pr?.number}\n${req.issue?.url ?? req.pr?.url ?? ""}`);
   }
 
   /** Position on the product roadmap (1 = top), for the issue or its parent; null when not on it. */

@@ -66,6 +66,8 @@ export type GateKind =
   | "approve_approach"
   | "visual_signoff"
   | "code_review"
+  /** A teammate's PR that asks the operator for review (approve = GitHub approval, not a merge). */
+  | "pr_review"
   | "merge_deploy"
   | "login_credential"
   | "product_decision"

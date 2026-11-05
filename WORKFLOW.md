@@ -387,6 +387,23 @@ v2:
     enabled: true
     max_share_per_hour: 0.17
     check_minutes: 15
+  # PRs that ask for your review (teammates' and bots') → a Slack card with the PR, ticket, preview,
+  # Approve on GitHub / Request changes, and 🧪 Functional test. Symphony never merges these.
+  review_requests:
+    enabled: true
+    linear_url: https://linear.app/team-dsc
+    max_open: 6
+  # After every merge to main: follow the Deployment run (app on Render, functions, secret bindings),
+  # compare logs before/after, functional-test production (merges with a ticket), then close the
+  # ticket, or open a follow-up ticket in Dev in Progress so Symphony builds the fix.
+  # Production tests sign in with FUNCTIONAL_TEST_* accounts from .env and pay only with DSFREE.
+  release:
+    enabled: true
+    workflow: Deployment
+    site_url: https://teamdsc.com.au
+    watch_minutes: 30
+    prod_test: true
+    done_state: Done
   slack_intake:
     enabled: false
     channels: C0A07RQJXP1

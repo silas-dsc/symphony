@@ -1038,6 +1038,8 @@ export interface CreateIssueInput {
   stateId?: string;
   assigneeId?: string;
   labelIds?: string[];
+  /** Makes the new issue a sub-issue (e.g. a follow-up fix of a released ticket). */
+  parentId?: string;
 }
 
 export async function createIssue(

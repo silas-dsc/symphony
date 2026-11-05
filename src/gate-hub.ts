@@ -50,7 +50,7 @@ export type GateKindHandler = (resolution: GateResolution) => Promise<void>;
 export type DraftHandler = (kind: "post" | "skip", draftId: string, by: string) => Promise<void>;
 
 const KIND_ICON: Record<GateKind, string> = {
-  approve_approach: "🧭", visual_signoff: "🎨", code_review: "🔍", merge_deploy: "🚀",
+  approve_approach: "🧭", visual_signoff: "🎨", code_review: "🔍", pr_review: "👀", merge_deploy: "🚀",
   login_credential: "🔑", product_decision: "💡", triage_decision: "🗂️",
 };
 
@@ -92,7 +92,7 @@ export function parseReply(gate: Gate, body: string): { actionId: string; note: 
   if (!text || text.includes(AI_COMMENT_MARKER)) return null;
   if (/^ask\s+\w+/i.test(text)) return { actionId: "forward", note: null };
   for (const action of gate.actions) {
-    const label = action.label.toLowerCase().replace(/[^a-z0-9 +]/g, "");
+    const label = action.label.toLowerCase().replace(/[^a-z0-9 +]/g, "").trim();
     const synonyms = action.kind === "approve"
       ? [label, "approve", "approved", "lgtm", "looks good", "ship it", "merge", "yes", "confirm"]
       : action.kind === "reject"
@@ -112,6 +112,7 @@ export class GateHub {
   private readonly tracker: TrackerConfig;
   private readonly log: Logger;
   private readonly handlers = new Map<GateKind, GateKindHandler>();
+  private readonly sideActions = new Map<string, (gate: Gate, by: string) => Promise<void>>();
   private draftHandler: DraftHandler | null = null;
 
   constructor(cfg: GateHubConfig, tracker: TrackerConfig, log: Logger) {
@@ -122,6 +123,25 @@ export class GateHub {
   }
 
   onKind(kind: GateKind, handler: GateKindHandler): void { this.handlers.set(kind, handler); }
+
+  /**
+   * A button that does something without deciding the card (e.g. 🧪 Functional
+   * test). Clicking it, or replying with its label on the ticket, calls the
+   * handler and leaves the card open.
+   */
+  onSideAction(actionId: string, handler: (gate: Gate, by: string) => Promise<void>): void {
+    this.sideActions.set(actionId, handler);
+  }
+
+  private async runSideAction(gate: Gate, actionId: string, by: string): Promise<void> {
+    const handler = this.sideActions.get(actionId);
+    if (!handler) return;
+    try {
+      await handler(gate, by);
+    } catch (e) {
+      this.log.warn("Side action failed", { gate_id: gate.id, action: actionId, error: errMsg(e) });
+    }
+  }
   onDraft(handler: DraftHandler): void { this.draftHandler = handler; }
 
   person(key: string | null | undefined): PersonConfig | null {
@@ -208,6 +228,11 @@ export class GateHub {
       await this.forward(parsed.gateId, by);
       return;
     }
+    if (this.sideActions.has(parsed.actionId)) {
+      const gate = this.store.get(parsed.gateId);
+      if (gate && gate.status === "open") await this.runSideAction(gate, parsed.actionId, by);
+      return;
+    }
     await this.store.resolve(parsed.gateId, parsed.actionId, null, by);
   }
 
@@ -253,6 +278,28 @@ export class GateHub {
     if (handler) await handler(r);
   }
 
+  /** Dismiss one open card (e.g. its PR was merged or closed elsewhere). */
+  async dismissGate(gateId: string, why: string): Promise<void> {
+    const g = this.store.get(gateId);
+    if (!g || g.status !== "open") return;
+    this.store.dismiss(g.id);
+    const ref = g.slackRef;
+    const token = this.cfg.slackBotToken;
+    if (ref && token) {
+      await quiet(() => updateMessage(token, ref.channel, ref.ts, `${g.title}: ${why}`, [
+        { type: "context", elements: [{ type: "mrkdwn", text: `~${g.title}~ — ${why}` }] },
+      ]));
+    }
+  }
+
+  /** Plain DM to a person (defaults to the operator). Best effort. */
+  async dm(text: string, personKey?: string): Promise<void> {
+    const person = this.person(personKey ?? this.cfg.operatorKey);
+    const token = this.cfg.slackBotToken;
+    if (!token || !person?.slackUserId) return;
+    await quiet(async () => postMessage(token, await openDm(token, person.slackUserId as string), text));
+  }
+
   /** Dismiss open cards for an issue (it moved on without a decision). */
   async dismissFor(issueId: string, kind?: GateKind): Promise<void> {
     for (const g of this.store.openFor(issueId, kind)) {
@@ -278,14 +325,18 @@ export class GateHub {
       } catch {
         continue;
       }
-      const since = Date.parse(gate.createdAt);
+      // Side actions leave the card open, so remember the last reply that ran one.
+      const since = Math.max(Date.parse(gate.createdAt), Date.parse(gate.meta?.sideActionReplyAt ?? "") || 0);
       for (const c of comments) {
         if (c.createdAt.getTime() <= since) continue;
         if (c.body.includes(GATE_DECISION_MARKER) || c.body.includes(GATE_CARD_MARKER)) continue;
         const parsed = parseReply(gate, c.body);
         if (!parsed) continue;
         const by = c.author?.name ?? "Linear";
-        if (parsed.actionId === "forward") {
+        if (this.sideActions.has(parsed.actionId)) {
+          this.store.update(gate.id, { meta: { ...(gate.meta ?? {}), sideActionReplyAt: c.createdAt.toISOString() } });
+          await this.runSideAction(gate, parsed.actionId, `${by} (Linear)`);
+        } else if (parsed.actionId === "forward") {
           if (gate.forwardTo) await this.forward(gate.id, by);
         } else {
           await this.store.resolve(gate.id, parsed.actionId, parsed.note, `${by} (Linear)`);
