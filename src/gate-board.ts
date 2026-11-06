@@ -17,6 +17,8 @@ const KIND_LABEL: Record<GateKind, string> = {
   login_credential: "Login / credential",
   product_decision: "Product decision",
   triage_decision: "Triage decision",
+  process_change: "Process change",
+  ticket_hold: "Ticket paused",
 };
 
 export interface BoardMeta {

@@ -1,11 +1,13 @@
 import { spawn } from "node:child_process";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import * as readline from "node:readline";
 import { Liquid } from "liquidjs";
 import type { Issue, Logger, RetrospectiveConfig } from "./types.js";
 import { trackTokenProcess } from "./usage-budget.js";
 import { claudeEffortArgs, claudeModelArgs } from "./llm.js";
+import { readLessons } from "./lessons.js";
 
 const liquid = new Liquid({ strictVariables: true, strictFilters: true });
 
@@ -17,6 +19,16 @@ export interface RetrospectiveContext {
   config: RetrospectiveConfig;
   mcpConfigPath: string | undefined;
   logger: Logger;
+  /** One line per agent run for this ticket (from the run log), so the retro sees retries and cost. */
+  runHistory?: string;
+}
+
+/** Tickets with a retrospective in progress, so two triggers for one ticket don't both run. */
+const inFlight = new Set<string>();
+
+/** True when lessons.jsonl already has an entry for this ticket. */
+export function hasLesson(lessonsPath: string, identifier: string): boolean {
+  return readLessons(lessonsPath).some(l => l.ticket === identifier);
 }
 
 /**
@@ -39,6 +51,8 @@ export function renderRetrospectivePrompt(
       labels: ctx.issue.labels,
     },
     workspace: ctx.workspacePath,
+    workspace_available: fs.existsSync(ctx.workspacePath),
+    run_history: ctx.runHistory ?? "",
     lessons_path: ctx.config.lessonsPath,
     symphony: { root: ctx.symphonyRoot },
   });
@@ -53,16 +67,34 @@ export function renderRetrospectivePrompt(
  */
 export async function runRetrospective(ctx: RetrospectiveContext): Promise<void> {
   if (!ctx.config.enabled) return;
-
-  // Skip if the workspace was already cleaned up — the retrospective needs the
-  // diff and the workpad files to be on disk.
-  if (!fs.existsSync(ctx.workspacePath)) {
-    ctx.logger.info("Retrospective skipped: workspace missing", {
-      issue_identifier: ctx.issue.identifier,
-      workspace: ctx.workspacePath,
-    });
-    return;
+  const key = ctx.issue.identifier;
+  if (inFlight.has(key) || hasLesson(ctx.config.lessonsPath, key)) return;
+  inFlight.add(key);
+  try {
+    await runOnce(ctx);
+  } finally {
+    inFlight.delete(key);
   }
+}
+
+async function runOnce(ctx: RetrospectiveContext): Promise<void> {
+  // A missing workspace (cleaned up, or the ticket finished through review long
+  // after the agent did) no longer skips the retro: Linear, the PR and the run
+  // history still tell most of the story. The agent runs in an empty folder.
+  let cwd = ctx.workspacePath;
+  let scratch: string | null = null;
+  if (!fs.existsSync(cwd)) {
+    scratch = fs.mkdtempSync(path.join(os.tmpdir(), `symphony-retro-${ctx.issue.identifier}-`));
+    cwd = scratch;
+  }
+  try {
+    await runIn(ctx, cwd);
+  } finally {
+    if (scratch) fs.rmSync(scratch, { recursive: true, force: true });
+  }
+}
+
+async function runIn(ctx: RetrospectiveContext, cwd: string): Promise<void> {
 
   const promptPath = path.join(ctx.symphonyRoot, "prompts", "RETROSPECTIVE.md");
   if (!fs.existsSync(promptPath)) {
@@ -91,7 +123,7 @@ export async function runRetrospective(ctx: RetrospectiveContext): Promise<void>
   });
 
   try {
-    await spawnRetrospectiveClaude(prompt, ctx);
+    await spawnRetrospectiveClaude(prompt, ctx, cwd);
     ctx.logger.info("Retrospective completed", {
       issue_identifier: ctx.issue.identifier,
       duration_s: ((Date.now() - startedAt) / 1000).toFixed(1),
@@ -116,7 +148,7 @@ function ensureLessonsDirectory(lessonsPath: string, logger: Logger): void {
   }
 }
 
-function spawnRetrospectiveClaude(prompt: string, ctx: RetrospectiveContext): Promise<void> {
+function spawnRetrospectiveClaude(prompt: string, ctx: RetrospectiveContext, cwd: string): Promise<void> {
   return new Promise((resolve, reject) => {
     const childEnv: NodeJS.ProcessEnv = {};
     for (const [k, v] of Object.entries(process.env)) {
@@ -141,7 +173,7 @@ function spawnRetrospectiveClaude(prompt: string, ctx: RetrospectiveContext): Pr
         "--dangerously-skip-permissions",
       ],
       {
-        cwd: ctx.workspacePath,
+        cwd,
         env: childEnv,
         stdio: ["pipe", "pipe", "pipe"],
       }

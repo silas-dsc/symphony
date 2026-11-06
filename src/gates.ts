@@ -61,6 +61,16 @@ export function defaultActionsFor(kind: GateKind): GateAction[] {
         { id: "confirm", label: "Confirm", kind: "approve", primary: true },
         { id: "not_a_bug", label: "Not a bug", kind: "reject" },
       ];
+    case "process_change":
+      return [
+        { id: "merge", label: "Merge", kind: "approve", primary: true },
+        { id: "close", label: "Close PR", kind: "reject" },
+      ];
+    case "ticket_hold":
+      return [
+        { id: "resume", label: "Resume", kind: "approve", primary: true },
+        { id: "keep", label: "Keep paused", kind: "reject" },
+      ];
   }
 }
 
@@ -72,9 +82,11 @@ function defaultEstimateFor(kind: GateKind): number {
       return 2;
     case "approve_approach":
     case "triage_decision":
+    case "ticket_hold":
       return 3;
     case "code_review":
     case "pr_review":
+    case "process_change":
       return 5;
     case "visual_signoff":
       return 4;

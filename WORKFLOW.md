@@ -399,6 +399,27 @@ v2:
     level: high
     max_per_pr_per_day: 6
     review_existing: false    # true = also review PRs already open when this was switched on
+  # Self-improvement loop (src/improvement-loop.ts):
+  #  - retros: tickets Symphony ran that are now Done (retrospective.trigger_states) and have no
+  #    lesson get a retrospective, with their run history. Works after the workspace is gone.
+  #  - detectors (no tokens): a ticket failing loop_failures runs in a row within loop_window_hours
+  #    gets the hold_label (no dispatch) and a Resume card — removing the label also resumes; costly tickets and
+  #    failure spikes get a DM.
+  #  - daily pass at daily_hour: an agent turns the day's lessons + metrics + findings into ≤ max_changes
+  #    prompt/workflow edits → a PR with a Merge card (never merges itself), and ≤ max_tickets
+  #    team-dsc tickets. Merged changes are scored on the run log after 2 days; the next pass sees it.
+  #  All agent work pauses with usage_budget.
+  improve:
+    enabled: true
+    daily_hour: 17
+    max_changes: 3
+    max_tickets: 2
+    retro_lookback_days: 7
+    retros_per_poll: 2
+    loop_failures: 3
+    loop_window_hours: 6
+    ticket_cost_alert_usd: 15
+    hold_label: symphony-hold
   # PRs that ask for your review (teammates' and bots') → a Slack card with the PR, ticket, preview,
   # Approve on GitHub / Request changes, and 🧪 Functional test. Symphony never merges these.
   review_requests:

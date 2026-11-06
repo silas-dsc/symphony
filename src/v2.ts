@@ -13,7 +13,7 @@ import { defaultRunLogPath, readRunRecords } from "./run-log.js";
 import { addComment } from "./linear.js";
 import { FunctionalTester, headline, type FtRequest } from "./functional-test.js";
 import { FUNCTIONAL_TEST_ACTION } from "./gates.js";
-import { getIssueContext } from "./linear-ops.js";
+import { addIssueLabel, getIssueContext, removeIssueLabel } from "./linear-ops.js";
 import { ReleaseFlow, ghReleaseDeps } from "./release-flow.js";
 import { PrReviewer, localReviewDeps } from "./pr-review.js";
 import { ReviewRequests, previewUrlFor } from "./review-requests.js";
@@ -27,6 +27,16 @@ import { openDm, postMessage, updateMessage } from "./slack-api.js";
 import { SlackSocket } from "./slack-socket.js";
 import type { Logger, RateLimitInfo, WorkflowConfig } from "./types.js";
 import { createIntakeWatchers, type Reconcilable } from "./v2-intake.js";
+import {
+  ImprovementLoop, improvePrAction, improvePrState, localPassRunner, openImprovePr, type ImproveConfig,
+} from "./improvement-loop.js";
+import { readLessons } from "./lessons.js";
+import { commitAndPushLessons } from "./lessons-sync.js";
+import { runRetrospective } from "./retrospective.js";
+import { getWorkspacePath } from "./workspace.js";
+import { createIssue, fetchTeamByKey } from "./linear.js";
+import { tokenProcesses } from "./usage-budget.js";
+import type { Issue } from "./types.js";
 
 /**
  * Symphony v2 composition root. The orchestrator owns one of these when
@@ -59,6 +69,7 @@ export class SymphonyV2 {
   private readonly reviewRequests: ReviewRequests | null;
   private readonly release: ReleaseFlow | null;
   private readonly prReviewer: PrReviewer | null;
+  private readonly improve: ImprovementLoop | null;
   private readonly repo: string;
   private readonly previewTemplate: string | null;
 
@@ -195,6 +206,90 @@ export class SymphonyV2 {
     } else {
       this.release = null;
     }
+
+    this.improve = v2.improve.enabled === true ? this.buildImprovementLoop(state) : null;
+  }
+
+  private buildImprovementLoop(state: (name: string) => string): ImprovementLoop {
+    const cfg = this.cfg;
+    const im = cfg.v2.improve;
+    const n = (k: string, d: number) => (typeof im[k] === "number" ? (im[k] as number) : d);
+    const repoRoot = cfg.autoUpdate.repoRoot ?? this.root;
+    const workDir = state("improve");
+    const retro = cfg.retrospective;
+    const mcp = path.join(this.root, "agent-mcp.json");
+    const loopCfg: ImproveConfig = {
+      retroPollMs: n("retro_poll_minutes", 10) * 60_000,
+      retroLookbackDays: n("retro_lookback_days", 7),
+      retrosPerPoll: n("retros_per_poll", 2),
+      triggerStates: retro.triggerStates,
+      detectEveryMs: n("detect_minutes", 5) * 60_000,
+      loopFailures: n("loop_failures", 3),
+      loopWindowHours: n("loop_window_hours", 6),
+      ticketCostAlertUsd: n("ticket_cost_alert_usd", 15),
+      dailyHourLocal: n("daily_hour", 17),
+      maxChanges: n("max_changes", 3),
+      maxTickets: n("max_tickets", 2),
+      holdLabel: typeof im.hold_label === "string" ? im.hold_label : "symphony-hold",
+      statePath: state("improve.json"),
+    };
+    const runLog = defaultRunLogPath(this.root);
+    let teamId: string | null = null;
+    const loop = new ImprovementLoop(loopCfg, {
+      readRuns: () => readRunRecords(runLog),
+      readLessons: () => readLessons(retro.lessonsPath),
+      ticket: async id => {
+        const c = await getIssueContext(cfg.tracker, id);
+        return c ? { id: c.id, identifier: c.identifier, title: c.title, url: c.url, state: c.state, labels: c.labels.map(l => l.name) } : null;
+      },
+      retro: async (t, history) => {
+        const issue = {
+          id: t.id, identifier: t.identifier, title: t.title, url: t.url, labels: t.labels, state: t.state,
+          description: null, priority: null, branchName: null, blockedBy: [], assignee: null, creator: null, createdAt: null, updatedAt: null,
+        } satisfies Issue;
+        await runRetrospective({
+          issue, terminalState: t.state, runHistory: history,
+          workspacePath: getWorkspacePath(cfg.workspace.root, t.identifier),
+          symphonyRoot: this.root, config: { ...retro, enabled: true },
+          mcpConfigPath: fs.existsSync(mcp) ? mcp : undefined, logger: this.log,
+        });
+        if (retro.commitLessons) {
+          await commitAndPushLessons({
+            repoRoot, lessonsPath: retro.lessonsPath, branch: cfg.autoUpdate.branch ?? "",
+            remote: cfg.autoUpdate.remote, issueIdentifier: t.identifier, logger: this.log,
+          });
+        }
+      },
+      openGate: async input => { await this.hub.open(input); },
+      dm: text => this.hub.dm(text),
+      addLabel: (id, name) => addIssueLabel(cfg.tracker, id, name),
+      removeLabel: (id, name) => removeIssueLabel(cfg.tracker, id, name),
+      runPass: localPassRunner({ repoRoot, workDir, maxTurns: n("max_turns", 60), timeoutMs: n("timeout_minutes", 30) * 60_000 }, this.log),
+      openPr: (branch, title, body) => openImprovePr(repoRoot, workDir, branch, title, body),
+      prState: pr => improvePrState(repoRoot, pr),
+      mergePr: pr => improvePrAction(repoRoot, pr, "merge"),
+      closePr: pr => improvePrAction(repoRoot, pr, "close"),
+      createTicket: async (title, description) => {
+        teamId ??= (await fetchTeamByKey(cfg.tracker, cfg.v2.teamKey))?.id ?? null;
+        if (!teamId) return null;
+        const made = await createIssue(cfg.tracker, { teamId, title, description });
+        return { identifier: made.identifier, url: made.url };
+      },
+      paused: () => tokenProcesses.isPaused(),
+      now: () => Date.now(),
+    }, this.log);
+
+    this.hub.onKind("process_change", async r => {
+      const pr = Number(r.gate.meta?.prNumber);
+      if (!Number.isFinite(pr)) return;
+      await loop.onChangeDecision(pr, r.decision.actionId)
+        .catch(e => this.hub.dm(`🛠️ Couldn't ${r.decision.actionId} PR #${pr}: ${errMsg(e)}. ${r.gate.meta?.prUrl ?? ""}`));
+    });
+    this.hub.onKind("ticket_hold", async r => {
+      const t = r.gate.meta?.ticket;
+      if (t) await loop.onHoldDecision(t, r.decision.actionId);
+    });
+    return loop;
   }
 
   async start(): Promise<void> {
@@ -226,6 +321,8 @@ export class SymphonyV2 {
       ["release", () => this.release?.reconcile() ?? Promise.resolve()],
       // Not awaited: a review takes many minutes and must not hold up the tick.
       ["pr review", () => { void this.prReviewer?.reconcile(); return Promise.resolve(); }],
+      // Not awaited either: retros and the daily pass run agents.
+      ["improve", () => { void this.improve?.reconcile().catch(e => this.log.warn("v2 improve failed", { error: errMsg(e) })); return Promise.resolve(); }],
       ...this.intake.map(w => [w.name, () => w.reconcile()] as [string, () => Promise<void>]),
     ];
     for (const [name, step] of steps) {
@@ -237,7 +334,8 @@ export class SymphonyV2 {
     }
   }
 
-  allowDispatch(issue: DispatchCandidate): { ok: boolean; reason: string | null } {
+  allowDispatch(issue: DispatchCandidate & { identifier?: string }): { ok: boolean; reason: string | null } {
+    if (this.improve?.isHeld(issue)) return { ok: false, reason: "on hold after repeated failures" };
     if (!this.cfg.v2.governor.enabled) {
       // Still never start a ticket that is waiting on a person.
       return allowDispatch({ ...(this.readout ?? emptyReadout()), mode: "normal" }, issue);
@@ -258,6 +356,7 @@ export class SymphonyV2 {
       auto_deploy: this.review ? (this.review.killSwitchOn() ? "off (kill switch)" : this.cfg.v2.review.autoMerge ? "on" : "off") : "off",
       roadmap: this.roadmapCfg.enabled ? this.roadmap.filter(e => e.verdict !== "done").map(formatEntry) : null,
       functional_tests_queued: this.tester.pending(),
+      held_tickets: this.improve?.holds().map(h => `${h.ticket}: ${h.reason}`) ?? null,
       releases: this.release?.active().map(r => `PR #${r.pr.number}${r.ticketKey ? ` (${r.ticketKey})` : ""}: ${r.phase}${r.problems.length ? `, ${r.problems.length} problem(s)` : ""}`) ?? null,
     };
   }
