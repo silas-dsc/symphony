@@ -389,7 +389,7 @@ v2:
   usage_budget:
     enabled: true
     max_share_per_hour: 0.17
-    check_minutes: 15
+    check_minutes: 5           # a burst of agents can eat the hour quickly; the probe is one 1-token request
   # Local code review (replaces the claude-review GitHub Action): every new commit on an open
   # team-dsc PR (not drafts, forks or Dependabot) gets Claude Code's own `/code-review <level> --fix`
   # in a workspace here. Fixes are verified, committed and pushed; one comment ends in

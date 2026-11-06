@@ -5,7 +5,7 @@ import * as path from "node:path";
 import * as readline from "node:readline";
 import { Liquid } from "liquidjs";
 import type { HooksConfig, Logger, MergeConflictConfig } from "./types.js";
-import { ensureWorkspace, removeWorkspace, runHook } from "./workspace.js";
+import { ensureWorkspace, fetchBranchArgs, removeWorkspace, runHook } from "./workspace.js";
 import { trackTokenProcess } from "./usage-budget.js";
 import { claudeEffortArgs, claudeModelArgs } from "./llm.js";
 
@@ -386,7 +386,7 @@ export async function classifyConflicts(cwd: string, pr: ConflictingPR, timeoutM
   // A shallow clone breaks merge-base detection; deepen it first.
   await git(cwd, ["fetch", "--unshallow"], timeoutMs)
     .catch(() => git(cwd, ["fetch", "--all", "--tags", "--prune"], timeoutMs).catch(() => undefined));
-  await git(cwd, ["fetch", "origin", pr.headBranch, pr.baseBranch], timeoutMs);
+  await git(cwd, fetchBranchArgs(pr.headBranch, pr.baseBranch), timeoutMs);
   await git(cwd, ["checkout", "-B", pr.headBranch, `origin/${pr.headBranch}`], timeoutMs);
   await git(cwd, ["reset", "--hard", `origin/${pr.headBranch}`], timeoutMs);
   // A conflicting merge exits non-zero — that's the expected path, not an error.

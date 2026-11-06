@@ -127,3 +127,12 @@ export async function runHook(
     proc.stdin.end();
   });
 }
+
+/**
+ * `git fetch` args that update origin/<branch> for each branch. Workspaces are
+ * cloned tracking only main, so a bare `git fetch origin <branch>` fills
+ * FETCH_HEAD but never creates origin/<branch>, and checking it out fails.
+ */
+export function fetchBranchArgs(...branches: string[]): string[] {
+  return ["fetch", "origin", ...branches.map(b => `+refs/heads/${b}:refs/remotes/origin/${b}`)];
+}
