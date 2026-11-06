@@ -52,6 +52,7 @@ export type DraftHandler = (kind: "post" | "skip", draftId: string, by: string) 
 const KIND_ICON: Record<GateKind, string> = {
   approve_approach: "🧭", visual_signoff: "🎨", code_review: "🔍", pr_review: "👀", merge_deploy: "🚀",
   login_credential: "🔑", product_decision: "💡", triage_decision: "🗂️",
+  process_change: "🛠️", ticket_hold: "⏸️",
 };
 
 export function formatDecisionComment(resolution: GateResolution, byName: string | null): string {

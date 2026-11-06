@@ -18,6 +18,8 @@ const KIND_EMOJI: Record<GateKind, string> = {
   login_credential: "🔑",
   product_decision: "🤔",
   triage_decision: "🏷️",
+  process_change: "🛠️",
+  ticket_hold: "⏸️",
 };
 
 const RESOLVED_EMOJI: Record<GateActionKind, string> = {

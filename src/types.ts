@@ -71,7 +71,11 @@ export type GateKind =
   | "merge_deploy"
   | "login_credential"
   | "product_decision"
-  | "triage_decision";
+  | "triage_decision"
+  /** A daily improvement-pass PR that edits Symphony's own prompts/workflow (merge = it goes live). */
+  | "process_change"
+  /** A ticket Symphony stopped retrying because its runs keep failing. */
+  | "ticket_hold";
 
 export type GateStatus = "open" | "resolved" | "dismissed";
 

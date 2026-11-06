@@ -59,6 +59,8 @@ export interface V2Config {
   reviewRequests: Record<string, unknown>;
   /** Raw `v2.pr_review` block (local /code-review --fix on every PR commit), parsed in v2.ts. */
   prReview: Record<string, unknown>;
+  /** Raw `v2.improve` block (retros, loop detectors, daily improvement pass), parsed in v2.ts. */
+  improve: Record<string, unknown>;
 }
 
 export interface V2ParseContext {
@@ -143,6 +145,7 @@ export function parseV2Config(raw: Raw, ctx: V2ParseContext): V2Config {
     release: obj(raw.release),
     reviewRequests: obj(raw.review_requests),
     prReview: obj(raw.pr_review),
+    improve: obj(raw.improve),
   };
 }
 
