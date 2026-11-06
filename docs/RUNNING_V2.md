@@ -20,13 +20,18 @@ that's each person's queue.
 Claude Code's `/code-review high --fix` (see `v2.pr_review` in WORKFLOW.md). It uses your local `gh`
 and git credentials and your Claude login; no GitHub Action or repo secret is needed.
 
-**Self-improvement** (`v2.improve`): every ticket Symphony ran that reaches Done gets a retrospective
-(one lesson in `lessons/lessons.jsonl`, with the ticket's run history). Rules with no tokens watch the
-run log: a ticket that fails 3 runs in a row gets the `symphony-hold` label and a ⏸️ card (Resume, or
-remove the label), and costly tickets or failure spikes get a DM. At 5pm a daily pass turns the day's
-lessons, metrics and alerts into up to 3 prompt/workflow edits on an `improve/<date>` PR with a 🛠️
-Merge card, and files team-dsc tickets for code problems. Nothing merges until you click Merge. Each
-merged change is scored on the run log two days later, and the next pass can revert one that hurt.
+**Self-improvement** (`v2.improve`): Symphony spends no tokens on it. It writes
+`.symphony-state/improve-brief.md` (run metrics, alerts, Done tickets still needing a lesson with their
+run history, and how earlier process changes scored), holds tickets that fail 3 runs in a row (label
+`symphony-hold` + ⏸️ Resume card; removing the label also resumes), DMs costly tickets and failure
+spikes, and posts a 🛠️ Merge card for every open `improve/*` PR. The thinking runs as the Claude desktop
+Scheduled task **Symphony daily improvement** (`prompts/DAILY_IMPROVE.md`, 5pm): it writes the queued
+lessons in one batch, opens an `improve/<date>` PR with up to 3 prompt/workflow edits, and files up to 2
+team-dsc tickets. Nothing merges until you click Merge; merged changes are scored two days later.
+
+**Token use:** routine runs (retros in `per_ticket` mode, merge-conflict resolution) use Sonnet 5.5 at low
+effort (`CLAUDE_ROUTINE_MODEL` / `CLAUDE_ROUTINE_EFFORT`). PR review runs at `medium`, once a PR is ready
+and again only after a push of 150+ changed lines. Rework runs stop at `agent.max_turns_rework` (25).
 
 **`.env`** in the Symphony folder (next to WORKFLOW.md):
 ```
@@ -85,6 +90,6 @@ queue and Claude's own rate-limit signals only.
 | Review flow, asks, deploy guard, governor | every poll tick | none |
 | Triage, Slack/Render intake | every 4h / 30 min / 6h | none (rules only) |
 | Daily / weekly reports | 4pm weekdays / Mon 9am | none (Linear data only) |
-| PR review (local `/code-review high --fix`) | every new PR commit | yes |
-| Retros / daily improvement pass | per Done ticket / 5pm daily | yes |
+| PR review (local `/code-review medium --fix`) | PR ready + pushes of 150+ lines | yes |
+| Daily improvement pass (desktop Scheduled task) | 5pm daily | yes (your desktop session) |
 | Loop and cost detectors | every 5 min | none (run log only) |

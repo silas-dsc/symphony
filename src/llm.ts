@@ -12,16 +12,26 @@ export const CLAUDE_OPUS_MODEL   = process.env.CLAUDE_OPUS_MODEL   ?? "claude-op
 export const DEFAULT_CLAUDE_MODEL = "claude-opus-5-5";
 const EFFORTS = new Set(["low", "medium", "high", "xhigh", "max"]);
 
-/** `--model` for one-shot Claude runs (conflicts, tests, retrospectives…): CLAUDE_MODEL, else Opus 5.5. */
-export function claudeModelArgs(): string[] {
+/**
+ * "routine" = bookkeeping runs that don't write product code (retrospectives,
+ * merge-conflict resolution). They default to Sonnet 5.5 at low effort to save
+ * usage; override with CLAUDE_ROUTINE_MODEL / CLAUDE_ROUTINE_EFFORT.
+ */
+export type ClaudeJob = "default" | "routine";
+export const DEFAULT_ROUTINE_MODEL = "claude-sonnet-5-5";
+
+/** `--model` for one-shot Claude runs: CLAUDE_MODEL (else Opus 5.5), or the routine model for routine jobs. */
+export function claudeModelArgs(job: ClaudeJob = "default"): string[] {
+  if (job === "routine") return ["--model", process.env.CLAUDE_ROUTINE_MODEL?.trim() || DEFAULT_ROUTINE_MODEL];
   const m = process.env.CLAUDE_MODEL?.trim();
   return ["--model", m && m !== "auto" ? m : DEFAULT_CLAUDE_MODEL];
 }
 
-/** `--effort` for every Claude run: CLAUDE_EFFORT (low|medium|high|xhigh|max), default medium. */
-export function claudeEffortArgs(): string[] {
-  const e = (process.env.CLAUDE_EFFORT ?? "medium").trim().toLowerCase();
-  return ["--effort", EFFORTS.has(e) ? e : "medium"];
+/** `--effort`: CLAUDE_EFFORT (default medium), or CLAUDE_ROUTINE_EFFORT (default low) for routine jobs. */
+export function claudeEffortArgs(job: ClaudeJob = "default"): string[] {
+  const raw = job === "routine" ? (process.env.CLAUDE_ROUTINE_EFFORT ?? "low") : (process.env.CLAUDE_EFFORT ?? "medium");
+  const e = raw.trim().toLowerCase();
+  return ["--effort", EFFORTS.has(e) ? e : job === "routine" ? "low" : "medium"];
 }
 export const OLLAMA_CLAUDE_MODEL = process.env.OLLAMA_CLAUDE_MODEL ?? "qwen3.5";
 

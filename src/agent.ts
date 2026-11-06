@@ -161,7 +161,9 @@ export async function runAgentAttempt(
 
   try {
     onEvent({ type: "session_started" });
-    const result = await spawnWithFailover(prompt, wsPath, config.agent.maxTurns, abortController, onEvent, selectedModel, mcpConfigPath, buildStageArgs(symphonyRoot));
+    const rework = /^## Fix\s*$/m.test(issue.description ?? "");
+    const maxTurns = rework ? Math.min(config.agent.maxTurnsRework, config.agent.maxTurns) : config.agent.maxTurns;
+    const result = await spawnWithFailover(prompt, wsPath, maxTurns, abortController, onEvent, selectedModel, mcpConfigPath, buildStageArgs(symphonyRoot));
     success = result.success;
     errorMsg = result.error;
     inputTokens = result.inputTokens;

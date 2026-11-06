@@ -27,4 +27,18 @@ describe("Claude defaults", () => {
     process.env.CLAUDE_MODEL = "auto";
     expect(claudeModelArgs()).toEqual(["--model", "claude-opus-5-5"]);
   });
+
+  it("runs routine jobs on Sonnet 5.5 at low effort, overridable, regardless of CLAUDE_MODEL", () => {
+    process.env.CLAUDE_MODEL = "claude-opus-5-5";
+    delete process.env.CLAUDE_ROUTINE_MODEL;
+    delete process.env.CLAUDE_ROUTINE_EFFORT;
+    expect(claudeModelArgs("routine")).toEqual(["--model", "claude-sonnet-5-5"]);
+    expect(claudeEffortArgs("routine")).toEqual(["--effort", "low"]);
+    process.env.CLAUDE_ROUTINE_MODEL = "claude-haiku-5-5";
+    process.env.CLAUDE_ROUTINE_EFFORT = "medium";
+    expect(claudeModelArgs("routine")).toEqual(["--model", "claude-haiku-5-5"]);
+    expect(claudeEffortArgs("routine")).toEqual(["--effort", "medium"]);
+    delete process.env.CLAUDE_ROUTINE_MODEL;
+    delete process.env.CLAUDE_ROUTINE_EFFORT;
+  });
 });

@@ -1,54 +1,49 @@
-import { execFile, spawn } from "node:child_process";
+import { execFile } from "node:child_process";
 import * as fs from "node:fs";
-import * as path from "node:path";
-import * as readline from "node:readline";
 import { promisify } from "node:util";
-import { Liquid } from "liquidjs";
 import type { Lesson } from "./lessons.js";
-import { claudeEffortArgs, claudeModelArgs } from "./llm.js";
 import type { RunRecord } from "./run-log.js";
 import type { GateInput, Logger } from "./types.js";
-import { trackTokenProcess } from "./usage-budget.js";
 
 /**
- * Symphony's self-improvement loop (v2.improve).
+ * Symphony's self-improvement loop (v2.improve). Symphony itself spends no
+ * tokens here; the thinking happens in a Claude desktop Scheduled task
+ * ("Symphony daily improvement", prompts/DAILY_IMPROVE.md) that reads the brief
+ * this loop writes.
  *
- * 1. Retros: every few minutes, find tickets Symphony ran that are now Done and
- *    have no lesson yet, and run the retrospective. This replaces the old trigger,
- *    which only fired while the orchestrator still tracked the ticket — in v2 it
- *    stops tracking at In Review, so retros had silently stopped.
- * 2. Detectors (no tokens): read the run log for retry loops, costly tickets and
- *    broad failure spikes. A looping ticket gets the hold label (no more
- *    dispatches) and a Resume card; removing the label in Linear also resumes it.
- * 3. Daily pass: once a day, an agent reads the day's lessons, metrics and
- *    detector findings, edits Symphony's prompts/workflow in a throwaway
- *    worktree (one commit per change), and Symphony opens a PR with a Merge card.
- *    Problems in team-dsc code become Linear tickets.
- * 4. Outcomes: each merged change is scored on the run log a few days later
- *    (failure rate, cost per ticket, rework) and the result feeds the next pass,
- *    which can revert a change that made things worse.
- *
- * Prompt changes never merge without the operator clicking Merge.
+ * - Retro queue: tickets Symphony ran that are now Done and have no lesson are
+ *   listed in the brief (with their run history). The daily task writes their
+ *   lessons in one batch. (`retro_mode: per_ticket` runs one retrospective agent
+ *   per ticket instead — more thorough, more tokens.)
+ * - Detectors: retry loops, costly tickets and failure spikes from the run log.
+ *   A looping ticket gets the hold label (no more dispatches) and a Resume card;
+ *   removing the label in Linear also resumes it.
+ * - Brief: `<state>/improve-brief.md` — metrics, today's alerts, the retro queue
+ *   and how earlier process changes scored.
+ * - Process changes: any open `improve/*` PR on the Symphony repo gets a 🛠️
+ *   Merge / Close card. Merged ones are scored on the run log after 2 days
+ *   (failure rate, cost per ticket, rework vs the week before) and the result
+ *   goes in the brief, so the next pass can revert a change that hurt.
  */
 
 const DAY = 86_400_000;
 const HOUR = 3_600_000;
 
 export interface ImproveConfig {
+  retroMode: "batched" | "per_ticket";
   retroPollMs: number;
   retroLookbackDays: number;
   retrosPerPoll: number;
   triggerStates: string[];
   detectEveryMs: number;
+  prPollMs: number;
   loopFailures: number;
   loopWindowHours: number;
   ticketCostAlertUsd: number;
-  dailyHourLocal: number;
-  maxChanges: number;
-  maxTickets: number;
   /** Linear label that stops dispatch. Remove it (or click Resume) to let Symphony retry. */
   holdLabel: string;
   statePath: string;
+  briefPath: string;
 }
 
 export interface TicketInfo {
@@ -76,48 +71,23 @@ export interface Finding {
   text: string;
 }
 
-export interface PassInput {
-  date: string;
-  lessonsRecent: Lesson[];
-  lessonsWindow: Lesson[];
-  metrics: string;
-  findings: string;
-  outcomes: string;
-  maxChanges: number;
-  maxTickets: number;
-}
-
-export interface PassChange { title: string; file: string; why: string; evidence: string[]; expect: string }
-export interface PassTicket { title: string; description: string; evidence: string[] }
-
-export interface PassResult {
-  /** Branch holding the agent's commits, or null when it made none. */
-  branch: string | null;
-  /** Files changed against origin/main. */
-  files: string[];
-  changes: PassChange[];
-  tickets: PassTicket[];
-  /** Problems in Symphony's own code (the agent may not edit .ts) — listed on the card. */
-  engineering: string[];
-  skipped: string[];
-  cleanup(): Promise<void>;
-}
+export interface ImprovePr { number: number; url: string; title: string; branch: string }
 
 export interface ImproveDeps {
   readRuns(): RunRecord[];
   readLessons(): Lesson[];
   ticket(identifier: string): Promise<TicketInfo | null>;
+  /** Only used with retro_mode: per_ticket. */
   retro(t: TicketInfo, runHistory: string): Promise<void>;
   openGate(input: GateInput): Promise<void>;
   dm(text: string): Promise<void>;
   addLabel(issueId: string, name: string): Promise<void>;
   removeLabel(issueId: string, name: string): Promise<void>;
-  runPass(input: PassInput): Promise<PassResult | null>;
-  openPr(branch: string, title: string, body: string): Promise<{ number: number; url: string }>;
+  /** Open PRs on the Symphony repo whose branch starts with improve/. */
+  listImprovePrs(): Promise<ImprovePr[]>;
   prState(n: number): Promise<{ state: "OPEN" | "MERGED" | "CLOSED"; mergedAt: string | null }>;
   mergePr(n: number): Promise<void>;
   closePr(n: number): Promise<void>;
-  createTicket(title: string, description: string): Promise<{ identifier: string; url: string | null } | null>;
   paused(): boolean;
   now(): number;
 }
@@ -132,27 +102,27 @@ interface Change {
   mergedAt: string | null;
   closed: boolean;
   baseline: Metrics;
-  expect: string[];
   verdict: Verdict | null;
   after: Metrics | null;
 }
 
 interface Hold { ticket: string; issueId: string; since: string; reason: string }
+interface Pending { title: string; url: string; state: string; since: string }
 
 interface State {
   retroDone: Record<string, string>;
   retroChecked: Record<string, string>;
+  /** Done tickets waiting for the daily task to write their lesson. */
+  pendingRetro: Record<string, Pending>;
   holds: Record<string, Hold>;
   /** Ticket → time it was resumed; detectors ignore failures before it. */
   resumed: Record<string, string>;
   alerts: Record<string, { at: string; text: string }>;
-  lastPassDay: string | null;
   changes: Change[];
-  ticketsFiled: string[];
 }
 
 const emptyState = (): State => ({
-  retroDone: {}, retroChecked: {}, holds: {}, resumed: {}, alerts: {}, lastPassDay: null, changes: [], ticketsFiled: [],
+  retroDone: {}, retroChecked: {}, pendingRetro: {}, holds: {}, resumed: {}, alerts: {}, changes: [],
 });
 
 // ─── pure helpers ─────────────────────────────────────────────────────────────
@@ -178,7 +148,7 @@ export function formatMetrics(m: Metrics): string {
     `${m.avgTurns} turns/run, ${Math.round(m.reworkShare * 100)}% rework`;
 }
 
-/** Rough before/after call. Confounded by ticket mix, so the pass treats it as a hint. */
+/** Rough before/after call. Confounded by ticket mix, so the daily pass treats it as a hint. */
 export function judge(before: Metrics, after: Metrics): Verdict {
   const failUp = after.failRate - before.failRate;
   const costRatio = before.costPerTicket > 0 ? after.costPerTicket / before.costPerTicket : 1;
@@ -246,41 +216,14 @@ export function runHistory(runs: RunRecord[], ticket: string): string {
   ).join("\n");
 }
 
-/** Files the daily pass may change. Anything else voids the pass. */
-export function allowedFile(f: string): boolean {
-  return f === "WORKFLOW.md" || f === "docs/AGENT_MEMORY.md" || /^prompts\/[^/]+\.md$/.test(f);
-}
-
-export function parsePassResult(text: string): Omit<PassResult, "branch" | "files" | "cleanup"> | null {
-  const m = text.match(/```improve-result\s*\n([\s\S]*?)```/);
-  if (!m) return null;
-  try {
-    const j = JSON.parse(m[1]) as Partial<Record<"changes" | "tickets" | "engineering" | "skipped", unknown>>;
-    const arr = <T>(v: unknown): T[] => (Array.isArray(v) ? (v as T[]) : []);
-    return {
-      changes: arr<PassChange>(j.changes).filter(c => c && typeof c.title === "string"),
-      tickets: arr<PassTicket>(j.tickets).filter(t => t && typeof t.title === "string" && typeof t.description === "string"),
-      engineering: arr<string>(j.engineering).filter(s => typeof s === "string"),
-      skipped: arr<string>(j.skipped).filter(s => typeof s === "string"),
-    };
-  } catch {
-    return null;
-  }
-}
-
-function localDay(ms: number): string {
-  const d = new Date(ms);
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
-}
-
 // ─── the loop ────────────────────────────────────────────────────────────────
 
 export class ImprovementLoop {
   private state: State;
   private lastRetroPoll = 0;
   private lastDetect = 0;
+  private lastPrPoll = 0;
   private retroBusy = false;
-  private passBusy = false;
 
   constructor(private readonly cfg: ImproveConfig, private readonly deps: ImproveDeps, private readonly log: Logger) {
     this.state = emptyState();
@@ -301,28 +244,30 @@ export class ImprovementLoop {
     return Object.values(this.state.holds);
   }
 
-  /** Called every tick. Detectors run inline; retros and the daily pass run in the background. */
+  /** Called every tick. Only per-ticket retros (if on) spend tokens, and they run in the background. */
   async reconcile(): Promise<void> {
     const now = this.deps.now();
+    const step = async (name: string, fn: () => Promise<void>) => {
+      try { await fn(); } catch (e) { this.log.warn(`Improvement ${name} failed`, { error: errMsg(e) }); }
+    };
     if (now - this.lastDetect >= this.cfg.detectEveryMs) {
       this.lastDetect = now;
-      try {
-        await this.runDetectors(now);
-      } catch (e) {
-        this.log.warn("Improvement detectors failed", { error: errMsg(e) });
-      }
+      await step("detectors", () => this.runDetectors(now));
     }
-    const jobs: Promise<void>[] = [];
-    if (!this.retroBusy && now - this.lastRetroPoll >= this.cfg.retroPollMs && !this.deps.paused()) {
+    if (now - this.lastPrPoll >= this.cfg.prPollMs) {
+      this.lastPrPoll = now;
+      await step("PR discovery", () => this.discoverPrs(now));
+      await step("outcomes", () => this.updateOutcomes(now));
+    }
+    let retros: Promise<void> | null = null;
+    if (!this.retroBusy && now - this.lastRetroPoll >= this.cfg.retroPollMs && !(this.cfg.retroMode === "per_ticket" && this.deps.paused())) {
       this.lastRetroPoll = now;
       this.retroBusy = true;
-      jobs.push(this.runRetros(now).catch(e => this.log.warn("Retro poll failed", { error: errMsg(e) })).finally(() => { this.retroBusy = false; }));
+      retros = step("retro poll", () => this.runRetros(now)).finally(() => { this.retroBusy = false; });
     }
-    if (!this.passBusy && this.passDue(now)) {
-      this.passBusy = true;
-      jobs.push(this.runDaily(now).catch(e => this.log.warn("Daily improvement pass failed", { error: errMsg(e) })).finally(() => { this.passBusy = false; }));
-    }
-    await Promise.all(jobs);
+    if (retros && this.cfg.retroMode === "batched") await retros; // Linear reads only — quick
+    await step("brief", async () => this.writeBrief(now));
+    if (retros) await retros;
   }
 
   // ── retros ──
@@ -330,18 +275,23 @@ export class ImprovementLoop {
   private async runRetros(now: number): Promise<void> {
     const runs = this.deps.readRuns();
     const withLesson = new Set(this.deps.readLessons().map(l => l.ticket).filter((t): t is string => !!t));
+    for (const t of Object.keys(this.state.pendingRetro)) if (withLesson.has(t)) { delete this.state.pendingRetro[t]; this.state.retroDone[t] = new Date(now).toISOString(); }
     const since = now - this.cfg.retroLookbackDays * DAY;
     const tickets = [...new Set(runs.filter(r => Date.parse(r.at) >= since).map(r => r.issue))]
-      .filter(t => !this.state.retroDone[t] && !withLesson.has(t))
+      .filter(t => !this.state.retroDone[t] && !this.state.pendingRetro[t] && !withLesson.has(t))
       .sort((a, b) => (this.state.retroChecked[a] ?? "").localeCompare(this.state.retroChecked[b] ?? ""))
       .slice(0, 10);
     const trigger = this.cfg.triggerStates.map(s => s.toLowerCase());
     let ran = 0;
     for (const id of tickets) {
-      if (ran >= this.cfg.retrosPerPoll || this.deps.paused()) break;
+      if (this.cfg.retroMode === "per_ticket" && (ran >= this.cfg.retrosPerPoll || this.deps.paused())) break;
       this.state.retroChecked[id] = new Date(now).toISOString();
       const t = await this.deps.ticket(id).catch(() => null);
       if (!t || !trigger.includes(t.state.toLowerCase())) continue;
+      if (this.cfg.retroMode === "batched") {
+        this.state.pendingRetro[id] = { title: t.title, url: t.url, state: t.state, since: new Date(now).toISOString() };
+        continue;
+      }
       this.log.info("Running retrospective", { issue_identifier: id, state: t.state });
       await this.deps.retro(t, runHistory(runs, id)).catch(e => this.log.warn("Retrospective failed", { issue_identifier: id, error: errMsg(e) }));
       this.state.retroDone[id] = new Date(this.deps.now()).toISOString();
@@ -351,6 +301,7 @@ export class ImprovementLoop {
     for (const map of [this.state.retroDone, this.state.retroChecked]) {
       for (const [k, v] of Object.entries(map)) if (Date.parse(v) < since - DAY) delete map[k];
     }
+    for (const [k, v] of Object.entries(this.state.pendingRetro)) if (Date.parse(v.since) < now - 14 * DAY) delete this.state.pendingRetro[k];
     this.persist();
   }
 
@@ -409,104 +360,27 @@ export class ImprovementLoop {
     this.persist();
   }
 
-  // ── daily pass ──
+  // ── process changes ──
 
-  private passDue(now: number): boolean {
-    return this.state.lastPassDay !== localDay(now) && new Date(now).getHours() >= this.cfg.dailyHourLocal && !this.deps.paused();
-  }
-
-  private async runDaily(now: number): Promise<void> {
-    const day = localDay(now);
-    this.state.lastPassDay = day; // once a day, even if it fails
-    this.persist();
-    const runs = this.deps.readRuns();
-    const outcomes = await this.updateOutcomes(now, runs);
-    const lessons = this.deps.readLessons();
-    const at = (l: Lesson) => (l.completed_at ? Date.parse(l.completed_at) : NaN);
-    const recent = lessons.filter(l => at(l) >= now - DAY);
-    const window = lessons.filter(l => at(l) >= now - 14 * DAY);
-    const findings = Object.values(this.state.alerts).filter(a => Date.parse(a.at) >= now - DAY).map(a => `- ${a.text}`);
-    const m1 = metricsFor(runs, now - DAY, now);
-    if (recent.length === 0 && findings.length === 0 && m1.runs === 0 && outcomes.fresh.length === 0) {
-      this.log.info("Daily improvement pass: nothing new today");
-      return;
-    }
-    const m7 = metricsFor(runs, now - 7 * DAY, now);
-    const open = this.state.changes.filter(c => !c.closed && !c.mergedAt).map(c => `- PR #${c.pr} (open): ${c.title}`);
-    this.log.info("Daily improvement pass starting", { lessons_today: recent.length, findings: findings.length });
-    const result = await this.deps.runPass({
-      date: day,
-      lessonsRecent: recent,
-      lessonsWindow: window,
-      metrics: `Last 24h: ${formatMetrics(m1)}\nLast 7d: ${formatMetrics(m7)}`,
-      findings: findings.join("\n"),
-      outcomes: [...outcomes.lines, ...open].join("\n"),
-      maxChanges: this.cfg.maxChanges,
-      maxTickets: this.cfg.maxTickets,
-    });
-    if (!result) {
-      await this.deps.dm("🛠️ Today's improvement pass didn't finish (no result block). Nothing changed.");
-      return;
-    }
-    try {
-      await this.applyPass(day, result, m7);
-    } finally {
-      await result.cleanup().catch(() => undefined);
-    }
-  }
-
-  private async applyPass(day: string, r: PassResult, baseline: Metrics): Promise<void> {
-    const bad = r.files.filter(f => !allowedFile(f));
-    if (bad.length) {
-      await this.deps.dm(`🛠️ Today's improvement pass edited files it may not touch (${bad.join(", ")}), so Symphony dropped it.`);
-      return;
-    }
-    const filed: string[] = [];
-    for (const t of r.tickets.slice(0, this.cfg.maxTickets)) {
-      if (this.state.ticketsFiled.includes(t.title)) continue;
-      const desc = `${t.description}\n\nEvidence: ${t.evidence.join(", ") || "run log"}\n\n_Filed by Symphony's daily improvement pass (${day})._`;
-      const made = await this.deps.createTicket(t.title, desc).catch(e => { this.log.warn("Improvement ticket failed", { error: errMsg(e) }); return null; });
-      if (made) { filed.push(`${made.identifier} ${t.title}`); this.state.ticketsFiled.push(t.title); }
-    }
-    this.state.ticketsFiled = this.state.ticketsFiled.slice(-100);
-    this.persist();
-
-    if (r.branch && r.files.length > 0 && r.changes.length > 0) {
-      const body = [
-        `Daily improvement pass, ${day}. Each commit is one change.`, "",
-        ...r.changes.map(c => `### ${c.title}\n- File: \`${c.file}\`\n- Why: ${c.why}\n- Evidence: ${c.evidence.join(", ") || "run log"}\n- Expect: ${c.expect}`), "",
-        ...(r.engineering.length ? ["### Needs a code change (not done here)", ...r.engineering.map(e => `- ${e}`), ""] : []),
-        ...(filed.length ? ["### Tickets filed", ...filed.map(f => `- ${f}`), ""] : []),
-        ...(r.skipped.length ? ["### Seen but not acted on", ...r.skipped.map(s => `- ${s}`), ""] : []),
-        "Merging puts these edits live on the next self-update. Symphony scores the change against the run log after 2 days.",
-      ].join("\n");
-      const pr = await this.deps.openPr(r.branch, `Daily improvement ${day}: ${r.changes.map(c => c.title).join("; ")}`.slice(0, 120), body);
+  /** New improve/* PRs (opened by the daily task) → baseline + Merge card. */
+  private async discoverPrs(now: number): Promise<void> {
+    const prs = await this.deps.listImprovePrs();
+    for (const pr of prs) {
+      if (this.state.changes.some(c => c.pr === pr.number)) continue;
       this.state.changes.push({
-        pr: pr.number, url: pr.url, title: r.changes.map(c => c.title).join("; "), openedAt: new Date(this.deps.now()).toISOString(),
-        mergedAt: null, closed: false, baseline, expect: r.changes.map(c => c.expect), verdict: null, after: null,
+        pr: pr.number, url: pr.url, title: pr.title, openedAt: new Date(now).toISOString(),
+        mergedAt: null, closed: false, baseline: metricsFor(this.deps.readRuns(), now - 7 * DAY, now), verdict: null, after: null,
       });
       this.state.changes = this.state.changes.slice(-50);
       this.persist();
       await this.deps.openGate({
         kind: "process_change",
-        title: `Process change: ${r.changes.length} edit${r.changes.length === 1 ? "" : "s"} from today's lessons`,
-        summary: [
-          ...r.changes.map(c => `• ${c.title} (${c.file}) — ${c.why}`),
-          ...(r.engineering.length ? [`Needs code: ${r.engineering.join("; ")}`] : []),
-          ...(filed.length ? [`Filed: ${filed.join("; ")}`] : []),
-        ].join("\n").slice(0, 2900),
+        title: `Process change: ${pr.title}`.slice(0, 120),
+        summary: "Today's improvement pass proposes edits to Symphony's prompts/workflow. The PR body lists each change, its evidence and what should improve.",
         question: "Merge these prompt/workflow changes?",
         links: [{ label: `PR #${pr.number}`, url: pr.url }],
         meta: { prNumber: String(pr.number), prUrl: pr.url },
       });
-      return;
-    }
-    if (filed.length || r.engineering.length) {
-      await this.deps.dm([
-        "🛠️ Today's improvement pass: no prompt changes.",
-        ...(filed.length ? [`Filed: ${filed.join("; ")}`] : []),
-        ...(r.engineering.length ? [`Needs a Symphony code change: ${r.engineering.join("; ")}`] : []),
-      ].join("\n"));
     }
   }
 
@@ -523,8 +397,8 @@ export class ImprovementLoop {
     this.persist();
   }
 
-  private async updateOutcomes(now: number, runs: RunRecord[]): Promise<{ lines: string[]; fresh: string[] }> {
-    const fresh: string[] = [];
+  private async updateOutcomes(now: number): Promise<void> {
+    const runs = this.deps.readRuns();
     for (const c of this.state.changes) {
       if (c.closed || c.verdict) continue;
       if (!c.mergedAt) {
@@ -539,16 +413,53 @@ export class ImprovementLoop {
       if (after.runs < 10 && now - merged < 7 * DAY) continue;
       c.after = after;
       c.verdict = after.runs < 10 ? "unclear" : judge(c.baseline, after);
-      fresh.push(`PR #${c.pr}`);
       if (c.verdict === "worse") {
-        await this.deps.dm(`⚠️ Process change PR #${c.pr} (${c.title}) looks worse since it merged: ${formatMetrics(c.baseline)} → ${formatMetrics(after)}. Today's improvement pass will consider reverting it. ${c.url}`);
+        await this.deps.dm(`⚠️ Process change PR #${c.pr} (${c.title}) looks worse since it merged: ${formatMetrics(c.baseline)} → ${formatMetrics(after)}. The next improvement pass will consider reverting it. ${c.url}`);
       }
     }
     this.persist();
-    const lines = this.state.changes
-      .filter(c => c.verdict && c.mergedAt && Date.parse(c.mergedAt) >= now - 21 * DAY)
-      .map(c => `- PR #${c.pr} "${c.title}" merged ${c.mergedAt!.slice(0, 10)}: ${c.verdict}. Before: ${formatMetrics(c.baseline)}. After: ${c.after ? formatMetrics(c.after) : "n/a"}. Expected: ${c.expect.join("; ")}`);
-    return { lines, fresh };
+  }
+
+  // ── brief for the daily Scheduled task ──
+
+  brief(now: number): string {
+    const runs = this.deps.readRuns();
+    const alerts = Object.values(this.state.alerts).filter(a => Date.parse(a.at) >= now - DAY).map(a => `- ${a.text}`);
+    const pending = Object.entries(this.state.pendingRetro).sort(([a], [b]) => a.localeCompare(b));
+    const outcomes = this.state.changes.filter(c => c.verdict && c.mergedAt && Date.parse(c.mergedAt) >= now - 21 * DAY)
+      .map(c => `- PR #${c.pr} "${c.title}" merged ${c.mergedAt!.slice(0, 10)}: **${c.verdict}**. Before: ${formatMetrics(c.baseline)}. After: ${c.after ? formatMetrics(c.after) : "n/a"}.`);
+    const open = this.state.changes.filter(c => !c.closed && !c.mergedAt).map(c => `- PR #${c.pr} (open, awaiting review): ${c.title} ${c.url}`);
+    const waiting = this.state.changes.filter(c => c.mergedAt && !c.verdict).map(c => `- PR #${c.pr} merged ${c.mergedAt!.slice(0, 10)}: not scored yet`);
+    return [
+      `# Symphony improvement brief`,
+      ``,
+      `Written by Symphony at ${new Date(now).toISOString()} (refreshed every few minutes while it runs).`,
+      ``,
+      `## Run metrics`,
+      `- Last 24h: ${formatMetrics(metricsFor(runs, now - DAY, now))}`,
+      `- Last 7d: ${formatMetrics(metricsFor(runs, now - 7 * DAY, now))}`,
+      ``,
+      `## Alerts in the last 24h`,
+      ...(alerts.length ? alerts : ["- none"]),
+      ...(this.holds().length ? ["", "Tickets on hold:", ...this.holds().map(h => `- ${h.ticket}: ${h.reason}`)] : []),
+      ``,
+      `## Tickets that need a lesson (${pending.length})`,
+      `Done, ran by Symphony, no entry in lessons.jsonl yet. Run history: time, ok/FAIL, turns, cost, error.`,
+      ...(pending.length ? [] : ["- none"]),
+      ...pending.flatMap(([id, p]) => [``, `### ${id}: ${p.title}`, p.url, "```", runHistory(runs, id) || "(no runs logged)", "```"]),
+      ``,
+      `## Earlier process changes`,
+      ...([...outcomes, ...waiting, ...open].length ? [...outcomes, ...waiting, ...open] : ["- none yet"]),
+      ``,
+    ].join("\n");
+  }
+
+  private writeBrief(now: number): void {
+    try {
+      fs.writeFileSync(this.cfg.briefPath, this.brief(now));
+    } catch (e) {
+      this.log.warn("Could not write improvement brief", { error: errMsg(e) });
+    }
   }
 
   private persist(): void {
@@ -564,88 +475,25 @@ function errMsg(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
-// ─── real daily-pass runner (git worktree + claude) ──────────────────────────
+// ─── gh helpers for improve/* PRs ────────────────────────────────────────────
 
 const execFileP = promisify(execFile);
-const liquid = new Liquid({ strictVariables: true, strictFilters: true });
 
 async function sh(cmd: string, args: string[], cwd: string, timeout = 120_000): Promise<string> {
   const { stdout } = await execFileP(cmd, args, { cwd, timeout, maxBuffer: 16 * 1024 * 1024 });
   return stdout;
 }
 
-export interface PassRunnerConfig {
-  /** The Symphony git checkout (branches are cut from its origin/main). */
-  repoRoot: string;
-  /** Folder for the throwaway worktree and input files. */
-  workDir: string;
-  maxTurns: number;
-  timeoutMs: number;
-}
-
-/** Runs the daily pass agent in a fresh worktree of origin/main and reports what it committed. */
-export function localPassRunner(cfg: PassRunnerConfig, log: Logger): (input: PassInput) => Promise<PassResult | null> {
-  return async input => {
-    const ws = path.join(cfg.workDir, "worktree");
-    const inputs = path.join(cfg.workDir, "inputs");
-    const branch = `improve/${input.date}`;
-    fs.mkdirSync(inputs, { recursive: true });
-    await sh("git", ["worktree", "remove", "--force", ws], cfg.repoRoot).catch(() => undefined);
-    fs.rmSync(ws, { recursive: true, force: true });
-    await sh("git", ["worktree", "prune"], cfg.repoRoot).catch(() => undefined);
-    await sh("git", ["fetch", "origin", "main"], cfg.repoRoot);
-    await sh("git", ["worktree", "add", "-B", branch, ws, "origin/main"], cfg.repoRoot);
-    const cleanup = async () => {
-      await sh("git", ["worktree", "remove", "--force", ws], cfg.repoRoot).catch(() => undefined);
-      await sh("git", ["branch", "-D", branch], cfg.repoRoot).catch(() => undefined);
-    };
-    try {
-      const recentPath = path.join(inputs, "lessons-24h.jsonl");
-      const windowPath = path.join(inputs, "lessons-14d.jsonl");
-      fs.writeFileSync(recentPath, input.lessonsRecent.map(l => JSON.stringify(l)).join("\n") + "\n");
-      fs.writeFileSync(windowPath, input.lessonsWindow.map(l => JSON.stringify(l)).join("\n") + "\n");
-      const template = fs.readFileSync(path.join(ws, "prompts", "DAILY_IMPROVE.md"), "utf8");
-      const prompt = liquid.parseAndRenderSync(template, {
-        date: input.date,
-        lessons_recent_path: recentPath,
-        lessons_window_path: windowPath,
-        lessons_recent_count: input.lessonsRecent.length,
-        lessons_window_count: input.lessonsWindow.length,
-        metrics: input.metrics,
-        findings: input.findings,
-        outcomes: input.outcomes,
-        max_changes: input.maxChanges,
-        max_tickets: input.maxTickets,
-      });
-      const text = await runClaudeText(prompt, ws, cfg.maxTurns, cfg.timeoutMs, "improve");
-      const parsed = parsePassResult(text);
-      if (!parsed) {
-        log.warn("Daily improvement pass: no improve-result block");
-        await cleanup();
-        return null;
-      }
-      const files = (await sh("git", ["diff", "--name-only", "origin/main", "HEAD"], ws)).split("\n").filter(Boolean);
-      return { ...parsed, branch: files.length ? branch : null, files, cleanup };
-    } catch (e) {
-      await cleanup();
-      throw e;
-    }
-  };
-}
-
-/** Push the pass branch (hooks off: the agent could write them) and open the PR. */
-export async function openImprovePr(repoRoot: string, workDir: string, branch: string, title: string, body: string): Promise<{ number: number; url: string }> {
-  const ws = path.join(workDir, "worktree");
-  await sh("git", ["-c", "core.hooksPath=/dev/null", "push", "--force", "origin", `HEAD:refs/heads/${branch}`], ws);
-  const url = (await sh("gh", ["pr", "create", "-R", await repoSlug(repoRoot), "--base", "main", "--head", branch, "--title", title, "--body", body], repoRoot)).trim().split("\n").pop() ?? "";
-  const n = Number(url.match(/\/pull\/(\d+)/)?.[1] ?? NaN);
-  if (!Number.isFinite(n)) throw new Error(`gh pr create gave no PR URL: ${url}`);
-  return { number: n, url };
-}
-
 /** owner/name of the Symphony repo, so gh never touches the live checkout's branches. */
 async function repoSlug(repoRoot: string): Promise<string> {
   return (await sh("gh", ["repo", "view", "--json", "nameWithOwner", "-q", ".nameWithOwner"], repoRoot)).trim();
+}
+
+export async function listImprovePrs(repoRoot: string): Promise<ImprovePr[]> {
+  const out = await sh("gh", ["pr", "list", "-R", await repoSlug(repoRoot), "--state", "open", "--limit", "20", "--json", "number,url,title,headRefName"], repoRoot);
+  return (JSON.parse(out) as Array<{ number: number; url: string; title: string; headRefName: string }>)
+    .filter(p => p.headRefName.startsWith("improve/"))
+    .map(p => ({ number: p.number, url: p.url, title: p.title, branch: p.headRefName }));
 }
 
 export async function improvePrState(repoRoot: string, n: number): Promise<{ state: "OPEN" | "MERGED" | "CLOSED"; mergedAt: string | null }> {
@@ -657,36 +505,4 @@ export async function improvePrAction(repoRoot: string, n: number, action: "merg
   const repo = await repoSlug(repoRoot);
   if (action === "merge") await sh("gh", ["pr", "merge", String(n), "-R", repo, "--squash", "--delete-branch"], repoRoot);
   else await sh("gh", ["pr", "close", String(n), "-R", repo, "--delete-branch"], repoRoot);
-}
-
-function runClaudeText(prompt: string, cwd: string, maxTurns: number, timeoutMs: number, label: string): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const env: NodeJS.ProcessEnv = {};
-    for (const [k, v] of Object.entries(process.env)) if (v) env[k] = v;
-    const proc = spawn("claude", [
-      "-p", "--strict-mcp-config", ...claudeModelArgs(), ...claudeEffortArgs(),
-      "--max-turns", String(maxTurns), "--output-format", "stream-json", "--verbose", "--dangerously-skip-permissions",
-    ], { cwd, env, stdio: ["pipe", "pipe", "pipe"] });
-    trackTokenProcess(proc, label);
-    proc.stdin.end(prompt);
-    let result = "";
-    let lastText = "";
-    const rl = readline.createInterface({ input: proc.stdout, crlfDelay: Infinity });
-    rl.on("line", line => {
-      try {
-        const ev = JSON.parse(line) as { type?: string; result?: string; message?: { content?: Array<{ type: string; text?: string }> } };
-        if (ev.type === "result" && typeof ev.result === "string") result = ev.result;
-        if (ev.type === "assistant") {
-          const t = (ev.message?.content ?? []).filter(c => c.type === "text").map(c => c.text ?? "").join("\n");
-          if (t) lastText = t;
-        }
-      } catch {
-        // not JSON
-      }
-    });
-    proc.stderr.on("data", () => { /* drain */ });
-    const timer = setTimeout(() => { proc.kill("SIGTERM"); setTimeout(() => proc.kill("SIGKILL"), 3000); }, timeoutMs);
-    proc.on("error", e => { clearTimeout(timer); reject(e); });
-    proc.on("close", () => { clearTimeout(timer); rl.close(); resolve(result || lastText); });
-  });
 }
