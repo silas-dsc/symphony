@@ -425,6 +425,8 @@ export interface HooksConfig {
 export interface AgentConfig {
   maxConcurrentAgents: number;
   maxTurns: number;
+  /** Turn cap for rework runs (ticket sent back from review: description has a `## Fix` section). */
+  maxTurnsRework: number;
   maxRetryBackoffMs: number;
   stallTimeoutMs: number;
   maxConcurrentAgentsByState: Record<string, number>;

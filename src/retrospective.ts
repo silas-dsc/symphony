@@ -182,7 +182,7 @@ function spawnRetrospectiveClaude(prompt: string, ctx: RetrospectiveContext, cwd
       [
         "-p",
         "--strict-mcp-config", // never load the operator's personal MCP servers
-        ...claudeModelArgs(), ...claudeEffortArgs(),
+        ...claudeModelArgs("routine"), ...claudeEffortArgs("routine"),
         ...mcpArgs,
         "--max-turns", String(ctx.config.maxTurns),
         "--output-format", "stream-json",

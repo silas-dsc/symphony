@@ -28,13 +28,12 @@ import { SlackSocket } from "./slack-socket.js";
 import type { Logger, RateLimitInfo, WorkflowConfig } from "./types.js";
 import { createIntakeWatchers, type Reconcilable } from "./v2-intake.js";
 import {
-  ImprovementLoop, improvePrAction, improvePrState, localPassRunner, openImprovePr, type ImproveConfig,
+  ImprovementLoop, improvePrAction, improvePrState, listImprovePrs, type ImproveConfig,
 } from "./improvement-loop.js";
 import { readLessons } from "./lessons.js";
 import { commitAndPushLessons } from "./lessons-sync.js";
 import { runRetrospective } from "./retrospective.js";
 import { getWorkspacePath } from "./workspace.js";
-import { createIssue, fetchTeamByKey } from "./linear.js";
 import { tokenProcesses } from "./usage-budget.js";
 import type { Issue } from "./types.js";
 
@@ -165,10 +164,11 @@ export class SymphonyV2 {
     if (pr.enabled === true) {
       const prCfg = {
         repo: this.repo,
-        level: typeof pr.level === "string" ? pr.level : "high",
+        level: typeof pr.level === "string" ? pr.level : "medium",
         intervalMs: (typeof pr.interval_minutes === "number" ? pr.interval_minutes : 3) * 60_000,
         maxPerPrPerDay: typeof pr.max_per_pr_per_day === "number" ? pr.max_per_pr_per_day : 6,
         reviewExisting: pr.review_existing === true,
+        rereviewMinLines: typeof pr.rereview_min_lines === "number" ? pr.rereview_min_lines : 150,
         statePath: state("pr-review.json"),
         workspaceRoot: cfg.workspace.root,
         hooks: { afterCreate: cfg.hooks.afterCreate ?? null, beforeRun: cfg.hooks.beforeRun ?? null, timeoutMs: cfg.hooks.timeoutMs },
@@ -215,26 +215,24 @@ export class SymphonyV2 {
     const im = cfg.v2.improve;
     const n = (k: string, d: number) => (typeof im[k] === "number" ? (im[k] as number) : d);
     const repoRoot = cfg.autoUpdate.repoRoot ?? this.root;
-    const workDir = state("improve");
     const retro = cfg.retrospective;
     const mcp = path.join(this.root, "agent-mcp.json");
     const loopCfg: ImproveConfig = {
+      retroMode: im.retro_mode === "per_ticket" ? "per_ticket" : "batched",
       retroPollMs: n("retro_poll_minutes", 10) * 60_000,
       retroLookbackDays: n("retro_lookback_days", 7),
       retrosPerPoll: n("retros_per_poll", 2),
       triggerStates: retro.triggerStates,
       detectEveryMs: n("detect_minutes", 5) * 60_000,
+      prPollMs: n("pr_poll_minutes", 10) * 60_000,
       loopFailures: n("loop_failures", 3),
       loopWindowHours: n("loop_window_hours", 6),
       ticketCostAlertUsd: n("ticket_cost_alert_usd", 15),
-      dailyHourLocal: n("daily_hour", 17),
-      maxChanges: n("max_changes", 3),
-      maxTickets: n("max_tickets", 2),
       holdLabel: typeof im.hold_label === "string" ? im.hold_label : "symphony-hold",
       statePath: state("improve.json"),
+      briefPath: state("improve-brief.md"),
     };
     const runLog = defaultRunLogPath(this.root);
-    let teamId: string | null = null;
     const loop = new ImprovementLoop(loopCfg, {
       readRuns: () => readRunRecords(runLog),
       readLessons: () => readLessons(retro.lessonsPath),
@@ -264,17 +262,10 @@ export class SymphonyV2 {
       dm: text => this.hub.dm(text),
       addLabel: (id, name) => addIssueLabel(cfg.tracker, id, name),
       removeLabel: (id, name) => removeIssueLabel(cfg.tracker, id, name),
-      runPass: localPassRunner({ repoRoot, workDir, maxTurns: n("max_turns", 60), timeoutMs: n("timeout_minutes", 30) * 60_000 }, this.log),
-      openPr: (branch, title, body) => openImprovePr(repoRoot, workDir, branch, title, body),
+      listImprovePrs: () => listImprovePrs(repoRoot),
       prState: pr => improvePrState(repoRoot, pr),
       mergePr: pr => improvePrAction(repoRoot, pr, "merge"),
       closePr: pr => improvePrAction(repoRoot, pr, "close"),
-      createTicket: async (title, description) => {
-        teamId ??= (await fetchTeamByKey(cfg.tracker, cfg.v2.teamKey))?.id ?? null;
-        if (!teamId) return null;
-        const made = await createIssue(cfg.tracker, { teamId, title, description });
-        return { identifier: made.identifier, url: made.url };
-      },
       paused: () => tokenProcesses.isPaused(),
       now: () => Date.now(),
     }, this.log);

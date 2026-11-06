@@ -29,6 +29,11 @@ export interface PrReviewConfig {
   maxPerPrPerDay: number;
   /** Review PRs already open when Symphony first starts watching (default: only new commits). */
   reviewExisting: boolean;
+  /**
+   * After a PR's first review, only review again once this many lines changed
+   * since the last reviewed commit (small follow-up pushes are skipped). 0 = every commit.
+   */
+  rereviewMinLines: number;
   statePath: string;
   workspaceRoot: string;
   hooks: { afterCreate: string | null; beforeRun: string | null; timeoutMs: number };
@@ -52,6 +57,8 @@ interface State {
   reviewed: Record<string, string>;
   /** PR number → ISO timestamps of reviews in the last day. */
   runs: Record<string, string[]>;
+  /** PR number → head sha already found too small to re-review (saves a compare call per poll). */
+  small: Record<string, string>;
 }
 
 export interface ReviewDeps {
@@ -65,6 +72,8 @@ export interface ReviewDeps {
   push: (cwd: string, branch: string) => Promise<void>;
   comment: (prUrl: string, body: string) => Promise<void>;
   status: (sha: string, state: "pending" | "success" | "failure" | "error", description: string) => Promise<void>;
+  /** Lines added + deleted between a reviewed commit and the PR head. Absent = treat every push as big. */
+  linesChanged?: (pr: OpenPr, fromSha: string) => Promise<number>;
   now?: () => number;
 }
 
@@ -102,7 +111,7 @@ export function parseReviewComment(text: string): { body: string; verdict: "appr
 }
 
 export class PrReviewer {
-  private state: State = { initialised: false, reviewed: {}, runs: {} };
+  private state: State = { initialised: false, reviewed: {}, runs: {}, small: {} };
   private last = 0;
   private busy = false;
 
@@ -136,8 +145,19 @@ export class PrReviewer {
       // Forget closed PRs.
       const openNums = new Set(open.map(p => String(p.number)));
       for (const k of Object.keys(this.state.reviewed)) if (!openNums.has(k)) delete this.state.reviewed[k];
-      const due = open.filter(pr => this.state.reviewed[pr.number] !== pr.headSha && this.underCap(pr, now));
-      const next = due.sort((a, b) => b.number - a.number)[0];
+      for (const k of Object.keys(this.state.small)) if (!openNums.has(k)) delete this.state.small[k];
+      const due: OpenPr[] = [];
+      for (const pr of open.sort((a, b) => b.number - a.number)) {
+        const last = this.state.reviewed[pr.number];
+        if (last === pr.headSha || this.state.small[pr.number] === pr.headSha || !this.underCap(pr, now)) continue;
+        if (last && !(await this.bigEnough(pr, last))) {
+          this.state.small[pr.number] = pr.headSha;
+          continue;
+        }
+        due.push(pr);
+        break;
+      }
+      const next = due[0];
       if (next) await this.review(next);
       this.persist();
     } catch (e) {
@@ -145,6 +165,17 @@ export class PrReviewer {
     } finally {
       this.busy = false;
     }
+  }
+
+  /** A follow-up push is worth a fresh review only if it changed enough since the last reviewed commit. */
+  private async bigEnough(pr: OpenPr, lastSha: string): Promise<boolean> {
+    if (this.cfg.rereviewMinLines <= 0 || !this.deps.linesChanged) return true;
+    const n = await this.deps.linesChanged(pr, lastSha).catch(() => Infinity); // e.g. sha gone after a force-push
+    if (n < this.cfg.rereviewMinLines) {
+      this.log.info("PR review: small push, not re-reviewing", { pr: pr.number, lines: n, min: this.cfg.rereviewMinLines });
+      return false;
+    }
+    return true;
   }
 
   private underCap(pr: OpenPr, now: number): boolean {
@@ -270,6 +301,11 @@ export function localReviewDeps(cfg: PrReviewConfig, log: Logger): ReviewDeps {
     // Hooks off: the agent had write access to .husky in this checkout.
     push: async (cwd, branch) => { await run("git", ["-c", "core.hooksPath=/dev/null", "push", "origin", `HEAD:${branch}`], cwd, 120_000); },
     comment: async (url, body) => { await run("gh", ["pr", "comment", url, "--body", body]); },
+    linesChanged: async (pr, fromSha) => {
+      const out = await run("gh", ["api", `repos/${cfg.repo}/compare/${fromSha}...${pr.headSha}`, "--jq", "[.files[]?.changes] | add // 0"]);
+      const n = Number(out.trim());
+      return Number.isFinite(n) ? n : Infinity;
+    },
     status: async (sha, state, description) => {
       await run("gh", ["api", `repos/${cfg.repo}/statuses/${sha}`, "-f", `state=${state}`, "-f", "context=symphony/review", "-f", `description=${description.slice(0, 140)}`]);
     },

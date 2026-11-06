@@ -191,6 +191,7 @@ hooks:
 agent:
   max_concurrent_agents: 3
   max_turns: 40
+  max_turns_rework: 25        # sent-back tickets fix a known problem; failed reworks often ran 40+ turns
   max_retry_backoff_ms: 300000
 retrospective:
   enabled: true
@@ -390,32 +391,32 @@ v2:
     enabled: true
     max_share_per_hour: 0.17
     check_minutes: 5           # a burst of agents can eat the hour quickly; the probe is one 1-token request
-  # Local code review (replaces the claude-review GitHub Action): every new commit on an open
+  # Local code review (replaces the claude-review GitHub Action): each open
   # team-dsc PR (not drafts, forks or Dependabot) gets Claude Code's own `/code-review <level> --fix`
   # in a workspace here. Fixes are verified, committed and pushed; one comment ends in
   # `Verdict: approve|changes`; a `symphony/review` status shows on the commit. Paused by usage_budget.
+  # Reviews a PR once it's ready (not draft), then again only after a push that changes at least
+  # rereview_min_lines lines since the last reviewed commit (small follow-ups are skipped).
   pr_review:
     enabled: true
-    level: high
-    max_per_pr_per_day: 6
+    level: medium
+    rereview_min_lines: 150
+    max_per_pr_per_day: 3
     review_existing: false    # true = also review PRs already open when this was switched on
-  # Self-improvement loop (src/improvement-loop.ts):
-  #  - retros: tickets Symphony ran that are now Done (retrospective.trigger_states) and have no
-  #    lesson get a retrospective, with their run history. Works after the workspace is gone.
-  #  - detectors (no tokens): a ticket failing loop_failures runs in a row within loop_window_hours
-  #    gets the hold_label (no dispatch) and a Resume card — removing the label also resumes; costly tickets and
-  #    failure spikes get a DM.
-  #  - daily pass at daily_hour: an agent turns the day's lessons + metrics + findings into ≤ max_changes
-  #    prompt/workflow edits → a PR with a Merge card (never merges itself), and ≤ max_tickets
-  #    team-dsc tickets. Merged changes are scored on the run log after 2 days; the next pass sees it.
-  #  All agent work pauses with usage_budget.
+  # Self-improvement loop (src/improvement-loop.ts). Symphony spends no tokens on it: the thinking
+  # runs as the Claude desktop Scheduled task "Symphony daily improvement" (prompts/DAILY_IMPROVE.md).
+  #  - retro queue: tickets Symphony ran that are now Done (retrospective.trigger_states) with no lesson
+  #    are listed in .symphony-state/improve-brief.md with their run history; the daily task writes
+  #    their lessons in one batch. retro_mode: per_ticket = one Sonnet retro agent per ticket instead.
+  #  - detectors: a ticket failing loop_failures runs in a row within loop_window_hours gets the
+  #    hold_label (no dispatch) and a Resume card — removing the label also resumes; costly tickets
+  #    and failure spikes get a DM.
+  #  - process changes: each open improve/* PR gets a 🛠️ Merge / Close card; merged ones are scored
+  #    on the run log after 2 days and the result goes in the brief for the next pass.
   improve:
     enabled: true
-    daily_hour: 17
-    max_changes: 3
-    max_tickets: 2
+    retro_mode: batched
     retro_lookback_days: 7
-    retros_per_poll: 2
     loop_failures: 3
     loop_window_hours: 6
     ticket_cost_alert_usd: 15

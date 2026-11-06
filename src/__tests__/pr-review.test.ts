@@ -11,7 +11,7 @@ const pr = (over: Partial<OpenPr> = {}): OpenPr => ({
 });
 const done = (verdict = "approve") => `Reviewed.\n\n\`\`\`review-comment\nFixed:\n- src/a.ts:3 null check\n\nVerdict: ${verdict}\n\`\`\``;
 
-function reviewer(open: () => OpenPr[], over: Partial<ReviewDeps> = {}, cfg: { reviewExisting?: boolean; cap?: number } = {}) {
+function reviewer(open: () => OpenPr[], over: Partial<ReviewDeps> = {}, cfg: { reviewExisting?: boolean; cap?: number; minLines?: number } = {}) {
   const calls = { comments: [] as string[], statuses: [] as string[], pushes: [] as string[], prompts: [] as string[] };
   let head = "aaaaaaaa";
   const deps: ReviewDeps = {
@@ -28,7 +28,7 @@ function reviewer(open: () => OpenPr[], over: Partial<ReviewDeps> = {}, cfg: { r
     ...over,
   };
   const r = new PrReviewer({
-    repo: "team-dsc/team-dsc", level: "high", intervalMs: 0, maxPerPrPerDay: cfg.cap ?? 6, reviewExisting: cfg.reviewExisting ?? false,
+    repo: "team-dsc/team-dsc", level: "high", intervalMs: 0, rereviewMinLines: cfg.minLines ?? 0, maxPerPrPerDay: cfg.cap ?? 6, reviewExisting: cfg.reviewExisting ?? false,
     statePath: path.join(fs.mkdtempSync(path.join(os.tmpdir(), "prr-")), "s.json"),
     workspaceRoot: "/x", hooks: { afterCreate: null, beforeRun: null, timeoutMs: 1 }, timeoutMs: 1,
   }, deps, log);
@@ -108,5 +108,26 @@ describe("PR review", () => {
     const { r, calls } = reviewer(() => [pr({ headSha: `sha${n++}` })], {}, { reviewExisting: true, cap: 2 });
     for (let i = 0; i < 4; i++) await r.reconcile();
     expect(calls.prompts).toHaveLength(2);
+  });
+
+  it("re-reviews only after a big enough push since the last review", async () => {
+    let head = "aaaaaaaa";
+    let lines = 20;
+    const checks: string[] = [];
+    const { r, calls } = reviewer(() => [pr({ headSha: head })], {
+      linesChanged: async (_p, from) => { checks.push(from); return lines; },
+    }, { reviewExisting: true, minLines: 150 });
+    await r.reconcile();
+    expect(calls.prompts).toHaveLength(1); // first review once ready
+    head = "bbbbbbbb";
+    await r.reconcile();
+    await r.reconcile(); // same small head: no second compare call
+    expect(calls.prompts).toHaveLength(1);
+    expect(checks).toEqual(["aaaaaaaa"]);
+    head = "cccccccc";
+    lines = 200; // cumulative since the last reviewed commit
+    await r.reconcile();
+    expect(calls.prompts).toHaveLength(2);
+    expect(checks.at(-1)).toBe("aaaaaaaa");
   });
 });
