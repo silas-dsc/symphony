@@ -43,3 +43,12 @@ describe("validateWorkspacePath", () => {
     expect(() => validateWorkspacePath("/tmp/ws", "/tmp/ws-other/foo")).toThrow(/escapes root/);
   });
 });
+
+describe("fetchBranchArgs", () => {
+  it("maps each branch to an explicit origin/<branch> refspec", async () => {
+    const { fetchBranchArgs } = await import("../workspace.js");
+    expect(fetchBranchArgs("feature/x", "main")).toEqual([
+      "fetch", "origin", "+refs/heads/feature/x:refs/remotes/origin/feature/x", "+refs/heads/main:refs/remotes/origin/main",
+    ]);
+  });
+});

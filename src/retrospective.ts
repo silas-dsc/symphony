@@ -21,10 +21,19 @@ export interface RetrospectiveContext {
   logger: Logger;
   /** One line per agent run for this ticket (from the run log), so the retro sees retries and cost. */
   runHistory?: string;
+  /**
+   * Run even when the workspace is gone (Linear, the PR and run history suffice). Only the
+   * improvement loop sets this: it picks tickets itself, a few at a time. The orchestrator's
+   * terminal-state path sees every Done ticket in Linear's history at startup, so it must keep
+   * skipping tickets without a workspace.
+   */
+  allowMissingWorkspace?: boolean;
 }
 
 /** Tickets with a retrospective in progress, so two triggers for one ticket don't both run. */
 const inFlight = new Set<string>();
+/** Hard cap on retrospectives running at once, whatever triggers them. */
+export const MAX_CONCURRENT_RETROS = 2;
 
 /** True when lessons.jsonl already has an entry for this ticket. */
 export function hasLesson(lessonsPath: string, identifier: string): boolean {
@@ -68,7 +77,15 @@ export function renderRetrospectivePrompt(
 export async function runRetrospective(ctx: RetrospectiveContext): Promise<void> {
   if (!ctx.config.enabled) return;
   const key = ctx.issue.identifier;
+  if (!ctx.allowMissingWorkspace && !fs.existsSync(ctx.workspacePath)) {
+    ctx.logger.info("Retrospective skipped: workspace missing", { issue_identifier: key, workspace: ctx.workspacePath });
+    return;
+  }
   if (inFlight.has(key) || hasLesson(ctx.config.lessonsPath, key)) return;
+  if (inFlight.size >= MAX_CONCURRENT_RETROS) {
+    ctx.logger.info("Retrospective skipped: too many running", { issue_identifier: key, running: inFlight.size });
+    return;
+  }
   inFlight.add(key);
   try {
     await runOnce(ctx);

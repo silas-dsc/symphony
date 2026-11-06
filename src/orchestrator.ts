@@ -978,7 +978,9 @@ export class Orchestrator {
   private async retrospectThenCleanup(issue: Issue, state: string): Promise<void> {
     const retro = this.config.retrospective;
     const triggerStatesLower = retro.triggerStates.map(s => s.toLowerCase());
-    const shouldRetrospect = retro.enabled && triggerStatesLower.includes(state.toLowerCase());
+    // With v2.improve on, the improvement loop owns retros (a few at a time, with run history).
+    const loopOwnsRetros = this.config.v2.enabled && this.config.v2.improve.enabled === true;
+    const shouldRetrospect = retro.enabled && !loopOwnsRetros && triggerStatesLower.includes(state.toLowerCase());
 
     if (shouldRetrospect) {
       try {

@@ -248,7 +248,7 @@ export class SymphonyV2 {
           description: null, priority: null, branchName: null, blockedBy: [], assignee: null, creator: null, createdAt: null, updatedAt: null,
         } satisfies Issue;
         await runRetrospective({
-          issue, terminalState: t.state, runHistory: history,
+          issue, terminalState: t.state, runHistory: history, allowMissingWorkspace: true,
           workspacePath: getWorkspacePath(cfg.workspace.root, t.identifier),
           symphonyRoot: this.root, config: { ...retro, enabled: true },
           mcpConfigPath: fs.existsSync(mcp) ? mcp : undefined, logger: this.log,

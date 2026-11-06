@@ -4,7 +4,7 @@ import * as readline from "node:readline";
 import { promisify } from "node:util";
 import { claudeEffortArgs, claudeModelArgs } from "./llm.js";
 import { tokenProcesses, trackTokenProcess } from "./usage-budget.js";
-import { ensureWorkspace, runHook } from "./workspace.js";
+import { ensureWorkspace, fetchBranchArgs, runHook } from "./workspace.js";
 import type { Logger } from "./types.js";
 
 const execFileP = promisify(execFile);
@@ -226,7 +226,7 @@ export function localReviewDeps(cfg: PrReviewConfig, log: Logger): ReviewDeps {
       const { path: ws, createdNow } = await ensureWorkspace(cfg.workspaceRoot, `review-pr-${pr.number}`);
       const t = cfg.hooks.timeoutMs;
       if (createdNow && cfg.hooks.afterCreate) await runHook(cfg.hooks.afterCreate, ws, t, log);
-      await run("git", ["fetch", "origin", pr.branch], ws, t);
+      await run("git", fetchBranchArgs(pr.branch), ws, t);
       await run("git", ["checkout", "-B", pr.branch, `origin/${pr.branch}`], ws, t);
       await run("git", ["reset", "--hard", pr.headSha], ws, t);
       await run("git", ["clean", "-fd"], ws, t);

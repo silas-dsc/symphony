@@ -10,7 +10,7 @@ import * as linear from "./linear.js";
 import { uploadToLinear } from "./linear-upload.js";
 import { trackTokenProcess } from "./usage-budget.js";
 import { claudeEffortArgs, claudeModelArgs } from "./llm.js";
-import { ensureWorkspace, runHook } from "./workspace.js";
+import { ensureWorkspace, fetchBranchArgs, runHook } from "./workspace.js";
 import type { Logger, TrackerConfig } from "./types.js";
 
 const execFileP = promisify(execFile);
@@ -159,7 +159,7 @@ export class FunctionalTester {
     const { path: ws, createdNow } = await ensureWorkspace(this.d.workspaceRoot, key);
     const t = this.d.hooks.timeoutMs;
     if (createdNow && this.d.hooks.afterCreate) await runHook(this.d.hooks.afterCreate, ws, t, this.d.log);
-    await git(ws, ["fetch", "origin", req.pr ? req.pr.branch : "main"], t);
+    await git(ws, fetchBranchArgs(req.pr ? req.pr.branch : "main"), t);
     if (req.pr) {
       await git(ws, ["checkout", "-B", req.pr.branch, `origin/${req.pr.branch}`], t);
       await git(ws, ["reset", "--hard", `origin/${req.pr.branch}`], t);

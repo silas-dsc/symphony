@@ -152,7 +152,7 @@ describe("runRetrospective short-circuits", () => {
     expect(logger.logs).toHaveLength(0);
   });
 
-  it("still runs when the workspace is gone (Linear, the PR and run history suffice)", async () => {
+  it("skips with a log when the workspace is missing (the orchestrator path sees every old Done ticket)", async () => {
     const logger = makeLogger();
     const lessonsPath = path.join(tmpRoot, "lessons.jsonl");
     await runRetrospective({
@@ -163,6 +163,22 @@ describe("runRetrospective short-circuits", () => {
       mcpConfigPath: undefined,
       logger,
       config: baseConfig(lessonsPath),
+    });
+    expect(logger.logs.some(l => l.msg === "Retrospective skipped: workspace missing")).toBe(true);
+  });
+
+  it("runs without a workspace when the improvement loop allows it", async () => {
+    const logger = makeLogger();
+    const lessonsPath = path.join(tmpRoot, "lessons.jsonl");
+    await runRetrospective({
+      issue: makeIssue(),
+      terminalState: "Done",
+      workspacePath: path.join(tmpRoot, "nonexistent"),
+      symphonyRoot: tmpRoot,
+      mcpConfigPath: undefined,
+      logger,
+      config: baseConfig(lessonsPath),
+      allowMissingWorkspace: true,
     });
     // Gets past the workspace check to the (missing) prompt.
     expect(logger.logs.some(l => l.msg === "Retrospective skipped: prompt missing")).toBe(true);
@@ -180,6 +196,7 @@ describe("runRetrospective short-circuits", () => {
       mcpConfigPath: undefined,
       logger,
       config: baseConfig(lessonsPath),
+      allowMissingWorkspace: true,
     });
     expect(logger.logs).toHaveLength(0);
   });
