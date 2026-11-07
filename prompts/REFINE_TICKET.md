@@ -29,6 +29,7 @@ If there's no `.symphony-figma/` directory, the ticket has no design — proceed
 ### 1. Read the Intent Brief and the current description
 - Open `.claude/intent.md`. Its Who/Wants/So that is the canonical statement of intent — your refined description must remain consistent with it.
 - Read the current Linear description critically against the Intent Brief. Identify gaps: missing repro steps, unstated acceptance criteria, ambiguous scope, no test plan, vague success metric.
+- Copy into a "Decisions for sign-off" subsection any `.claude/intent.md` Ambiguity whose readings change what the user sees or which data wins (step order in a flow, keep vs restore data after an admin action). State your assumption for each so a human confirms it before Phase 3.
 - If the description is already implementation-ready, consistent with the Intent Brief, and passes UNSLOP + CLEAR_WRITING — note that in `.claude/workpad.md` and skip the rewrite.
 
 ### 2. Investigate the codebase to fill gaps

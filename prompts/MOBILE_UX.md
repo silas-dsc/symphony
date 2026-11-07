@@ -1,6 +1,6 @@
 # Mobile UX/UI pass (every affected frontend page)
 
-Apply this to every page or component you modified, and every page that consumes a component you modified. Mobile is the default — verify at 375px first, then desktop.
+Apply this to every page or component you modified, and every page that consumes a component you modified. Mobile is the default — verify at 375px first, then desktop. For shared layout (header, footer, nav) and dialogs, also check 768px and 1280px: tablet and small-laptop widths break where phone and desktop don't.
 
 **This prompt covers checks you apply as you code.** The full screenshot evidence is captured by the Tester sub-agent in Phase 4 (see `TESTER.md`). Your job here is to make sure the page is right when the Tester arrives — not to capture deliverable screenshots yourself.
 
@@ -12,7 +12,7 @@ The agent has headless Chrome via the `@playwright/mcp` server, launched with `-
 - [ ] All content reachable by scrolling on a **375px-wide viewport** (iPhone SE width).
 - [ ] No horizontal page scroll. Wide tables scroll *inside their container*, not the page.
 - [ ] Sticky headers/footers don't cover the bottom of forms or content. Verify with the on-screen keyboard open if the page has inputs.
-- [ ] Modals, drawers, and sheets are full-height on mobile and dismissible by a visible close control (not just by tapping outside).
+- [ ] Modals, drawers, and sheets are full-height on mobile and dismissible by a visible close control (not just by tapping outside). Every control and message in them is visible and reachable at 375px and 768px.
 
 ### Touch targets & interaction
 - [ ] Interactive elements are at least **44×44 px**. Tailwind: `min-h-[44px] min-w-[44px]` or padded `p-3`+.
@@ -70,7 +70,7 @@ Append to `.claude/workpad.md` (Notes section):
 
 ```
 Mobile UX self-check on <commit SHA>:
-- Pages verified at 375px and 1024px: <list>
+- Pages verified at 375px and 1024px (plus 768px and 1280px for shared layout or dialogs): <list>
 - Issues found and fixed in this PR: <list or "none">
 - Backlog tickets filed for out-of-scope UX issues: <links or "none">
 ```
