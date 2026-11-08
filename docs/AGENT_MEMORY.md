@@ -122,6 +122,11 @@ Don't invent synonyms. If the ticket says "students", confirm whether it means "
 - The Management API rate limit is 3 req/sec. Bulk content edits must use the batch endpoints; sequential edits in a loop will 429.
 - Draft vs published: `cv` query param controls cache versioning. If you change content and don't see the update, you're reading the cached published version. See `{{ symphony.root }}/docs/STORYBLOK.md`.
 
+### Public endpoints (API routes, HTTP Cloud Functions)
+
+- Auth checks in code fail closed: if the expected invoker, secret or env var is unset, reject the request. Never log-and-allow. <!-- mem:public-auth-fail-closed added=2026-11-08 sources=TEA-5039 confidence=1 -->
+- A new unauthenticated route that makes outbound calls (DNS, HTTP, email) needs auth or a rate limit plus input size limits in the same PR, or it ships as an open probe. <!-- mem:public-route-outbound-guard added=2026-11-08 sources=TEA-5036 confidence=1 -->
+
 ### Testing
 
 - React Testing Library: prefer `findByRole` over `findByText`. Roles are stable; text changes with copy edits.
